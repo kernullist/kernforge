@@ -2112,6 +2112,58 @@ func (w Workspace) CheckEditBoundary(path string) error {
 	return nil
 }
 
+// EnsureEditableTarget checks the edit boundary and, when the only problem is
+// that the target sits outside the workspace root (not a protected nested
+// worktree path), offers to approve its directory as an external directory for
+// the rest of the session. A protected path or a denied approval keeps the
+// original boundary error. Symlink escapes stay blocked: the boundary re-check
+// resolves the path and the approved directory must contain the resolved target.
+func (w Workspace) EnsureEditableTarget(ctx context.Context, path string) error {
+	err := w.CheckEditBoundary(path)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, ErrEditTargetMismatch) || w.Perms == nil {
+		return err
+	}
+	// A protected nested-worktree path is never eligible for external approval.
+	if protErr := w.ensureProtectedEditPath(path); protErr != nil {
+		return err
+	}
+	absPath, absErr := filepath.Abs(path)
+	if absErr != nil {
+		return err
+	}
+	// If the literal target is already inside a root, the mismatch came from a
+	// symlink that resolves outside -- not an external directory the user chose.
+	// Keep the boundary error instead of prompting for (and approving) the in-root
+	// parent, which would never make the escaping symlink writable anyway.
+	if w.literalPathWithinRoots(absPath) {
+		return err
+	}
+	allowed, allowErr := w.Perms.AllowExternalDir(filepath.Dir(absPath))
+	if allowErr != nil || !allowed {
+		return err
+	}
+	// Re-check with the directory now on the allowlist so the resolved-path and
+	// protected-path guarantees are re-applied rather than bypassed.
+	return w.CheckEditBoundary(path)
+}
+
+// literalPathWithinRoots reports whether the literal (pre-symlink-resolution)
+// path sits inside the workspace root or base root.
+func (w Workspace) literalPathWithinRoots(absPath string) bool {
+	for _, root := range []string{w.Root, w.BaseRoot} {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		if rootAbs, err := filepath.Abs(root); err == nil && pathWithinRoot(rootAbs, absPath) {
+			return true
+		}
+	}
+	return false
+}
+
 func (w Workspace) EnsureWrite(path string) error {
 	return w.EnsureWriteWithContext(context.Background(), path)
 }
@@ -2177,6 +2229,9 @@ func (w Workspace) ensureResolvedWritePathWithinRoot(path string) error {
 				return absErr
 			}
 			if !pathWithinAnyRoot(rootAbsList, resolvedAbs) {
+				if w.Perms != nil && w.Perms.IsExternalDirAllowed(resolvedAbs) {
+					return nil
+				}
 				return fmt.Errorf("%w: refusing to write through a path that resolves outside the active workspace root: %s -> %s", ErrEditTargetMismatch, targetAbs, resolvedAbs)
 			}
 			return nil
@@ -4515,7 +4570,7 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 	content := stringValue(args, "content")
 	before := ""
 	beforeExists := false
-	if err := t.ws.CheckEditBoundary(path); err != nil {
+	if err := t.ws.EnsureEditableTarget(ctx, path); err != nil {
 		return "", err
 	}
 	if existing, err := os.ReadFile(path); err == nil {
@@ -4915,7 +4970,7 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	path := route.AbsolutePath
 	displayPath := route.DisplayPath()
 	editRoot := firstNonBlankString(route.WorktreeRoot, route.DisplayRoot, t.ws.Root)
-	if err := t.ws.CheckEditBoundary(path); err != nil {
+	if err := t.ws.EnsureEditableTarget(ctx, path); err != nil {
 		return "", err
 	}
 	data, err := os.ReadFile(path)

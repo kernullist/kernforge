@@ -4823,6 +4823,10 @@ type PermissionManager struct {
 	// caller consumes it. An approval clears it so a stale reason never attaches to
 	// an unrelated action.
 	declineFeedback string
+	// externalDirsAllowed holds directories outside the workspace root that the
+	// user approved for editing this session (each covers its whole subtree). Empty
+	// keeps the strict in-root-only boundary.
+	externalDirsAllowed map[string]bool
 }
 
 func ParseMode(value string) Mode {
@@ -5040,6 +5044,87 @@ func (m *PermissionManager) ConsumeDeclineFeedback() string {
 	fb := m.declineFeedback
 	m.declineFeedback = ""
 	return fb
+}
+
+// IsExternalDirAllowed reports whether path falls inside a directory the user
+// approved this session for editing outside the workspace root.
+func (m *PermissionManager) IsExternalDirAllowed(path string) bool {
+	if m == nil || len(m.externalDirsAllowed) == 0 {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	abs = resolveExternalDirPath(abs)
+	for dir := range m.externalDirsAllowed {
+		if pathWithinRoot(dir, abs) {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowExternalDir returns true when dir is already approved, auto-approves under
+// full (bypass) mode, otherwise prompts once and remembers an approval for the
+// rest of the session. A denial leaves the directory off the allowlist so the
+// strict in-root boundary still applies.
+func (m *PermissionManager) AllowExternalDir(dir string) (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false, err
+	}
+	if m.IsExternalDirAllowed(abs) {
+		return true, nil
+	}
+	if m.mode == ModeBypass {
+		m.rememberExternalDir(abs)
+		return true, nil
+	}
+	if m.prompt == nil {
+		return false, nil
+	}
+	if m.userInputRequests != nil {
+		m.userInputRequests.MarkRequested()
+	}
+	allowed, err := m.prompt(permissionQuestionExternalDir(abs))
+	if err != nil {
+		return false, err
+	}
+	if allowed {
+		m.rememberExternalDir(abs)
+	}
+	return allowed, nil
+}
+
+func (m *PermissionManager) rememberExternalDir(absDir string) {
+	if m.externalDirsAllowed == nil {
+		m.externalDirsAllowed = map[string]bool{}
+	}
+	m.externalDirsAllowed[resolveExternalDirPath(absDir)] = true
+}
+
+func permissionQuestionExternalDir(dir string) string {
+	return "Allow edits in external directory? " + dir
+}
+
+// resolveExternalDirPath canonicalizes a path for external-directory matching by
+// resolving symlinks in its longest existing ancestor and re-appending the rest,
+// so an approved directory and a not-yet-created file under it compare equal even
+// when the OS reports short (8.3) or symlinked path forms.
+func resolveExternalDirPath(path string) string {
+	clean := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return resolved
+	}
+	parent := filepath.Dir(clean)
+	if parent == clean {
+		return clean
+	}
+	return filepath.Join(resolveExternalDirPath(parent), filepath.Base(clean))
 }
 
 // allowWithoutPrompt preserves the historical action-only entry point used by
