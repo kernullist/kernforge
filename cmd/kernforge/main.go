@@ -7405,7 +7405,7 @@ func (rt *runtimeState) operatorStatusSnapshot(action string) operatorStatusSnap
 		items = append(items, statusSummaryItem{Label: "effort", Value: effort, Tone: "info"})
 	}
 	items = append(items,
-		statusSummaryItem{Label: "gate", Value: statusOverviewGateLabel(rt.cfg, ledger), Tone: statusOverviewGateTone(ledger.Status)},
+		statusSummaryItem{Label: "gate", Value: statusOverviewGateLabel(ledger), Tone: statusOverviewGateTone(ledger.Status)},
 		statusSummaryItem{Label: "perm", Value: statusOverviewPermission(rt), Tone: statusOverviewPermissionTone(rt)},
 		statusSummaryItem{Label: "progress", Value: configProgressDisplay(rt.cfg), Tone: "info"},
 		statusSummaryItem{Label: "mcp", Value: statusOverviewMCP(rt), Tone: statusOverviewMCPTone(rt)},
@@ -7430,25 +7430,21 @@ func (rt *runtimeState) operatorStatusSnapshot(action string) operatorStatusSnap
 	}
 }
 
-func statusOverviewGateLabel(cfg Config, ledger RuntimeGateLedger) string {
-	korean := localePrefersKorean(cfg)
+func statusOverviewGateLabel(ledger RuntimeGateLedger) string {
+	// The status pills use English domain terms throughout (perm:plan, verify:none,
+	// mcp:.../ok), so render the gate in English too instead of switching by locale
+	// -- a Korean locale otherwise produced a mixed-language status line like
+	// "gate:준비됨 perm:plan". The localized gate summary is still used in the
+	// user-facing gate detail messages elsewhere.
 	if runtimeGateLedgerEmpty(ledger) {
-		return humanizeGateStatus("unknown", korean)
+		return humanizeGateStatus("unknown", false)
 	}
 	ledger.Normalize()
-	label := humanizeGateStatus(valueOrDefault(ledger.Status, runtimeGateStatusReady), korean)
+	label := humanizeGateStatus(valueOrDefault(ledger.Status, runtimeGateStatusReady), false)
 	if len(ledger.Blockers) > 0 {
-		if korean {
-			label += fmt.Sprintf(" (차단 %d)", len(ledger.Blockers))
-		} else {
-			label += fmt.Sprintf(" (%d blockers)", len(ledger.Blockers))
-		}
+		label += fmt.Sprintf(" (%d blockers)", len(ledger.Blockers))
 	} else if len(ledger.Warnings) > 0 {
-		if korean {
-			label += fmt.Sprintf(" (경고 %d)", len(ledger.Warnings))
-		} else {
-			label += fmt.Sprintf(" (%d warnings)", len(ledger.Warnings))
-		}
+		label += fmt.Sprintf(" (%d warnings)", len(ledger.Warnings))
 	}
 	return label
 }
@@ -7686,9 +7682,8 @@ func statusOverviewRequestRuntime(rt *runtimeState) string {
 	if concerns <= 0 {
 		return ""
 	}
-	if localePrefersKorean(rt.cfg) {
-		return fmt.Sprintf("주의 %d건 (자세히: /status detail)", concerns)
-	}
+	// English to match the other status pills and keep the status line single-language
+	// (see [[output-ux-display-mapping]]: status uses English domain terms).
 	return fmt.Sprintf("%d to review (see /status detail)", concerns)
 }
 
