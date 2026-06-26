@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 )
@@ -49,6 +50,12 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 	}
 	defer term.Restore(fd, oldState)
 
+	// Enable bracketed paste: the terminal then wraps pasted text in
+	// ESC[200~ ... ESC[201~ markers, letting us capture a multi-line paste as a
+	// single block instead of submitting on the first embedded newline.
+	fmt.Fprint(rt.writer, "\x1b[?2004h")
+	defer fmt.Fprint(rt.writer, "\x1b[?2004l")
+
 	reader := bufio.NewReader(os.Stdin)
 
 	var buffer []rune
@@ -83,6 +90,10 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 	}
 	redraw := func() {
 		termW := terminalWidth()
+		if bufferHasNewline(buffer) {
+			redrawMultiline(rt.writer, prompt, rt.ui.continuationPrompt(), buffer, cursorPos, &prevLines, termW)
+			return
+		}
 		if prevLines > 0 {
 			fmt.Fprintf(rt.writer, "\x1b[%dA", prevLines)
 		}
@@ -149,28 +160,68 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			historyNav.SyncBuffer(string(buffer))
 			redraw()
 		case posixKeyLeft:
+			if bufferHasNewline(buffer) {
+				if cursorPos > 0 {
+					cursorPos--
+					redraw()
+				}
+				continue
+			}
 			if cursorPos > 0 {
 				cursorPos--
 				moveCursorLeft(runeWidth(buffer[cursorPos]))
 			}
 		case posixKeyRight:
+			if bufferHasNewline(buffer) {
+				if cursorPos < len(buffer) {
+					cursorPos++
+					redraw()
+				}
+				continue
+			}
 			if cursorPos < len(buffer) {
 				moveCursorRight(runeWidth(buffer[cursorPos]))
 				cursorPos++
 			}
 		case posixKeyHome:
+			if bufferHasNewline(buffer) {
+				cursorPos = lineHomeIndex(buffer, cursorPos)
+				redraw()
+				continue
+			}
 			moveCursorLeft(runeSliceWidth(buffer[:cursorPos]))
 			cursorPos = 0
 		case posixKeyEnd:
+			if bufferHasNewline(buffer) {
+				cursorPos = lineEndIndex(buffer, cursorPos)
+				redraw()
+				continue
+			}
 			moveCursorRight(widthAfterCursor())
 			cursorPos = len(buffer)
 		case posixKeyUp:
+			if bufferHasNewline(buffer) {
+				// Multiline buffer: move the cursor up a logical line instead
+				// of navigating history.
+				if target := verticalCursorTarget(buffer, cursorPos, -1); target >= 0 {
+					cursorPos = target
+					redraw()
+				}
+				continue
+			}
 			if next, ok := historyNav.Previous(string(buffer)); ok {
 				buffer = []rune(next)
 				cursorPos = len(buffer)
 				redraw()
 			}
 		case posixKeyDown:
+			if bufferHasNewline(buffer) {
+				if target := verticalCursorTarget(buffer, cursorPos, 1); target >= 0 {
+					cursorPos = target
+					redraw()
+				}
+				continue
+			}
 			if next, ok := historyNav.Next(string(buffer)); ok {
 				buffer = []rune(next)
 				cursorPos = len(buffer)
@@ -200,8 +251,89 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			cursorPos++
 			historyNav.SyncBuffer(string(buffer))
 			redraw()
+		case posixKeyAltEnter:
+			// Manual multiline: insert a literal newline at the cursor.
+			buffer = insertRuneAt(buffer, cursorPos, '\n')
+			cursorPos++
+			historyNav.SyncBuffer(string(buffer))
+			redraw()
+		case posixKeyPasteStart:
+			pasted, perr := readBracketedPaste(reader)
+			// Stage the block for review; strip a single trailing newline so a
+			// copied block ending in a line break leaves no dangling empty line.
+			// The operator presses Enter to submit.
+			pasted = strings.TrimSuffix(pasted, "\n")
+			if pasted != "" {
+				for _, r := range []rune(pasted) {
+					buffer = insertRuneAt(buffer, cursorPos, r)
+					cursorPos++
+				}
+				historyNav.SyncBuffer(string(buffer))
+				redraw()
+			}
+			if perr != nil {
+				// Stdin closed mid-paste: keep what arrived; the next read hits
+				// EOF and the loop's error path handles submit/terminate.
+				continue
+			}
+		case posixKeyPasteEnd:
+			// A stray paste-end with no matching start: nothing to do.
+			continue
 		}
 	}
+}
+
+// insertRuneAt returns buffer with r inserted at index pos.
+func insertRuneAt(buffer []rune, pos int, r rune) []rune {
+	buffer = append(buffer, 0)
+	copy(buffer[pos+1:], buffer[pos:])
+	buffer[pos] = r
+	return buffer
+}
+
+// readBracketedPaste reads the body of a bracketed paste after the ESC[200~
+// start marker, up to and including the ESC[201~ end marker (which it
+// consumes but does not return). Carriage returns are normalized to '\n' so
+// pasted line breaks become embedded newlines in the buffer. A read error
+// (including io.EOF on a truncated paste) returns what was collected so far.
+func readBracketedPaste(reader *bufio.Reader) (string, error) {
+	var b strings.Builder
+	for {
+		r, _, err := reader.ReadRune()
+		if err != nil {
+			return normalizePastedNewlines(b.String()), err
+		}
+		if r == 0x1b {
+			if consumePasteEndMarker(reader) {
+				return normalizePastedNewlines(b.String()), nil
+			}
+			// A literal ESC inside pasted text (uncommon): keep it verbatim.
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+}
+
+// consumePasteEndMarker checks whether the bytes following an ESC are the
+// remainder of the bracketed-paste end marker ("[201~"). If so it consumes
+// them and returns true; otherwise it leaves the reader untouched.
+func consumePasteEndMarker(reader *bufio.Reader) bool {
+	const rest = "[201~"
+	peeked, err := reader.Peek(len(rest))
+	if err != nil || string(peeked) != rest {
+		return false
+	}
+	if _, err := reader.Discard(len(rest)); err != nil {
+		return false
+	}
+	return true
+}
+
+// normalizePastedNewlines converts CRLF and bare CR line endings to '\n'.
+func normalizePastedNewlines(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
 }
 
 func cancelInteractiveLinePosix(prevLines int) string {
@@ -228,6 +360,9 @@ const (
 	posixKeyTab
 	posixKeyEscape
 	posixKeyInterrupt
+	posixKeyPasteStart
+	posixKeyPasteEnd
+	posixKeyAltEnter
 )
 
 type posixKey struct {
@@ -283,6 +418,8 @@ func readPosixEscape(reader *bufio.Reader) (posixKey, error) {
 			return posixKey{}, err
 		}
 		return mapPosixFinalByte(final), nil
+	case '\r', '\n': // Alt+Enter: insert a literal newline (manual multiline).
+		return posixKey{kind: posixKeyAltEnter}, nil
 	}
 	// Unknown ESC-prefixed sequence: ignore the introducer, emit the rune.
 	if next < 32 {
@@ -336,6 +473,10 @@ func mapPosixTildeSequence(params string) posixKey {
 		return posixKey{kind: posixKeyEnd}
 	case "3":
 		return posixKey{kind: posixKeyDelete}
+	case "200":
+		return posixKey{kind: posixKeyPasteStart}
+	case "201":
+		return posixKey{kind: posixKeyPasteEnd}
 	}
 	return posixKey{kind: posixKeyRune, r: 0}
 }
