@@ -9045,7 +9045,19 @@ func toolCallAllowedBeforeWebResearch(call ToolCall, mcp *MCPManager) bool {
 	if mcp != nil && mcp.IsWebResearchToolCall(call) {
 		return true
 	}
+	// A user-connected MCP tool is an explicit action the user asked to run (e.g. a
+	// live kernel-debug call); never defer it behind a web-research detour the
+	// request never asked for.
+	if isMCPToolName(name) {
+		return true
+	}
 	return false
+}
+
+// isMCPToolName reports whether a tool name belongs to a user-connected MCP
+// server (exposed as mcp__<server>__<tool>).
+func isMCPToolName(name string) bool {
+	return strings.HasPrefix(strings.TrimSpace(name), "mcp__")
 }
 
 func documentPathConfirmedBySession(session *Session, targetPath string) bool {
@@ -9330,6 +9342,12 @@ func toolCallAllowedInReadOnlyAnalysis(call ToolCall) bool {
 	}
 	if isEditTool(name) {
 		return false
+	}
+	// User-connected MCP tools are explicit external actions, not local workspace
+	// edits. A read-only analysis turn guards against unsolicited local edits, so it
+	// must not block the MCP tools the user deliberately connected and invoked.
+	if isMCPToolName(name) {
+		return true
 	}
 	switch name {
 	case "read_file", "list_files", "grep", "git_status", "git_diff", "check_shell_job", "check_shell_bundle", "update_plan", "get_goal":
