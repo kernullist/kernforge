@@ -1222,6 +1222,98 @@ func toolExecutionModelTextWithError(result ToolExecutionResult, err error) stri
 	return text + "\n\nERROR: " + err.Error()
 }
 
+const (
+	// toolOutputModelMaxLines / toolOutputModelMaxBytes bound the model-visible text
+	// of ANY tool call. The budget is generous so normal read_file (line-limited)
+	// and grep results pass through untouched; only a runaway producer (a huge
+	// run_shell dump, an unbounded custom/MCP tool) is preview+spilled. A tool that
+	// already bounded itself sets meta["output_bounded"]=true to skip this.
+	toolOutputModelMaxLines = 3000
+	toolOutputModelMaxBytes = 128 * 1024
+)
+
+// boundToolModelText caps a tool's model-visible output. Within budget it returns
+// the text unchanged; over budget it writes the full output to a session spill file
+// and returns a head+tail preview plus a recovery hint so the model can fetch the
+// rest cheaply instead of the output being silently dropped or blowing the context.
+func (a *Agent) boundToolModelText(text string, meta map[string]any) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	if meta != nil {
+		if bounded, _ := meta["output_bounded"].(bool); bounded {
+			return text
+		}
+	}
+	if len(text) <= toolOutputModelMaxBytes && strings.Count(text, "\n") < toolOutputModelMaxLines {
+		return text
+	}
+	preview := boundedToolOutputPreview(text)
+	path, err := a.spillToolOutput(text)
+	if err != nil || strings.TrimSpace(path) == "" {
+		return preview + "\n\n[tool output truncated to fit context; the full output could not be saved to disk]"
+	}
+	return preview + "\n\n[tool output truncated to fit context: the full output is saved at " +
+		filepath.ToSlash(path) + ". Read that file with offset/limit, or grep it, to see the rest -- do not reprint the whole file.]"
+}
+
+// boundedToolOutputPreview keeps the head and tail of oversized output (errors and
+// summaries often live at the end), bounded by lines then by a rune-safe byte cap.
+func boundedToolOutputPreview(text string) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) > toolOutputModelMaxLines {
+		headN := toolOutputModelMaxLines * 3 / 4
+		tailN := toolOutputModelMaxLines - headN
+		text = strings.Join(lines[:headN], "\n") +
+			fmt.Sprintf("\n\n... (%d lines omitted) ...\n\n", len(lines)-headN-tailN) +
+			strings.Join(lines[len(lines)-tailN:], "\n")
+	}
+	if len(text) > toolOutputModelMaxBytes {
+		text = safeHeadBytes(text, toolOutputModelMaxBytes) + "\n... (truncated to byte limit) ..."
+	}
+	return text
+}
+
+// safeHeadBytes returns the first max bytes of s, backing off to a UTF-8 rune
+// boundary so a multibyte character is never split.
+func safeHeadBytes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	return s[:cut]
+}
+
+// spillToolOutput writes the full tool output to a per-session file and returns its
+// path, mirroring the hook-context spill location convention.
+func (a *Agent) spillToolOutput(text string) (string, error) {
+	dir := strings.TrimSpace(a.Config.SessionDir)
+	if dir == "" {
+		dir = filepath.Join(userConfigDir(), "sessions")
+	}
+	dir = filepath.Join(dir, "tool-output-spills")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	sessionID := "session"
+	if a.Session != nil {
+		if s := sanitizeFileName(a.Session.ID); s != "" {
+			sessionID = s
+		}
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%s-%d.txt", sessionID, time.Now().UnixNano()))
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func mergeToolMetaMaps(base map[string]any, extra map[string]any) map[string]any {
 	merged := cloneMetaMap(base)
 	for key, value := range extra {

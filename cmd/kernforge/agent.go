@@ -2809,7 +2809,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrInvalidEditPayload) {
 				toolMsg.IsError = true
-				toolMsg.Text = toolExecutionModelTextWithError(result, err)
+				toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit payload was invalid before this tool could run.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -2876,7 +2876,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						a.Session.PendingReviewRepairConfirm = nil
 						if !continueRepair {
 							toolMsg.IsError = true
-							toolMsg.Text = toolExecutionModelTextWithError(result, err)
+							toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 							a.setToolExecutionResult(toolMsgIndex, toolMsg)
 							a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: the user stopped pre-write review repair after the loop did not converge.")
 							reply := formatCancelledPendingReviewRepairReply(a.Config)
@@ -2895,7 +2895,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 					} else {
 						toolMsg.IsError = true
-						toolMsg.Text = toolExecutionModelTextWithError(result, err)
+						toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 						if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 							a.emitProgressEvent(ProgressEvent{
 								Kind:             progressKindToolFailed,
@@ -2931,7 +2931,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 				}
 				toolMsg.IsError = true
-				toolMsg.Text = toolExecutionModelTextWithError(result, err)
+				toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 					a.emitProgressEvent(ProgressEvent{
 						Kind:             progressKindToolFailed,
@@ -2958,7 +2958,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				editTargetMismatchFailures++
 				if editTargetMismatchFailures > maxEditTargetMismatchFailuresPerTurn {
 					toolMsg.IsError = true
-					toolMsg.Text = toolExecutionModelTextWithError(result, err)
+					toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 						a.emitProgressEvent(ProgressEvent{
 							Kind:             progressKindToolFailed,
@@ -2981,7 +2981,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrInvalidToolArgumentsJSON) && invalidToolArgsRetries < 1 {
 				toolMsg.IsError = true
-				toolMsg.Text = toolExecutionModelTextWithError(result, err)
+				toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 					a.emitProgressEvent(ProgressEvent{
 						Kind:             progressKindToolFailed,
@@ -3009,7 +3009,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrEditTargetMismatch) && editTargetMismatchRetries < 1 {
 				toolMsg.IsError = true
-				toolMsg.Text = toolExecutionModelTextWithError(result, err)
+				toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 					a.emitProgressEvent(ProgressEvent{
 						Kind:             progressKindToolFailed,
@@ -3042,7 +3042,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if err != nil {
 				a.noteToolConversationError(call, err, result.DisplayText)
 				toolMsg.IsError = true
-				toolMsg.Text = toolExecutionModelTextWithError(result, err)
+				toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 				if errors.Is(err, ErrReviewerGateUnavailable) {
 					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 						a.emitProgressEvent(ProgressEvent{
@@ -9475,7 +9475,7 @@ func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCa
 			IsError:          err != nil,
 		}
 		if err != nil {
-			toolMsg.Text = toolExecutionModelTextWithError(result, err)
+			toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 			if currentError := strings.TrimSpace(err.Error()); currentError != "" {
 				outcome.errorText = currentError
 			}
