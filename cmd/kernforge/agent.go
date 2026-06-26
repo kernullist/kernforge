@@ -2798,6 +2798,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				return "", err
 			}
+			if err != nil && errors.Is(err, ErrNetworkDenied) {
+				toolName := strings.TrimSpace(call.Name)
+				reply := formatNetworkDeniedReply(a.Config, toolName, a.permissionModeIsPlan())
+				if a.EmitProgress != nil {
+					a.EmitProgress(reply)
+				}
+				toolMsg.IsError = true
+				toolMsg.Text = "NOT_EXECUTED: " + reply
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an MCP/network tool was blocked by the current permission mode; switch modes and retry.")
+				a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				return reply, nil
+			}
 			if err != nil && errors.Is(err, ErrWriteDenied) {
 				declineMsg := "CANCELED: user declined write approval. No files were changed, and no filesystem permission issue was detected."
 				if fb := a.consumeDeclineFeedback(); fb != "" {
@@ -9058,6 +9074,27 @@ func toolCallAllowedBeforeWebResearch(call ToolCall, mcp *MCPManager) bool {
 // server (exposed as mcp__<server>__<tool>).
 func isMCPToolName(name string) bool {
 	return strings.HasPrefix(strings.TrimSpace(name), "mcp__")
+}
+
+// formatNetworkDeniedReply builds the user-facing message shown when an MCP or
+// network tool call is blocked by the permission layer. In plan mode (the common
+// confusing case) it explains the read-only restriction and how to switch, so the
+// block is never silent even if the model says nothing.
+func formatNetworkDeniedReply(cfg Config, toolName string, planMode bool) string {
+	name := strings.TrimSpace(toolName)
+	if name == "" {
+		name = localizedText(cfg, "the requested tool", "요청한 도구")
+	} else {
+		name = "`" + name + "`"
+	}
+	if planMode {
+		return localizedText(cfg,
+			"Blocked: plan mode is read-only and blocks MCP/network tools, so "+name+" did not run. Switch to edit or full mode (/permissions edit or /permissions full) and retry.",
+			"차단됨: plan 모드는 읽기 전용이라 MCP/네트워크 도구를 막습니다. "+name+"를 실행하지 못했습니다. edit 또는 full 모드로 전환한 뒤(/permissions edit 또는 /permissions full) 다시 시도하세요.")
+	}
+	return localizedText(cfg,
+		"Blocked: network access for "+name+" was denied.",
+		"차단됨: "+name+"의 네트워크 접근이 거부되었습니다.")
 }
 
 func documentPathConfirmedBySession(session *Session, targetPath string) bool {

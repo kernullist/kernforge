@@ -2514,16 +2514,16 @@ func (w Workspace) EnsureNetworkWithContext(ctx context.Context, target string) 
 			return nil
 		}
 		if strings.TrimSpace(message) != "" {
-			return fmt.Errorf("network permission denied: %s", message)
+			return fmt.Errorf("%w: %s", ErrNetworkDenied, message)
 		}
-		return fmt.Errorf("network permission denied")
+		return ErrNetworkDenied
 	}
 	ok, err := w.Perms.Allow(ActionNetwork, target)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrNetworkDenied, err)
 	}
 	if !ok {
-		return fmt.Errorf("network permission denied")
+		return fmt.Errorf("%w: user denied network access for %s", ErrNetworkDenied, target)
 	}
 	return nil
 }
