@@ -150,8 +150,12 @@ func reviewProviderBehavior(provider string) ReviewProviderBehavior {
 		behavior.PatchFormatRisk = "high"
 		behavior.UnavailableCapabilityNotes = []string{"Local or OpenAI-compatible providers may not reliably preserve structured review fields."}
 	case "openrouter", "opencode", "opencode-go":
-		behavior.MaxReviewTokens = 5000
-		behavior.RetryReviewTokens = 3000
+		// These routers commonly serve reasoning models (GLM, R1, ...) whose hidden
+		// reasoning tokens count against max_tokens. 5000 truncated the structured
+		// review output mid-stream, which the gate then mislabeled as a "weak model",
+		// so give review enough room to finish on a reasoning model.
+		behavior.MaxReviewTokens = 12000
+		behavior.RetryReviewTokens = 6000
 		behavior.SchemaStrictness = "standard"
 		behavior.ToolCallRecoveryPolicy = "bounded_retry"
 		behavior.PatchFormatRisk = "medium"

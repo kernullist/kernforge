@@ -222,15 +222,25 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	}
 	rt := a.reviewHarnessRuntime(root)
 	reviewerGatePolicy := ""
-	if preWriteMainOnlyReviewerFallbackApproved(a.Session) {
-		if a.Workspace.PreviewEdit != nil {
-			reviewerGatePolicy = reviewReviewerGatePolicyMainOnlyFallback
-			if a.EmitProgress != nil {
+	crossReviewerConfigured := a.reviewerClientDiffersFromMain(a.ReviewerClient, a.ReviewerModel)
+	fallbackApproved := preWriteMainOnlyReviewerFallbackApproved(a.Session)
+	// Single-model review (no independent cross reviewer) is the main model
+	// reviewing its own proposed edit: it cannot corroborate, and a reasoning
+	// model's output can be judged "weak" merely for being truncated, so
+	// hard-blocking on it deadlocks the write. When there is no cross reviewer (or
+	// the user explicitly approved the fallback), run the self-review as advisory
+	// and let the diff preview be the gate. A configured cross reviewer still blocks.
+	if preWriteUsesMainOnlyReviewerFallback(a.Session, crossReviewerConfigured, a.Workspace.PreviewEdit != nil) {
+		reviewerGatePolicy = reviewReviewerGatePolicyMainOnlyFallback
+		if a.EmitProgress != nil {
+			if crossReviewerConfigured {
 				a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "User approved main-model-only pre-write fallback. Cross-reviewer failure will be recorded, but it will not block this edit before diff preview.", "사용자가 메인 모델 기준 쓰기 전 리뷰 fallback을 승인했습니다. cross reviewer 실패는 기록하지만 이번 편집의 diff preview 진입을 막지는 않습니다."))
+			} else {
+				a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Single-model review (no cross reviewer): the main model's self-review runs as advisory and will not hard-block. Check the diff preview before approving, or set an independent reviewer with /model cross-review for a blocking gate.", "단일 모델 리뷰(크로스 리뷰어 없음): 메인 모델의 self-review는 권고용으로만 동작하며 강제 차단하지 않습니다. 승인 전에 diff preview를 확인하거나, 차단형 게이트가 필요하면 /model cross-review로 독립 리뷰어를 설정하세요."))
 			}
-		} else if a.EmitProgress != nil {
-			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Main-model-only fallback was requested, but no diff preview confirmation is available, so the reviewer gate remains a hard stop.", "메인 모델 기준 fallback이 요청되었지만 diff preview 확인을 사용할 수 없어 reviewer gate를 계속 hard stop으로 유지합니다."))
 		}
+	} else if fallbackApproved && a.Workspace.PreviewEdit == nil && a.EmitProgress != nil {
+		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Main-model-only fallback was requested, but no diff preview confirmation is available, so the reviewer gate remains a hard stop.", "메인 모델 기준 fallback이 요청되었지만 diff preview 확인을 사용할 수 없어 reviewer gate를 계속 hard stop으로 유지합니다."))
 	}
 	run, err := runReviewHarness(ctx, rt, ReviewHarnessOptions{
 		Trigger:            "pre_write",
@@ -883,6 +893,19 @@ func looksLikePreWriteInternalContextMessage(text string) bool {
 		strings.HasPrefix(lower, "recovered transcript note:") ||
 		strings.HasPrefix(lower, "your last reply was empty") ||
 		strings.HasPrefix(lower, "do not repeat the same tool call; continue from local context")
+}
+
+// preWriteUsesMainOnlyReviewerFallback decides whether a pre-write review runs the
+// main model's self-review as advisory (main_only_fallback) instead of a hard
+// reviewer gate. It engages when a diff preview is available AND either the user
+// explicitly approved the fallback or there is no independent cross reviewer
+// configured (single-model review). Without a diff preview there is no place for
+// the user to vet the change, so the hard gate stays.
+func preWriteUsesMainOnlyReviewerFallback(session *Session, crossReviewerConfigured bool, hasDiffPreview bool) bool {
+	if !hasDiffPreview {
+		return false
+	}
+	return preWriteMainOnlyReviewerFallbackApproved(session) || !crossReviewerConfigured
 }
 
 func preWriteMainOnlyReviewerFallbackApproved(session *Session) bool {
