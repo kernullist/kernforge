@@ -2201,6 +2201,12 @@ func preserveExistingConfigAtPath(cfg *Config, opts saveUserConfigOptions, path 
 		preserveExistingReviewRoleModels(cfg, existing)
 	}
 	cfg.Desktop = mergeOpaqueConfigMaps(existing.Desktop, cfg.Desktop)
+	// MCP servers are owned exclusively by the dedicated mcp_servers writer
+	// (/mcp add|remove|enable|disable via saveConfigFileMCPServers). A full-config
+	// save must never rewrite them from the in-memory Config, which holds servers
+	// merged across layers (workspace, defaults) and would otherwise leak those
+	// into this file or drop entries this file owns.
+	cfg.MCPServers = existing.MCPServers
 }
 
 func preserveExistingReviewRoleModels(cfg *Config, existing Config) {
@@ -3254,10 +3260,10 @@ func ensureSupportedUserConfigDefaults() error {
 			return nil
 		}
 		cfg.MCPServers = updatedServers
-		return SaveUserConfig(cfg)
+		return saveConfigFileMCPServers(userConfigPath(), cfg.MCPServers)
 	}
 	cfg.MCPServers = append(cfg.MCPServers, defaultUserWebResearchMCPServer())
-	return SaveUserConfig(cfg)
+	return saveConfigFileMCPServers(userConfigPath(), cfg.MCPServers)
 }
 
 func loadRawConfigFile(path string) (Config, error) {
@@ -3355,6 +3361,10 @@ func shouldUseDeployedUserWebResearchPath(args []string) bool {
 }
 
 func mergeMCPServerOverrides(base []MCPServerConfig, overlay []MCPServerConfig) []MCPServerConfig {
+	// Only the overlay (higher-trust) layer contributes servers; a base (e.g.
+	// untrusted workspace) layer never injects its own. This is a trust boundary,
+	// not a bug -- see TestLoadConfig... which requires a workspace mcp_servers
+	// override to be ignored in favor of the user layer.
 	merged := make([]MCPServerConfig, 0, len(overlay))
 	for _, server := range overlay {
 		inherited := server
