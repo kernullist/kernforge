@@ -3477,13 +3477,22 @@ func (rt *runtimeState) rememberShellPatternApproval(question string) (bool, err
 	if rt.perms == nil {
 		return false, nil
 	}
-	action, _ := shellApprovalActionAndCommand(question)
+	action, command := shellApprovalActionAndCommand(question)
+	suggested := shellCommandArityPattern(command)
 	prompt := localizedText(rt.cfg, "Enter a regex pattern to allow for this session", "이번 세션에서 허용할 정규식 패턴을 입력하세요")
+	if suggested != "" {
+		prompt += localizedText(rt.cfg, fmt.Sprintf(" (Enter to accept %s)", suggested), fmt.Sprintf(" (Enter 시 %s 사용)", suggested))
+	}
 	pattern, err := rt.promptValueAllowEmpty(prompt, "")
 	if err != nil {
 		return false, nil
 	}
 	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		// Empty input accepts the arity-derived suggestion (the point of [p]);
+		// with no suggestion there is nothing to register, so cancel.
+		pattern = suggested
+	}
 	if pattern == "" {
 		return false, nil
 	}
@@ -3491,6 +3500,53 @@ func (rt *runtimeState) rememberShellPatternApproval(question string) (bool, err
 		return false, rerr
 	}
 	return true, nil
+}
+
+// shellCommandArity maps a command to how many leading tokens identify its
+// "family" for a session-allow pattern. Mirrors OpenCode's arity table so "always
+// allow git commit" grants `git commit *`, not the exact string. Unlisted commands
+// default to 1 (the bare command name).
+var shellCommandArity = map[string]int{
+	"git": 2, "go": 2, "npm": 2, "pnpm": 2, "yarn": 2, "bun": 2,
+	"cargo": 2, "docker": 2, "kubectl": 2, "dotnet": 2, "pip": 2,
+	"apt": 2, "apt-get": 2, "brew": 2, "gh": 2,
+}
+
+// shellCommandArityPattern derives a session-allow regex scoped to a command's
+// family, e.g. "git commit -m x" -> `^git\s+commit\b`, "npm run build" ->
+// `^npm\s+run\s+build\b`. Returns "" for an empty command.
+func shellCommandArityPattern(command string) string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return ""
+	}
+	n := 1
+	if a, ok := shellCommandArity[strings.ToLower(fields[0])]; ok {
+		n = a
+	}
+	// Two-word subcommands ("npm run <script>", "docker compose <cmd>") take one
+	// more token so the family stays meaningful.
+	if n == 2 && len(fields) >= 2 && shellCommandHasTwoWordSubcommand(fields[0], fields[1]) {
+		n = 3
+	}
+	if n > len(fields) {
+		n = len(fields)
+	}
+	parts := make([]string, n)
+	for i := 0; i < n; i++ {
+		parts[i] = regexp.QuoteMeta(fields[i])
+	}
+	return "^" + strings.Join(parts, `\s+`) + `\b`
+}
+
+func shellCommandHasTwoWordSubcommand(cmd, sub string) bool {
+	switch strings.ToLower(cmd) {
+	case "npm", "pnpm", "yarn", "bun":
+		return strings.EqualFold(sub, "run")
+	case "docker":
+		return strings.EqualFold(sub, "compose")
+	}
+	return false
 }
 
 func sessionApprovalStateLabel(enabled bool, mode string) string {
