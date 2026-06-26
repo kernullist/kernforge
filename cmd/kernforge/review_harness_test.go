@@ -12220,13 +12220,19 @@ func TestPrintReviewRunApprovedWithWarningsShowsWarningFindings(t *testing.T) {
 		"경고:",
 		"[RF-001] medium: 상태 복구 경로가 불명확함",
 		"근거: 실패 분기에서 복구 상태가 기록되지 않습니다.",
-		"영향: 호출자가 성공/실패 상태를 잘못 판단할 수 있습니다.",
 		"권장 조치: 실패 시 상태를 명시적으로 복구하세요.",
-		"테스트: 복구 경로 회귀 테스트",
 		"[RF-002] high: 동시 실행 경계가 검증되지 않음",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected review output to contain %q, got %q", needle, rendered)
+		}
+	}
+	// Compact mode keeps the essentials (title / evidence / fix) and moves impact
+	// and test recommendation to the report artifact, so they are not in the inline
+	// finding.
+	for _, absent := range []string{"영향:", "테스트:"} {
+		if strings.Contains(rendered, absent) {
+			t.Fatalf("compact review output should omit %q (it belongs in the report), got %q", absent, rendered)
 		}
 	}
 }

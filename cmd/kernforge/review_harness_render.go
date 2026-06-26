@@ -1055,16 +1055,31 @@ func renderReviewCLITriageResidualRisk(cfg Config, run ReviewRun) string {
 
 func renderReviewCLIFinding(b *strings.Builder, cfg Config, run ReviewRun, finding ReviewFinding, fixLabel string) {
 	fmt.Fprintf(b, "\n[%s] %s: %s\n", finding.ID, finding.Severity, finding.Title)
-	if strings.TrimSpace(finding.Evidence) != "" && !strings.EqualFold(strings.TrimSpace(finding.Evidence), strings.TrimSpace(finding.Title)) {
-		fmt.Fprintf(b, "%s: %s\n", reviewRunLocalizedText(cfg, run, "Evidence", "근거"), finding.Evidence)
+	// In compact mode (any progress display other than the verbose "stream") a
+	// finding shows only the actionable essentials -- a trimmed Evidence (why) and
+	// the Fix (how), indented under the title -- and omits Impact/Test, which stay
+	// in the full report artifact (its path is printed below). The stream display
+	// keeps the complete finding.
+	compact := configProgressDisplay(cfg) != "stream"
+	evidence := strings.TrimSpace(finding.Evidence)
+	if evidence != "" && !strings.EqualFold(evidence, strings.TrimSpace(finding.Title)) {
+		if compact {
+			fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Evidence", "근거"), compactPromptSection(evidence, 160))
+		} else {
+			fmt.Fprintf(b, "%s: %s\n", reviewRunLocalizedText(cfg, run, "Evidence", "근거"), evidence)
+		}
 	}
-	if strings.TrimSpace(finding.Impact) != "" {
+	if !compact && strings.TrimSpace(finding.Impact) != "" {
 		fmt.Fprintf(b, "%s: %s\n", reviewRunLocalizedText(cfg, run, "Impact", "영향"), finding.Impact)
 	}
-	if strings.TrimSpace(finding.RequiredFix) != "" {
-		fmt.Fprintf(b, "%s: %s\n", fixLabel, finding.RequiredFix)
+	if fix := strings.TrimSpace(finding.RequiredFix); fix != "" {
+		if compact {
+			fmt.Fprintf(b, "  %s: %s\n", fixLabel, compactPromptSection(fix, 200))
+		} else {
+			fmt.Fprintf(b, "%s: %s\n", fixLabel, fix)
+		}
 	}
-	if strings.TrimSpace(finding.TestRecommendation) != "" {
+	if !compact && strings.TrimSpace(finding.TestRecommendation) != "" {
 		fmt.Fprintf(b, "%s: %s\n", reviewRunLocalizedText(cfg, run, "Test", "테스트"), finding.TestRecommendation)
 	}
 }
