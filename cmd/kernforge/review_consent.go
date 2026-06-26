@@ -341,13 +341,13 @@ func (rt *runtimeState) printModelReviewConsentContext(req ModelReviewConsentReq
 		return
 	}
 	lines := []string{rt.ui.statusKV("model_review_trigger", strings.TrimSpace(trigger))}
-	if context := formatModelReviewConsentOriginalProposal(rt.cfg, req); context != "" {
+	if context := formatModelReviewConsentOriginalProposal(rt.ui, rt.cfg, req); context != "" {
 		lines = append(lines, strings.Split(context, "\n")...)
 	}
 	rt.printPersistentWhileThinking(lines...)
 }
 
-func formatModelReviewConsentOriginalProposal(cfg Config, req ModelReviewConsentRequest) string {
+func formatModelReviewConsentOriginalProposal(ui UI, cfg Config, req ModelReviewConsentRequest) string {
 	ref := strings.TrimSpace(req.OriginalMainProposalRef)
 	proposal := strings.TrimSpace(req.OriginalMainProposal)
 	if ref == "" && proposal == "" {
@@ -368,7 +368,7 @@ func formatModelReviewConsentOriginalProposal(cfg Config, req ModelReviewConsent
 					continue
 				}
 				b.WriteString("\n  ")
-				b.WriteString(line)
+				b.WriteString(ui.paintDiffLine(line))
 			}
 		}
 	}

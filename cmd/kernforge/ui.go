@@ -84,6 +84,37 @@ func (ui UI) mint(text string) string          { return ui.paint("38;5;121", tex
 func (ui UI) assistantCode(text string) string { return ui.paint("38;5;153", text) }
 func (ui UI) assistantRail(text string) string { return ui.paint("38;5;79", text) }
 
+// paintDiffPreview colorizes a buildEditPreview/unified-diff block for the
+// terminal: added lines green, removed lines red, file/preview headers dimmed,
+// hunk headers accented. No-op when color is disabled. The web diff preview
+// already colorizes; this brings the terminal fallback and the review "Proposed
+// diff" up to parity.
+func (ui UI) paintDiffPreview(preview string) string {
+	if !ui.color || preview == "" {
+		return preview
+	}
+	lines := strings.Split(preview, "\n")
+	for i, line := range lines {
+		lines[i] = ui.paintDiffLine(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (ui UI) paintDiffLine(line string) string {
+	switch {
+	case strings.HasPrefix(line, "Preview for "), strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
+		return ui.dim(line)
+	case strings.HasPrefix(line, "@@"):
+		return ui.accent(line)
+	case strings.HasPrefix(line, "+"):
+		return ui.success(line)
+	case strings.HasPrefix(line, "-"):
+		return ui.error(line)
+	default:
+		return line
+	}
+}
+
 // paintSyntax is the paint variant handed to the syntax highlighter and the
 // inline-markdown layer. It mirrors ui.paint exactly (respecting no-color mode
 // and emitting only ansiPattern-strippable SGR sequences) but matches the

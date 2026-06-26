@@ -1081,7 +1081,7 @@ func (rt *runtimeState) openEditPreview(preview EditPreview) (bool, error) {
 	if strings.TrimSpace(preview.Title) != "" {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine(preview.Title))
 	}
-	fmt.Fprintln(rt.writer, preview.Preview)
+	fmt.Fprintln(rt.writer, rt.ui.paintDiffPreview(preview.Preview))
 	return true, nil
 }
 
