@@ -42,3 +42,14 @@ func TestCountUnifiedDiffLines(t *testing.T) {
 		t.Fatalf("expected +2 -1 (headers ignored), got +%d -%d", added, removed)
 	}
 }
+
+// Content lines whose own text starts with "++"/"--" arrive as "+++.."/"---.."
+// after the single +/- gutter (e.g. C++ "++i", a CLI "--flag", a SQL "-- note").
+// They must be counted, not mistaken for the "+++ "/"--- " file headers.
+func TestCountUnifiedDiffLinesContentStartingWithDoubleSign(t *testing.T) {
+	diff := "diff --git a/x.c b/x.c\n--- a/x.c\n+++ b/x.c\n@@ -1,2 +1,2 @@\n ctx\n+++i\n---flag\n"
+	added, removed := countUnifiedDiffLines(diff)
+	if added != 1 || removed != 1 {
+		t.Fatalf("content lines starting with ++/-- must count: expected +1 -1, got +%d -%d", added, removed)
+	}
+}

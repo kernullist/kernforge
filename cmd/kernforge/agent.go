@@ -2750,10 +2750,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.noteToolConversationFailureResult(call, result, err, blockedToolResult)
 			}
 			toolMsg := Message{
-				Role:             "tool",
-				ToolCallID:       call.ID,
-				ToolName:         call.Name,
-				Text:             toolExecutionModelText(result),
+				Role:       "tool",
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				// Bound a successful tool's model text here; the error branches below
+				// bound their own combined text, but on success toolMsg.Text is
+				// committed once and never re-bounded, so an unbounded success dump
+				// would otherwise flood the model context.
+				Text:             a.toolMessageModelText(result, err),
 				ToolContentItems: toolExecutionModelContentItems(result),
 				ToolMeta:         result.Meta,
 			}
@@ -7693,11 +7697,16 @@ func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 }
 
 // countUnifiedDiffLines counts added/removed content lines in a unified diff,
-// ignoring the +++/--- file headers.
+// ignoring the "+++ "/"--- " file headers. The header prefixes are matched WITH
+// their trailing space (as buildUnifiedDiff always emits them, and as
+// summarizeProposedEditDiff matches them): content lines carry a single +/-
+// gutter, so an added "++i" arrives as "+++i" and a removed "--flag" as
+// "---flag". Matching "+++"/"---" without the space would misread those common
+// lines as headers and undercount the change.
 func countUnifiedDiffLines(diff string) (added, removed int) {
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
-		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- "):
 			continue
 		case strings.HasPrefix(line, "+"):
 			added++
@@ -9575,10 +9584,12 @@ func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCa
 			a.noteToolConversationFailureResult(call, result, err, false)
 		}
 		toolMsg := Message{
-			Role:             "tool",
-			ToolCallID:       call.ID,
-			ToolName:         call.Name,
-			Text:             toolExecutionModelText(result),
+			Role:       "tool",
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			// Bound the success text here too (the error branch below bounds the
+			// combined error text); an unbounded success dump would flood context.
+			Text:             a.toolMessageModelText(result, err),
 			ToolContentItems: toolExecutionModelContentItems(result),
 			ToolMeta:         result.Meta,
 			IsError:          err != nil,

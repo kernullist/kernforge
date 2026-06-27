@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -31,6 +32,29 @@ func TestBoundToolModelText(t *testing.T) {
 	}
 	if !strings.Contains(got, "full output is saved at") || !strings.Contains(got, "tool-output-spills") {
 		t.Fatalf("oversized output must reference the spill file")
+	}
+}
+
+// toolMessageModelText must bound a successful tool's oversized output (so a
+// runaway success dump cannot flood the model context) while leaving error-path
+// text unbounded -- the tool loop's error branches append the error and bound
+// the combined text themselves, and bounding here too would spill twice.
+func TestToolMessageModelTextBoundsSuccessNotError(t *testing.T) {
+	a := &Agent{Config: Config{SessionDir: t.TempDir()}, Session: NewSession(t.TempDir(), "p", "m", "", "plan")}
+	big := strings.Repeat("line\n", toolOutputModelMaxLines+500)
+
+	success := a.toolMessageModelText(ToolExecutionResult{ModelText: big}, nil)
+	if !strings.Contains(success, "lines omitted") || !strings.Contains(success, "full output is saved at") {
+		t.Fatalf("successful oversized output must be bounded (preview + spill), got %d bytes", len(success))
+	}
+
+	failure := a.toolMessageModelText(ToolExecutionResult{ModelText: big}, errors.New("boom"))
+	if strings.Contains(failure, "lines omitted") {
+		t.Fatalf("error-path text must be left unbounded here for the error branch to bound the combined text")
+	}
+
+	if got := a.toolMessageModelText(ToolExecutionResult{ModelText: "ok"}, nil); got != "ok" {
+		t.Fatalf("small success output must pass through unchanged, got %q", got)
 	}
 }
 

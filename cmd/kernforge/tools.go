@@ -1222,6 +1222,20 @@ func toolExecutionModelTextWithError(result ToolExecutionResult, err error) stri
 	return text + "\n\nERROR: " + err.Error()
 }
 
+// toolMessageModelText returns the model-visible text to store on a tool result
+// message, bounding a SUCCESSFUL tool's output so a runaway dump (a huge
+// run_shell result, an unbounded custom/MCP tool) cannot flood the model
+// context. Error text is returned unbounded here on purpose: the tool loop's
+// error branches append the error string and bound the combined text
+// themselves via boundToolModelText, so bounding here too would spill twice.
+func (a *Agent) toolMessageModelText(result ToolExecutionResult, err error) string {
+	text := toolExecutionModelText(result)
+	if err != nil {
+		return text
+	}
+	return a.boundToolModelText(text, result.Meta)
+}
+
 const (
 	// toolOutputModelMaxLines / toolOutputModelMaxBytes bound the model-visible text
 	// of ANY tool call. The budget is generous so normal read_file (line-limited)
