@@ -43,6 +43,27 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 			RequiredFix:  "Provide a review target, changed files, diff, code excerpt, selection, or plan text.",
 			BlocksGate:   true,
 		})
+	} else if reviewRequestWantsSourceChange(run) &&
+		!reviewRunLooksReadOnlyAnalysis(run) &&
+		!reviewEvidenceHasExecutableSource(run.Evidence) {
+		// The request asks to change code, but no executable source file reached
+		// the evidence pack (only docs, plans, or non-source diffs). Model
+		// findings would judge code they never saw, so surface a prominent
+		// warning (never a blocker) instead of leaving the model to emit its own
+		// evidence_gap findings that then trap a repair loop.
+		findings = append(findings, ReviewFinding{
+			Source:       "deterministic",
+			ReviewerRole: "evidence_reviewer",
+			Severity:     reviewSeverityHigh,
+			Category:     "evidence_gap",
+			Confidence:   "high",
+			Quality:      reviewFindingQualityComplete,
+			Title:        "Code-change request reviewed without source-code evidence",
+			Evidence:     "The request asks to modify code, but the collected evidence contains no executable source file (only documents, plans, or non-source diffs).",
+			Impact:       "Model findings would judge the code without seeing it, so they cannot be treated as complete and must not block the repair.",
+			RequiredFix:  "Rerun the review with the source files in scope (add explicit paths, or let scope discovery expand from the referenced project).",
+			BlocksGate:   false,
+		})
 	}
 	if preWrite {
 		// Pre-write review gates the proposed diff before it is applied. Runtime
@@ -3169,6 +3190,21 @@ func reviewChangeSetContainsExecutableSource(paths []string) bool {
 		}
 	}
 	return false
+}
+
+// reviewEvidenceHasExecutableSource reports whether the evidence pack collected
+// at least one executable source file (as opposed to only documents, plans, or
+// non-source diffs).
+func reviewEvidenceHasExecutableSource(evidence ReviewEvidencePack) bool {
+	return reviewChangeSetContainsExecutableSource(evidence.ChangedPaths)
+}
+
+// reviewRequestWantsSourceChange reports whether the run's request asks to
+// modify source code (used to flag a code-change review that collected no
+// source evidence).
+func reviewRequestWantsSourceChange(run ReviewRun) bool {
+	request := strings.ToLower(firstNonBlankString(run.Objective, run.RequestAnalysis.OriginalRequest))
+	return requestHasSourceModificationIntent(request, run.ChangeSet.ChangedPaths)
 }
 
 // reviewModelFindingTargetsDocAgainstCodeChange reports whether a model finding

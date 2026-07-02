@@ -229,8 +229,110 @@ func reviewScopeCandidateFiles(root string, request string, paths []string) []st
 			}
 		}
 	}
+	// "Read the design doc and fix the code" collapses scope to the document
+	// itself: the only candidate is the .md, and nothing follows the doc's
+	// references into source. When the request wants source changes but every
+	// candidate is a document artifact, mine the docs for identifiers and pull
+	// the referenced source files into scope so the reviewer sees the code.
+	if len(out) > 0 && reviewScopeAllDocumentArtifacts(out) &&
+		requestHasSourceModificationIntent(strings.ToLower(request), paths) {
+		for _, extra := range reviewScopeExpandFromDocumentReferences(root, out) {
+			add(extra)
+			if len(out) >= 64 {
+				break
+			}
+		}
+	}
 	sort.Strings(out)
 	return limitStrings(out, 64)
+}
+
+func reviewScopeAllDocumentArtifacts(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, p := range paths {
+		if !reviewPathIsDocumentArtifact(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// reviewScopeExpandFromDocumentReferences reads the given document artifacts,
+// mines identifier-like references (dotted names such as RegGit.Core, source
+// file names, path-like tokens), and resolves them to executable source files
+// in the workspace. It is bounded in both bytes read and terms used, and only
+// returns executable-source candidates so it never re-adds documents.
+func reviewScopeExpandFromDocumentReferences(root string, docPaths []string) []string {
+	terms := reviewScopeMineDocumentReferenceTerms(root, docPaths)
+	if len(terms) == 0 {
+		return nil
+	}
+	query := strings.Join(terms, " ")
+	var out []string
+	seen := map[string]bool{}
+	for _, path := range reviewScopeWorkspaceSearchCandidateFiles(root, query) {
+		if !reviewPathIsExecutableSource(path) {
+			continue
+		}
+		key := strings.ToLower(filepath.ToSlash(path))
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, path)
+		if len(out) >= reviewScopeWorkspaceSearchResultLimit {
+			break
+		}
+	}
+	return out
+}
+
+var reviewDocReferenceTokenPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*(?:[.\\/][A-Za-z0-9_]+)+`)
+
+// reviewScopeMineDocumentReferenceTerms extracts up to a bounded number of
+// identifier/path reference terms from the document artifacts, reading at most
+// a bounded prefix of each file.
+func reviewScopeMineDocumentReferenceTerms(root string, docPaths []string) []string {
+	const maxBytesPerDoc = 64 * 1024
+	const maxTerms = 40
+	seen := map[string]bool{}
+	var terms []string
+	for _, doc := range docPaths {
+		resolved := doc
+		if !filepath.IsAbs(resolved) {
+			resolved = filepath.Join(root, doc)
+		}
+		data, err := os.ReadFile(resolved)
+		if err != nil {
+			continue
+		}
+		if len(data) > maxBytesPerDoc {
+			data = data[:maxBytesPerDoc]
+		}
+		for _, match := range reviewDocReferenceTokenPattern.FindAllString(string(data), -1) {
+			// Reduce a dotted/path reference to its leaf and its head so both the
+			// project name (RegGit) and the type/file (Core, DatabaseService) become
+			// search terms.
+			for _, part := range regexp.MustCompile(`[.\\/]`).Split(match, -1) {
+				part = strings.TrimSpace(part)
+				if len(part) < 4 {
+					continue
+				}
+				key := strings.ToLower(part)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				terms = append(terms, part)
+				if len(terms) >= maxTerms {
+					return terms
+				}
+			}
+		}
+	}
+	return terms
 }
 
 type reviewScopeWorkspaceCandidate struct {
