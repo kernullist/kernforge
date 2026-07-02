@@ -78,6 +78,13 @@ type Session struct {
 	// cross route and falls back to the single-model review path so the gate can
 	// still reach a real verdict instead of blocking forever on RF-REVIEWER-001.
 	CrossReviewerConsecutiveFailures int `json:"cross_reviewer_consecutive_failures,omitempty"`
+	// PostChangeRepeatBlockerSignature and PostChangeRepeatBlockerCount track how
+	// many consecutive automatic post-change repair rounds produced the identical
+	// set of blocking findings. When the same set recurs, the loop is not making
+	// progress (the blockers are unsatisfiable by the model), so it escalates to
+	// the operator instead of burning more repair rounds.
+	PostChangeRepeatBlockerSignature string `json:"post_change_repeat_blocker_signature,omitempty"`
+	PostChangeRepeatBlockerCount     int    `json:"post_change_repeat_blocker_count,omitempty"`
 	// SecondOpinionSameModelWarned records that the model-callable
 	// review_second_opinion tool already emitted its once-per-session warning that
 	// a second opinion reused the working model and is therefore NOT independent

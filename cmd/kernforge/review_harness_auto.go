@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -1094,6 +1095,69 @@ func preWritePreFixWarningIsConcreteRepairObligation(finding ReviewFinding) bool
 		preWritePreFixFindingIsConcreteRepairObligation(finding)
 }
 
+// postChangeBlockerSignature builds a stable signature of the current review's
+// blocking findings from their identities (category + path + symbol + title),
+// independent of the change fingerprint, so a model that keeps editing without
+// resolving the same blockers is detected as not making progress.
+func (a *Agent) postChangeBlockerSignature() string {
+	if a == nil || a.Session == nil || a.Session.LastReviewRun == nil {
+		return ""
+	}
+	run := a.Session.LastReviewRun
+	blocking := reviewFindingIDSet(run.Gate.BlockingFindings)
+	if len(blocking) == 0 {
+		return ""
+	}
+	var keys []string
+	for _, f := range run.Findings {
+		if !blocking[f.ID] {
+			continue
+		}
+		keys = append(keys, strings.ToLower(strings.TrimSpace(f.Category))+"|"+
+			strings.ToLower(strings.TrimSpace(f.Path))+"|"+
+			strings.ToLower(strings.TrimSpace(f.Symbol))+"|"+
+			strings.ToLower(strings.TrimSpace(f.Title)))
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "\n")
+}
+
+// postChangeBlockerSetRepeatedPastThreshold updates the consecutive-repeat
+// tracker with the current blocker signature and reports whether the identical
+// set has now recurred for RepeatedFindingBlockThreshold rounds.
+func (a *Agent) postChangeBlockerSetRepeatedPastThreshold() bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	sig := a.postChangeBlockerSignature()
+	if sig == "" {
+		a.resetPostChangeRepeatBlockerTracker()
+		return false
+	}
+	if a.Session.PostChangeRepeatBlockerSignature == sig {
+		a.Session.PostChangeRepeatBlockerCount++
+	} else {
+		a.Session.PostChangeRepeatBlockerSignature = sig
+		a.Session.PostChangeRepeatBlockerCount = 1
+	}
+	threshold := configReviewHarness(a.Config).RepeatedFindingBlockThreshold
+	if threshold <= 0 {
+		threshold = 2
+	}
+	return a.Session.PostChangeRepeatBlockerCount >= threshold
+}
+
+func (a *Agent) resetPostChangeRepeatBlockerTracker() {
+	if a == nil || a.Session == nil {
+		return
+	}
+	a.Session.PostChangeRepeatBlockerSignature = ""
+	a.Session.PostChangeRepeatBlockerCount = 0
+}
+
 func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request string, finalReply string, lastFingerprint *string, revisionCount *int, exhaustedNudge *bool) (bool, error) {
 	if a == nil || a.Session == nil || lastFingerprint == nil || revisionCount == nil || exhaustedNudge == nil {
 		return false, nil
@@ -1139,6 +1203,31 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 		} else {
 			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review completed.", "자동 변경 후 리뷰가 완료되었습니다."))
 		}
+	}
+	if !needsRevision {
+		// A clean (or approved-with-warnings) round means progress; reset the
+		// repeated-blocker tracker so a later unrelated blocker gets its full
+		// repair budget.
+		a.resetPostChangeRepeatBlockerTracker()
+	} else if a.postChangeBlockerSetRepeatedPastThreshold() {
+		// The identical set of blockers has recurred for RepeatedFindingBlockThreshold
+		// consecutive rounds: the model is not converging (the blockers are
+		// unsatisfiable, e.g. design-doc demands or out-of-scope requests), so stop
+		// looping and escalate to the operator rather than consuming more rounds.
+		if !*exhaustedNudge {
+			*exhaustedNudge = true
+			escalation := localizedTextForReviewRequest(a.Config, request,
+				"Automatic post-change review returned the same blockers on repeated repair attempts without progress. This looks unsatisfiable by further automatic edits. Do not claim completion: report the final answer as blocked, cite these blockers, and ask the operator how to proceed (adjust scope, waive, or change the request).",
+				"자동 변경 후 리뷰가 반복 수정에도 동일한 차단 항목을 계속 반환했고 진전이 없습니다. 추가 자동 수정으로는 해결이 어려워 보입니다. 완료를 주장하지 말고 최종 답변을 차단 상태로 보고하며 이 차단 항목을 인용하고, 진행 방법(범위 조정, 예외 처리, 요청 변경)을 사용자에게 물어보세요.")
+			a.Session.AddMessage(internalUserMessage(reviewFeedback + "\n\n" + escalation))
+			if a.Store != nil {
+				if err := a.Store.Save(a.Session); err != nil {
+					return true, err
+				}
+			}
+			return true, nil
+		}
+		return false, nil
 	}
 	if needsRevision && *revisionCount < configReviewHarness(a.Config).AutoRepairMaxRounds {
 		*revisionCount++

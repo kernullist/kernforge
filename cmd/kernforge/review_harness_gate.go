@@ -1664,11 +1664,30 @@ func reviewHasOnlyEvidenceBlockers(findings []ReviewFinding, ids []string) bool 
 		if !idSet[finding.ID] {
 			continue
 		}
+		// A recorded verification FAILURE (a red test/build run) is a repair
+		// obligation, not missing evidence: it must route to needs_revision /
+		// repair_required, never to insufficient_evidence + user_decision.
+		if reviewFindingIsVerificationFailure(finding) {
+			return false
+		}
 		if !strings.EqualFold(finding.Category, "evidence_gap") && !strings.EqualFold(finding.Category, "test_gap") {
 			return false
 		}
 	}
 	return true
+}
+
+// reviewFindingIsVerificationFailure reports whether a finding is the
+// deterministic "latest verification has failures" blocker (an actual failing
+// run) rather than a missing/absent verification-evidence gap.
+func reviewFindingIsVerificationFailure(finding ReviewFinding) bool {
+	if !strings.EqualFold(strings.TrimSpace(finding.Source), "deterministic") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(finding.ReviewerRole), "verification_reviewer") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(finding.Title), "verification has failures")
 }
 
 func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
