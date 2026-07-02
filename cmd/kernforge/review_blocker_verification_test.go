@@ -189,6 +189,79 @@ func TestReviewApplyBlockerVerdict(t *testing.T) {
 // TestReviewApplyBlockerVerification covers the apply step over a candidate set:
 // a ran pass writes verdicts (an unaddressed candidate becomes unverified), while
 // an unavailable pass leaves every candidate untouched (conservative fail-closed).
+// Regression (A-5 safe variant): when the verifier response addressed only a
+// minority of the candidates (clipped output), the unaddressed candidates must
+// keep blocking (Verified stays empty) instead of being downgraded wholesale.
+func TestReviewApplyBlockerVerificationMinorityAddressedFailsClosed(t *testing.T) {
+	a := trustFloorSecurityFinding("medium")
+	a.ID = "RF-1"
+	b := trustFloorSecurityFinding("medium")
+	b.ID = "RF-2"
+	c := trustFloorSecurityFinding("medium")
+	c.ID = "RF-3"
+	run := &ReviewRun{
+		Trigger:   "pre_write",
+		ChangeSet: ReviewChangeSet{ChangedPaths: []string{"driver.c"}},
+		Findings:  []ReviewFinding{a, b, c},
+	}
+	rec := &ReviewBlockerVerification{}
+	reviewApplyBlockerVerification(run, []int{0, 1, 2}, blockerVerificationOutcome{
+		Status: reviewBlockerVerificationStatusRan,
+		Verdicts: map[string]string{
+			"RF-1": reviewFindingVerifiedRefuted,
+		},
+	}, rec)
+	if run.Findings[0].Verified != reviewFindingVerifiedRefuted {
+		t.Fatalf("RF-1 should be refuted, got %q", run.Findings[0].Verified)
+	}
+	if run.Findings[1].Verified != "" || run.Findings[2].Verified != "" {
+		t.Fatalf("unaddressed candidates in a minority-addressed response must fail closed, got %q / %q", run.Findings[1].Verified, run.Findings[2].Verified)
+	}
+}
+
+// Regression (independence vs authoring route): on an auto post_change run the
+// configured reviewer is promoted to primary and authors the findings, so the
+// verification pass must use the MAIN model as the independent route instead
+// of letting the authoring reviewer self-confirm under an independent label.
+func TestReviewBlockerVerificationRouteIndependentOfAuthor(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	agent := &Agent{
+		Config:         cfg,
+		Client:         &scriptedProviderClient{},
+		ReviewerClient: &scriptedProviderClient{},
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	promoted := ReviewRun{Trigger: "post_change", AutoTriggered: true}
+	client, model, _, route, err := reviewBlockerVerificationRoute(rt, promoted)
+	if err != nil {
+		t.Fatalf("route (promoted): %v", err)
+	}
+	if route != reviewBlockerVerificationRouteIndependentMain {
+		t.Fatalf("promoted run must verify via the main model, got route %q", route)
+	}
+	if client != agent.Client || model != "main-model" {
+		t.Fatalf("promoted run must verify with the main client/model, got model %q", model)
+	}
+
+	// A non-promoted run (pre_write) keeps the cross route as the independent
+	// verifier.
+	preWrite := ReviewRun{Trigger: "pre_write"}
+	_, _, _, route, err = reviewBlockerVerificationRoute(rt, preWrite)
+	if err != nil {
+		t.Fatalf("route (pre_write): %v", err)
+	}
+	if route != reviewBlockerVerificationRouteIndependent {
+		t.Fatalf("pre_write run should keep the cross route, got %q", route)
+	}
+}
+
 func TestReviewApplyBlockerVerification(t *testing.T) {
 	mkRun := func() *ReviewRun {
 		a := trustFloorSecurityFinding("medium")

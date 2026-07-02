@@ -20,7 +20,10 @@ const (
 	reviewBlockerVerificationStatusSkipped      = "skipped"
 	reviewBlockerVerificationPolicyConservative = "conservative_block"
 	reviewBlockerVerificationRouteIndependent   = "independent_cross"
-	reviewBlockerVerificationRouteSameModel     = "same_model"
+	// The main model verifying findings authored by a promoted reviewer-primary
+	// run: a genuinely independent route, distinct from independent_cross.
+	reviewBlockerVerificationRouteIndependentMain = "independent_main"
+	reviewBlockerVerificationRouteSameModel       = "same_model"
 )
 
 // ReviewBlockerVerification records the independent blocker-verification pass:
@@ -130,6 +133,21 @@ func reviewApplyBlockerVerification(run *ReviewRun, candidateIdx []int, outcome 
 	if run == nil || record == nil {
 		return
 	}
+	// A verifier response that addressed only a minority of the candidates
+	// (clipped or partially off-format output) is not a corroboration signal
+	// for the candidates it never mentioned: fail closed for those instead of
+	// silently downgrading them. When the verifier addressed a majority, an
+	// unmentioned candidate is treated as examined-but-uncorroborated.
+	addressed := 0
+	for _, i := range candidateIdx {
+		if i < 0 || i >= len(run.Findings) {
+			continue
+		}
+		if outcome.Verdicts[run.Findings[i].ID] != "" {
+			addressed++
+		}
+	}
+	unaddressedFailClosed := addressed*2 < len(candidateIdx)
 	for _, i := range candidateIdx {
 		if i < 0 || i >= len(run.Findings) {
 			continue
@@ -143,8 +161,13 @@ func reviewApplyBlockerVerification(run *ReviewRun, candidateIdx []int, outcome 
 		}
 		verdict := outcome.Verdicts[id]
 		if verdict == "" {
-			// The pass ran but did not address this candidate: treat as
-			// uncorroborated (warning), not as a confirmed blocker.
+			if unaddressedFailClosed {
+				// Majority of candidates went unanswered: leave Verified empty so
+				// this finding keeps blocking (conservative fail-closed).
+				continue
+			}
+			// The pass ran and addressed most candidates but not this one: treat
+			// as uncorroborated (warning), not as a confirmed blocker.
 			verdict = reviewFindingVerifiedUnverified
 		}
 		reviewApplyBlockerVerdict(&run.Findings[i], verdict)
@@ -412,12 +435,28 @@ func runReviewBlockerVerificationPass(ctx context.Context, rt *runtimeState, roo
 	run.BlockerVerification = record
 }
 
-// reviewBlockerVerificationRoute resolves the route for the verification call,
-// preferring a genuinely independent cross reviewer and falling back to the main
-// model (honestly labeled as a same-model pass).
+// reviewBlockerVerificationRoute resolves the route for the verification call.
+// Independence is judged against the route that AUTHORED the candidate
+// findings, not statically against the main model: on auto post_change runs
+// the configured reviewer is promoted to primary and authors every model
+// finding, so the cross route would re-check its own output at temperature 0
+// and self-confirm; the main model is the genuinely independent verifier
+// there. Same-model fallbacks are always labeled honestly.
 func reviewBlockerVerificationRoute(rt *runtimeState, run ReviewRun) (ProviderClient, string, string, string, error) {
 	mainClient, mainModel, mainLabel, mainErr := reviewMainRoleClient(rt)
 	crossClient, crossModel, crossLabel, _, _, hasCross := reviewCrossReviewerClient(rt, run, run.ModelPlan.RequiredRoles, mainClient, mainModel)
+	if reviewRunShouldUseConfiguredReviewerAsPrimary(rt, run, hasCross) &&
+		reviewRuntimeHasDistinctCrossReviewer(rt) {
+		if mainErr == nil && mainClient != nil && strings.TrimSpace(mainModel) != "" {
+			return mainClient, mainModel, strings.TrimSpace(mainLabel), reviewBlockerVerificationRouteIndependentMain, nil
+		}
+		if hasCross && !reviewCrossReviewerFallbackEngaged(rt) {
+			// No usable main route: the authoring reviewer re-checks its own
+			// blockers. That is a self-consistency pass, not independence.
+			return crossClient, crossModel, reviewBlockerVerificationModelLabel(crossLabel), reviewBlockerVerificationRouteSameModel, nil
+		}
+		return nil, "", strings.TrimSpace(mainLabel), reviewBlockerVerificationRouteSameModel, mainErr
+	}
 	if hasCross && !reviewCrossReviewerFallbackEngaged(rt) {
 		return crossClient, crossModel, crossLabel, reviewBlockerVerificationRouteIndependent, nil
 	}
