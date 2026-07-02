@@ -77,9 +77,8 @@ func TestImplicitModelReviewSingleModelRouteAutoSkips(t *testing.T) {
 }
 
 // The single-model auto-skip must not swallow the explicit opt-ins: the
-// "always" consent policy still runs the implicit self-review, a configured
-// independent cross route still prompts, and the analysis-reviewer trigger
-// (which has its own dedicated route) still reaches the prompt.
+// "always" consent policy still runs the implicit self-review, and a configured
+// independent cross route still prompts.
 func TestImplicitModelReviewSingleModelRouteRespectsOptIns(t *testing.T) {
 	base := DefaultConfig(t.TempDir())
 	base.Provider = "scripted"
@@ -106,15 +105,47 @@ func TestImplicitModelReviewSingleModelRouteRespectsOptIns(t *testing.T) {
 		t.Fatalf("expected the consent prompt with a cross route configured, got %q", out.String())
 	}
 
-	analysisCfg := base
-	analysisCfg.Review.ModelReviewConsent = modelReviewConsentAsk
-	rt, out = singleModelConsentTestRuntime(analysisCfg, "n\n")
-	decision = rt.confirmImplicitModelReview(ModelReviewConsentRequest{Trigger: "analysis reviewer"})
-	if decision.SkipReason == modelReviewSkipSingleModelRoute {
-		t.Fatalf("analysis reviewer trigger must not be single-model auto-skipped, got %#v", decision)
+	// With a distinct reviewer configured, the disclosure and analysis honesty
+	// checks still run (they are not single-model self-checks).
+	distinctCfg := base
+	distinctCfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	distinctCfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {Provider: "scripted", Model: "cross-model"},
 	}
-	if !strings.Contains(out.String(), modelReviewQuestionEnglish) {
-		t.Fatalf("expected the consent prompt for the analysis reviewer trigger, got %q", out.String())
+	for _, trigger := range []string{"analysis reviewer", "disclosure-claims final-answer"} {
+		rt, out = singleModelConsentTestRuntime(distinctCfg, "n\n")
+		decision = rt.confirmImplicitModelReview(ModelReviewConsentRequest{Trigger: trigger})
+		if decision.SkipReason == modelReviewSkipSingleModelRoute {
+			t.Fatalf("trigger %q must not single-model auto-skip when a distinct reviewer is configured, got %#v", trigger, decision)
+		}
+		if !strings.Contains(out.String(), modelReviewQuestionEnglish) {
+			t.Fatalf("expected the consent prompt for trigger %q with a distinct reviewer, got %q", trigger, out.String())
+		}
+	}
+}
+
+// Option A: on a genuine single-model route the disclosure-claims and
+// analysis-reviewer honesty checks are self-checks with no independent route,
+// so they must auto-skip exactly like code reviews instead of prompting. This
+// decouples the single-model skip from the budget-bypass predicate.
+func TestImplicitModelReviewSingleModelRouteSkipsDisclosureAndAnalysis(t *testing.T) {
+	base := DefaultConfig(t.TempDir())
+	base.Provider = "scripted"
+	base.Model = "main-model"
+	base.Review.ModelReviewConsent = modelReviewConsentAsk
+	for _, trigger := range []string{"disclosure-claims final-answer", "analysis reviewer"} {
+		rt, out := singleModelConsentTestRuntime(base, "y\n")
+		rt.alwaysApproveModelReview = true
+		decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{Trigger: trigger})
+		if decision.Allowed {
+			t.Fatalf("trigger %q must be single-model skipped, got %#v", trigger, decision)
+		}
+		if decision.SkipReason != modelReviewSkipSingleModelRoute || decision.ConsentSource != "single_model_route" {
+			t.Fatalf("trigger %q expected single-model route skip, got %#v", trigger, decision)
+		}
+		if strings.Contains(out.String(), modelReviewQuestionEnglish) {
+			t.Fatalf("trigger %q must not render the consent prompt on a single-model route, got %q", trigger, out.String())
+		}
 	}
 }
 
