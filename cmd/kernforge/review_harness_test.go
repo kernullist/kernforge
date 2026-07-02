@@ -4913,7 +4913,7 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 	rendered := formatPreWriteFinalReviewProgress(Config{AutoLocale: boolPtr(false)}, run, true)
 	for _, want := range []string{
 		"Automatic pre-write review completed.",
-		"Final review result: approved_with_warnings",
+		"Final review result: approved with warnings",
 		"Review content:",
 		"summary: final patch has only a verification warning",
 		"key findings:",
@@ -5269,10 +5269,10 @@ func TestPreWriteKoreanRequestSurvivesInternalEnglishFeedback(t *testing.T) {
 	progress := formatPreWriteFinalReviewProgress(Config{AutoLocale: boolPtr(false)}, run, true)
 	for _, want := range []string{
 		"자동 쓰기 전 리뷰가 완료되었습니다.",
-		"최종 검토 결과: approved_with_warnings",
+		"최종 검토 결과: 경고와 함께 승인",
 		"검토 내용:",
-		"주요 finding:",
-		"diff preview로 진행합니다.",
+		"주요 지적 사항:",
+		"변경 미리보기로 진행합니다.",
 		"보고서: C:/tmp/review.md",
 	} {
 		if !strings.Contains(progress, want) {
@@ -7555,7 +7555,7 @@ func TestPreWriteVisibleSummaryExplainsHarnessEvidenceGapPreviewAllowed(t *testi
 		}
 	}
 	progress := formatPreWriteFinalReviewProgress(Config{AutoLocale: boolPtr(true)}, run, true)
-	if !strings.Contains(progress, "코드 미해결 blocker가 아니라") {
+	if !strings.Contains(progress, "코드에 남은 문제가 아니라") {
 		t.Fatalf("expected progress to explain preview allowance, got:\n%s", progress)
 	}
 }

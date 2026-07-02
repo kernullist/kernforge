@@ -10451,7 +10451,7 @@ func TestReviewerGateUnavailableReadOnlyAnswerDoesNotOfferRepairContinuation(t *
 	if strings.Contains(reply, "[y=continue, n=stop]") || strings.Contains(reply, "Should I keep repairing") {
 		t.Fatalf("read-only answer request must not offer repair continuation, got %q", reply)
 	}
-	if !strings.Contains(reply, "읽기 전용 답변/분석 boundary") && !strings.Contains(reply, "read-only answer/analysis boundary") {
+	if !strings.Contains(reply, "읽기 전용(답변/분석)으로 분류") && !strings.Contains(reply, "read-only answer/analysis boundary") {
 		t.Fatalf("expected read-only boundary explanation, got %q", reply)
 	}
 	if strings.Contains(reply, "다시 수리한 뒤") || strings.Contains(reply, "repair from the latest review findings") {

@@ -82,7 +82,7 @@ func (ui UI) cloud(text string) string         { return ui.paint("38;5;255", tex
 func (ui UI) blush(text string) string         { return ui.paint("38;5;218", text) }
 func (ui UI) mint(text string) string          { return ui.paint("38;5;121", text) }
 func (ui UI) assistantCode(text string) string { return ui.paint("38;5;153", text) }
-func (ui UI) assistantRail(text string) string { return ui.paint("38;5;79", text) }
+func (ui UI) assistantRail(text string) string { return ui.paint("38;5;111", text) }
 
 // paintDiffPreview colorizes a buildEditPreview/unified-diff block for the
 // terminal: added lines green, removed lines red, file/preview headers dimmed,
@@ -449,19 +449,30 @@ func (ui UI) statusPill(label, value string, tone string) string {
 	if trimmedValue == "" {
 		trimmedValue = "unknown"
 	}
-	text := "[" + trimmedLabel + ":" + trimmedValue + "]"
+	if !ui.color {
+		return "[" + trimmedLabel + ":" + trimmedValue + "]"
+	}
+	// Keep the frame quiet (dim brackets + label) and let color live on the
+	// value only, so a row of pills reads as a calm table where the eye is
+	// drawn to real status (green ok, yellow warning, red problem) instead of a
+	// rainbow of equally bright labels. Neutral facts stay in the default
+	// foreground rather than a bright accent.
+	var coloredValue string
 	switch strings.ToLower(strings.TrimSpace(tone)) {
 	case "success", "ready", "ok", "pass":
-		return ui.success(text)
+		coloredValue = ui.success(trimmedValue)
 	case "warn", "warning", "needs_review", "skip":
-		return ui.warn(text)
+		coloredValue = ui.warn(trimmedValue)
 	case "error", "fail", "blocked":
-		return ui.error(text)
-	case "info", "active":
-		return ui.info(text)
+		coloredValue = ui.error(trimmedValue)
+	case "active":
+		coloredValue = ui.accent(trimmedValue)
+	case "info":
+		coloredValue = trimmedValue
 	default:
-		return ui.dim(text)
+		coloredValue = ui.dim(trimmedValue)
 	}
+	return ui.dim("["+trimmedLabel+":") + coloredValue + ui.dim("]")
 }
 
 func (ui UI) summaryLine(items ...string) string {
@@ -601,7 +612,7 @@ func (ui UI) planItem(index int, status string, step string) string {
 
 func (ui UI) assistantHeader() string {
 	label := ">> assistant "
-	return ui.bold(ui.mint(label)) + ui.dim(strings.Repeat("-", ui.rulePadding(label, 8)))
+	return ui.bold(ui.assistantRail(label)) + ui.dim(strings.Repeat("-", ui.rulePadding(label, 8)))
 }
 
 func (ui UI) outputHeader(title string, meta string, paint func(string) string) string {
@@ -775,6 +786,9 @@ func (ui UI) shouldCompactStatusKey(key string) bool {
 }
 
 func (ui UI) rulePadding(label string, minimum int) int {
+	// Cap the ruled-header width so section/subsection rules stay a tidy,
+	// consistent length instead of stretching the full width of a wide
+	// terminal (a full-width bar of "=" reads as noise, not structure).
 	width := terminalWidth()
 	if width < 48 {
 		width = 48
@@ -1330,17 +1344,35 @@ func (ui UI) renderAssistantLine(kind assistantLineKind, text string, ctx *assis
 			}
 		}
 		return ui.assistantCode(text)
+	case assistantLineHeading:
+		return ui.renderHeadingLine(text)
 	default:
 		return ui.renderProseLine(text)
 	}
 }
 
-// proseToneCode is the SGR code behind ui.mint, the prose body tone. The inline
-// markdown layer needs the raw code so it can re-assert the prose color after a
-// styled span without the span's reset stripping the surrounding color.
-const proseToneCode = "38;5;121"
+// headingToneCode paints markdown heading lines in the same blue as the
+// assistant frame (rail/header), bold, so headings read as structure that
+// belongs to the answer block instead of blending into the neutral body.
+const headingToneCode = "1;38;5;111"
 
-// renderProseLine paints a prose body line in the mint tone and styles inline
+// renderHeadingLine paints a heading line bold-blue. In no-color mode it returns
+// the raw text so the leading "##" markers survive.
+func (ui UI) renderHeadingLine(text string) string {
+	if !ui.color {
+		return text
+	}
+	return ui.paint(headingToneCode, text)
+}
+
+// proseToneCode is the SGR code for the assistant prose body tone: a soft,
+// near-neutral light gray so the answer text reads as clean default copy
+// instead of a saturated color wash. The inline markdown layer needs the raw
+// code so it can re-assert the prose color after a styled span without the
+// span's reset stripping the surrounding color.
+const proseToneCode = "38;5;252"
+
+// renderProseLine paints a prose body line in the neutral body tone and styles inline
 // **bold**, *italic*, and inline `code` spans. In no-color mode it returns the
 // raw text so the markers survive when ANSI is unavailable.
 func (ui UI) renderProseLine(text string) string {

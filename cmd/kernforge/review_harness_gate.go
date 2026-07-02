@@ -2336,27 +2336,27 @@ func reviewResultSummaryForLanguage(run ReviewRun, korean bool) string {
 		switch {
 		case len(run.Gate.BlockingFindings) > 0:
 			if korean {
-				return fmt.Sprintf("모델 리뷰는 생략되었습니다. 결정적 검사에서 차단 항목 %d개가 남았습니다.", len(run.Gate.BlockingFindings))
+				return fmt.Sprintf("모델 리뷰는 건너뛰었습니다. 자동 검사에서 꼭 고쳐야 할 문제가 %d개 나왔습니다.", len(run.Gate.BlockingFindings))
 			}
-			return fmt.Sprintf("Model review was skipped. Deterministic checks found %d blocking finding(s).", len(run.Gate.BlockingFindings))
+			return fmt.Sprintf("Model review was skipped. Automated checks found %d issue(s) you need to fix.", len(run.Gate.BlockingFindings))
 		case len(run.Gate.WarningFindings) > 0:
 			if korean {
-				return fmt.Sprintf("모델 리뷰는 생략되었습니다. 결정적 검사에서 경고 항목 %d개가 남았고 차단은 없습니다.", len(run.Gate.WarningFindings))
+				return fmt.Sprintf("모델 리뷰는 건너뛰었습니다. 자동 검사에서 살펴볼 경고가 %d개 나왔고, 꼭 고쳐야 할 문제는 없습니다.", len(run.Gate.WarningFindings))
 			}
-			return fmt.Sprintf("Model review was skipped. Deterministic checks found %d warning finding(s) and no blockers.", len(run.Gate.WarningFindings))
+			return fmt.Sprintf("Model review was skipped. Automated checks found %d warning(s) worth a look and nothing you must fix.", len(run.Gate.WarningFindings))
 		default:
 			if korean {
-				return "모델 리뷰는 생략되었습니다. 결정적 검사에서 차단 항목은 없습니다."
+				return "모델 리뷰는 건너뛰었습니다. 자동 검사에서는 문제를 찾지 못했습니다."
 			}
-			return "Model review was skipped. Deterministic checks found no blocking findings."
+			return "Model review was skipped. Automated checks found no problems."
 		}
 	}
 	switch run.Gate.Verdict {
 	case reviewVerdictApproved:
 		if korean {
-			return "차단 항목 없이 리뷰가 승인되었습니다."
+			return "리뷰를 통과했습니다. 꼭 고쳐야 할 문제는 없습니다."
 		}
-		return "Review approved with no blocking findings."
+		return "The review passed with nothing that needs fixing."
 	case reviewVerdictApprovedWithWarnings:
 		if len(run.Gate.WarningFindings) == 0 {
 			driver := reviewApprovedWithWarningsDriverText(run, korean)
@@ -2371,19 +2371,19 @@ func reviewResultSummaryForLanguage(run ReviewRun, korean bool) string {
 		return fmt.Sprintf("Review approved with warnings: %d warning finding(s).", len(run.Gate.WarningFindings))
 	case reviewVerdictNeedsRevision:
 		if korean {
-			return fmt.Sprintf("리뷰가 수정을 요구합니다: 차단 항목 %d개.", len(run.Gate.BlockingFindings))
+			return fmt.Sprintf("리뷰 결과 꼭 고쳐야 할 문제가 %d개 있습니다.", len(run.Gate.BlockingFindings))
 		}
-		return fmt.Sprintf("Review needs revision: %d blocking finding(s).", len(run.Gate.BlockingFindings))
+		return fmt.Sprintf("The review found %d issue(s) you need to fix before this can pass.", len(run.Gate.BlockingFindings))
 	case reviewVerdictInsufficientEvidence:
 		if korean {
-			return "리뷰 승인에 필요한 근거가 부족합니다."
+			return "리뷰를 통과시킬 만큼 근거가 충분하지 않습니다."
 		}
-		return "Review has insufficient evidence for approval."
+		return "There isn't enough evidence to pass this review."
 	default:
 		if korean {
-			return "리뷰가 차단되었습니다."
+			return "리뷰를 통과하지 못했습니다."
 		}
-		return "Review is blocked."
+		return "The review did not pass."
 	}
 }
 

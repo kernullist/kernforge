@@ -562,7 +562,7 @@ func TestAssistantCodeBlocksUseSeparateToneWhenColorEnabled(t *testing.T) {
 	ui := UI{color: true}
 	rendered := ui.assistant("Summary\n```go\nfmt.Println(\"hi\")\n```\nDone")
 
-	if !strings.Contains(rendered, ui.mint("Summary")) {
+	if !strings.Contains(rendered, ui.renderProseLine("Summary")) {
 		t.Fatalf("expected paragraph text to keep assistant body tone, got %q", rendered)
 	}
 	if !strings.Contains(rendered, ui.assistantCode("```go")) {
@@ -573,7 +573,7 @@ func TestAssistantCodeBlocksUseSeparateToneWhenColorEnabled(t *testing.T) {
 	if !strings.Contains(rendered, ui.paintSyntax(syntaxStringCode, "\"hi\"")) {
 		t.Fatalf("expected code body string literal to be highlighted, got %q", rendered)
 	}
-	if !strings.Contains(rendered, ui.mint("Done")) {
+	if !strings.Contains(rendered, ui.renderProseLine("Done")) {
 		t.Fatalf("expected trailing paragraph to return to body tone, got %q", rendered)
 	}
 }
@@ -584,9 +584,9 @@ func TestAssistantBodyFramesEachLineWithLeftRailWhenColorEnabled(t *testing.T) {
 
 	gutter := ui.assistantGutter()
 	for _, needle := range []string{
-		gutter + ui.mint("Summary:"),
-		gutter + ui.mint("- first"),
-		gutter + ui.mint("- second"),
+		gutter + ui.renderProseLine("Summary:"),
+		gutter + ui.renderProseLine("- first"),
+		gutter + ui.renderProseLine("- second"),
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected body line framed by left rail %q, got %q", needle, rendered)

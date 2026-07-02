@@ -1239,13 +1239,13 @@ func formatReviewerGateRecoveryOptions(korean bool, run *ReviewRun) string {
 		var b strings.Builder
 		b.WriteString("[사용자 선택지]")
 		if timeout {
-			b.WriteString("\n- 같은 reviewer로 재시도: 최근 timeout이 기록된 route는 다음 reviewer call에서 soft timeout을 자동으로 한 단계 늘립니다.")
+			b.WriteString("\n- 같은 검토 모델로 재시도: 최근 시간 초과가 있었던 경우, 다음 검토 요청에서 대기 시간을 자동으로 한 단계 늘립니다.")
 		} else {
-			b.WriteString("\n- 같은 reviewer로 재시도: route 설정을 유지하고 같은 요청을 다시 실행합니다.")
+			b.WriteString("\n- 같은 검토 모델로 재시도: 지금 설정을 그대로 두고 같은 요청을 다시 실행합니다.")
 		}
-		b.WriteString("\n- reviewer 모델 변경: `/model cross-review`로 더 가까운/강한 reviewer를 선택합니다.")
-		b.WriteString("\n- reviewer 없이 single-model mode: `/model clear cross-review` 후 같은 요청을 다시 실행하고 diff preview에서 직접 확인합니다.")
-		b.WriteString("\n- main model 변경: `[0] 실패한 리뷰어`가 `primary`이면 `/model`로 메인 모델을 바꿉니다.")
+		b.WriteString("\n- 검토 모델 변경: `/model cross-review`로 더 빠르거나 성능이 좋은 검토 모델을 고릅니다.")
+		b.WriteString("\n- 검토 모델 없이 단일 모델 모드: `/model clear cross-review` 후 같은 요청을 다시 실행하고, 변경 미리보기에서 직접 확인합니다.")
+		b.WriteString("\n- 메인 모델 변경: `[0] 실패한 리뷰어`가 `primary`이면 `/model`로 메인 모델을 바꿉니다.")
 		return b.String()
 	}
 	var b strings.Builder

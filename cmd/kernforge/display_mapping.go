@@ -574,7 +574,7 @@ func humanizeInterventionKind(value string, korean bool) string {
 }
 
 // humanizeModelReviewSkipReason maps a model-review skip reason to a plain
-// sentence explaining why only deterministic checks ran.
+// sentence explaining why only automated checks ran.
 func humanizeModelReviewSkipReason(value string, korean bool) string {
 	reason := strings.TrimSpace(value)
 	// Some reasons carry a trailing detail after a colon; key off the prefix.
@@ -585,34 +585,34 @@ func humanizeModelReviewSkipReason(value string, korean bool) string {
 	switch key {
 	case modelReviewSkipByUser:
 		if korean {
-			return "사용자가 모델 리뷰를 건너뛰어 결정적 검사만 수행했습니다."
+			return "사용자가 모델 리뷰를 건너뛰어 자동 검사만 수행했습니다."
 		}
-		return "Model review was skipped at your request; only deterministic checks ran."
+		return "Model review was skipped at your request; only automated checks ran."
 	case modelReviewSkipNoInteractiveConsent:
 		if korean {
-			return "대화형 동의를 받을 수 없어 모델 리뷰 없이 결정적 검사만 수행했습니다."
+			return "대화형 동의를 받을 수 없어 모델 리뷰 없이 자동 검사만 수행했습니다."
 		}
-		return "No interactive consent was available, so only deterministic checks ran."
+		return "No interactive consent was available, so only automated checks ran."
 	case modelReviewSkipConfigNever:
 		if korean {
-			return "설정에서 모델 리뷰를 끄도록 되어 있어 결정적 검사만 수행했습니다."
+			return "설정에서 모델 리뷰를 끄도록 되어 있어 자동 검사만 수행했습니다."
 		}
-		return "Model review is disabled in settings; only deterministic checks ran."
+		return "Model review is disabled in settings; only automated checks ran."
 	case modelReviewSkipReadOnlyBoundary:
 		if korean {
-			return "읽기 전용 작업이라 모델 리뷰 없이 결정적 검사만 수행했습니다."
+			return "읽기 전용 작업이라 모델 리뷰 없이 자동 검사만 수행했습니다."
 		}
-		return "This was a read-only step, so only deterministic checks ran."
+		return "This was a read-only step, so only automated checks ran."
 	case modelReviewSkipTurnBudgetExceeded:
 		if korean {
-			return "이번 턴의 모델 리뷰 한도를 초과해 결정적 검사만 수행했습니다."
+			return "이번 턴의 모델 리뷰 한도를 초과해 자동 검사만 수행했습니다."
 		}
-		return "The model-review budget for this turn was used up; only deterministic checks ran."
+		return "The model-review budget for this turn was used up; only automated checks ran."
 	default:
 		if korean {
-			return "모델 리뷰를 건너뛰고 결정적 검사만 수행했습니다."
+			return "모델 리뷰를 건너뛰고 자동 검사만 수행했습니다."
 		}
-		return "Model review was skipped; only deterministic checks ran."
+		return "Model review was skipped; only automated checks ran."
 	}
 }
 

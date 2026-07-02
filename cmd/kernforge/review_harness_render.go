@@ -951,7 +951,7 @@ func renderReviewCLIResultCompact(cfg Config, run ReviewRun) string {
 		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Model review", "모델 리뷰"), line)
 	}
 	if strings.TrimSpace(run.Gate.Action) != "" {
-		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Gate action", "게이트 처리"), humanizeGateAction(run.Gate.Action, korean))
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Gate action", "처리 방향"), humanizeGateAction(run.Gate.Action, korean))
 	}
 	if strings.TrimSpace(run.Target) != "" {
 		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Target", "대상"), humanizeReviewTarget(run.Target, korean))
@@ -1045,7 +1045,7 @@ func renderReviewCLITriageResidualRisk(cfg Config, run ReviewRun) string {
 			return ""
 		}
 	}
-	label := reviewRunLocalizedText(cfg, run, "Cross-review triage", "교차 리뷰 triage")
+	label := reviewRunLocalizedText(cfg, run, "Cross-review triage", "교차 리뷰 정리")
 	line := "- " + label + ": " + reviewCrossReviewTriageStatusLine(obs)
 	if obs.UserActionNeeded && len(obs.UserDecisionPrompts) > 0 {
 		line += "\n  " + reviewRunLocalizedText(cfg, run, "Action", "실행 방법") + ": " + obs.UserDecisionPrompts[0]

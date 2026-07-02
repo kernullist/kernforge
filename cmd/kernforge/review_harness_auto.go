@@ -2202,6 +2202,7 @@ func formatPreWriteReviewWarningProgress(cfg Config, run ReviewRun) string {
 func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPreview bool) string {
 	korean := reviewRunPrefersKorean(cfg, run)
 	verdict := firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown")
+	verdictLabel := humanizeReviewVerdict(verdict, korean)
 	blockerCount := len(run.Gate.BlockingFindings)
 	warningCount := len(run.Gate.WarningFindings)
 	content := preWriteReviewFinalContentProgress(cfg, run)
@@ -2213,14 +2214,14 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 		prefixKorean = "자동 쓰기 전 리뷰가 완료되었습니다."
 	}
 	if korean {
-		action := "diff preview로 진행하지 않습니다."
+		action := "변경 미리보기로 진행하지 않습니다."
 		if proceedToPreview {
-			action = "diff preview로 진행합니다."
+			action = "변경 미리보기로 진행합니다."
 			if preWriteWarningsAreHarnessEvidenceOnly(run) {
-				action += " 남은 경고는 코드 미해결 blocker가 아니라 리뷰 evidence 확인 부족입니다."
+				action += " 남은 경고는 코드에 남은 문제가 아니라, 리뷰가 근거를 충분히 확인하지 못해 생긴 것입니다."
 			}
 		}
-		return strings.TrimSpace(fmt.Sprintf("%s 최종 검토 결과: %s (차단=%d, 경고=%d). %s %s%s", prefixKorean, verdict, blockerCount, warningCount, content, action, report))
+		return strings.TrimSpace(fmt.Sprintf("%s 최종 검토 결과: %s (차단=%d, 경고=%d). %s %s%s", prefixKorean, verdictLabel, blockerCount, warningCount, content, action, report))
 	}
 	action := "Not proceeding to diff preview."
 	if proceedToPreview {
@@ -2229,7 +2230,7 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 			action += " Remaining warnings are review-evidence visibility gaps, not confirmed unresolved code blockers."
 		}
 	}
-	return strings.TrimSpace(fmt.Sprintf("%s Final review result: %s (blockers=%d, warnings=%d). %s %s%s", prefixEnglish, verdict, blockerCount, warningCount, content, action, report))
+	return strings.TrimSpace(fmt.Sprintf("%s Final review result: %s (blockers=%d, warnings=%d). %s %s%s", prefixEnglish, verdictLabel, blockerCount, warningCount, content, action, report))
 }
 
 func preWriteReviewFinalContentProgress(cfg Config, run ReviewRun) string {
@@ -2247,20 +2248,20 @@ func preWriteReviewFinalContentProgress(cfg Config, run ReviewRun) string {
 	titles := reviewProgressFindingTitles(findings, 3)
 	if len(titles) > 0 {
 		if korean {
-			parts = append(parts, "주요 finding: "+strings.Join(titles, " | "))
+			parts = append(parts, "주요 지적 사항: "+strings.Join(titles, " | "))
 		} else {
 			parts = append(parts, "key findings: "+strings.Join(titles, " | "))
 		}
 	} else if summary == "" {
 		if korean {
-			parts = append(parts, "주요 finding: 없음")
+			parts = append(parts, "주요 지적 사항: 없음")
 		} else {
 			parts = append(parts, "key findings: none")
 		}
 	}
 	if len(parts) == 0 {
 		if korean {
-			return "검토 내용: 주요 finding 없음."
+			return "검토 내용: 특별한 지적 사항 없음."
 		}
 		return "Review content: no key findings."
 	}

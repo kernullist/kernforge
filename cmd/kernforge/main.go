@@ -7351,8 +7351,24 @@ func (rt *runtimeState) printKVGroup(title string, items ...uiKV) {
 	if strings.TrimSpace(title) != "" {
 		fmt.Fprintln(rt.writer, rt.ui.subsection(title))
 	}
+	// Align every row in the group to one column keyed off the longest label so
+	// the block reads as a clean table. Without this, a key longer than the
+	// compact threshold fell back to a "key -> value" arrow row that broke the
+	// column and looked out of place next to its aligned neighbors.
+	column := 0
 	for _, item := range items {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV(item.Key, item.Value))
+		if w := visibleLen(strings.TrimSpace(item.Key)) + 1; w > column {
+			column = w
+		}
+	}
+	if column < 18 {
+		column = 18
+	}
+	if column > 34 {
+		column = 34
+	}
+	for _, item := range items {
+		fmt.Fprintln(rt.writer, rt.ui.statusKVAligned(item.Key, item.Value, column))
 	}
 }
 

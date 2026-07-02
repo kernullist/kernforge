@@ -1653,7 +1653,7 @@ func TestRuntimeStateAppendAssistantStreamUsesCodeToneInsideFence(t *testing.T) 
 	rt.finishAssistantStream()
 
 	rendered := out.String()
-	if !strings.Contains(rendered, ui.mint("Summary")) {
+	if !strings.Contains(rendered, ui.renderProseLine("Summary")) {
 		t.Fatalf("expected paragraph text to keep assistant body tone, got %q", rendered)
 	}
 	if !strings.Contains(rendered, ui.assistantCode("```go")) {
@@ -3696,7 +3696,8 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	if !strings.Contains(text, "write_approval:") {
 		t.Fatalf("expected runtime approval state in status, got %q", text)
 	}
-	if !strings.Contains(text, "permission_mode:          bypassPermissions") || !strings.Contains(text, "active_permission_profile -> :danger-full-access") {
+	if !strings.Contains(text, "permission_mode:") || !strings.Contains(text, "bypassPermissions") ||
+		!strings.Contains(text, "active_permission_profile:") || !strings.Contains(text, ":danger-full-access") {
 		t.Fatalf("expected live permission profile snapshot in status, got %q", text)
 	}
 	if !strings.Contains(text, "-- Connection ") || !strings.Contains(text, "-- Approvals ") || !strings.Contains(text, "-- Extensions ") {
@@ -4142,7 +4143,8 @@ func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	if !strings.Contains(text, "auto_checkpoint_edits:") {
 		t.Fatalf("expected config settings in config output, got %q", text)
 	}
-	if !strings.Contains(text, "permission_mode:          default") || !strings.Contains(text, "active_permission_profile -> :workspace") {
+	if !strings.Contains(text, "permission_mode:") || !strings.Contains(text, "default") ||
+		!strings.Contains(text, "active_permission_profile:") || !strings.Contains(text, ":workspace") {
 		t.Fatalf("expected effective permission profile in config output, got %q", text)
 	}
 	if !strings.Contains(text, "hooks_enabled:") {

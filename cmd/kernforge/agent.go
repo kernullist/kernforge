@@ -546,7 +546,7 @@ func formatMissingPendingReviewRepairReply(cfg Config) string {
 
 func formatNoActionableReviewerGateRepairReply(cfg Config) string {
 	if localePrefersKorean(cfg) {
-		return "이번 중단은 코드 finding 때문이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답 때문입니다. `primary`가 실패했다면 현재 메인 모델 또는 프로바이더 route 문제이므로 `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 먼저 해결하세요. `cross`가 실패했다면 `/model cross-review`로 해당 reviewer route를 정상 동작하는 모델로 바꾸거나 `/model clear cross-review`로 single-model mode를 사용하세요. 지금 계속해도 수정할 코드 항목이 없으므로 추가 편집은 진행하지 않습니다. route를 복구한 뒤 같은 요청을 다시 실행해 주세요."
+		return "이번에 멈춘 건 코드에서 문제를 찾아서가 아니라, 리뷰를 담당하는 모델이 실패했거나 응답이 부실했기 때문입니다. `primary`가 실패했다면 지금 쓰는 메인 모델이나 프로바이더 연결 문제이니 `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 먼저 해결하세요. `cross`가 실패했다면 `/model cross-review`로 그 검토 모델을 제대로 동작하는 모델로 바꾸거나 `/model clear cross-review`로 단일 모델 모드를 사용하세요. 지금은 고칠 코드 항목이 없어서 추가 수정은 진행하지 않습니다. 모델 연결을 복구한 뒤 같은 요청을 다시 실행해 주세요."
 	}
 	return "This stop was caused by a required review-stage model route failure or weak output, not by a code finding. If `primary` failed, the active main model/provider route is the problem; use `/model` to switch the main model or fix the LM Studio/Qwen response issue first. If `cross` failed, use `/model cross-review` to switch that reviewer route to a working model or `/model clear cross-review` for single-model mode. There is no code item to repair right now, so I will not continue editing. Restore the route, then rerun the same request."
 }
@@ -6314,14 +6314,14 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 			b.WriteString("리뷰어 게이트: 통과하지 못함")
 		}
 		b.WriteString("\n- 결과: 코드 수정은 적용하지 않았습니다.")
-		b.WriteString("\n- 원인: 필수 리뷰 단계의 모델 route가 실패했거나 `weak` 품질로 판정되었습니다. `primary` 실패는 현재 메인 모델 route 문제이고, `cross` 실패는 전용 reviewer route 문제입니다.")
-		b.WriteString("\n- 중요한 점: 이 상태는 쓰기 승인도, 리뷰 우회 승인도 아닙니다.")
+		b.WriteString("\n- 원인: 리뷰를 담당하는 모델이 응답에 실패했거나, 응답 품질이 통과 기준에 못 미쳤습니다. `primary`는 지금 쓰는 메인 모델, `cross`는 별도 검토용 모델을 가리킵니다.")
+		b.WriteString("\n- 참고: 이 상태는 파일 쓰기를 허용한 것도, 리뷰를 건너뛰어도 된다는 뜻도 아닙니다.")
 		if preWriteGate && repairContinuationAllowed {
-			b.WriteString("\n- 다음 조건: 최신 리뷰 finding과 마지막 수정안을 기준으로 다시 수리한 뒤, 일반 파일 쓰기 경로에서 pre-write review를 다시 통과해야 합니다.")
+			b.WriteString("\n- 다음 단계: 아래 최신 리뷰 지적 사항과 마지막 수정안을 반영해 다시 고친 뒤, 평소 파일 쓰기 과정에서 쓰기 전 리뷰를 다시 통과해야 합니다.")
 		} else if preWriteGate {
-			b.WriteString("\n- 다음 조건: 원 요청이 읽기 전용이므로 이 리뷰 결과를 코드 수리 흐름으로 이어가지 않습니다.")
+			b.WriteString("\n- 다음 단계: 원래 요청이 읽기 전용이라, 이 리뷰 결과를 코드 수정 작업으로 이어가지 않습니다.")
 		} else {
-			b.WriteString("\n- 다음 조건: 실패한 리뷰 route를 복구하거나 모델을 바꾼 뒤 같은 요청을 다시 실행해야 합니다.")
+			b.WriteString("\n- 다음 단계: 실패한 리뷰 모델을 복구하거나 다른 모델로 바꾼 뒤, 같은 요청을 다시 실행하세요.")
 		}
 	} else {
 		if preWriteGate {
@@ -6390,9 +6390,9 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 	}
 	if reviewRunHasActionableNonReviewerFindingsFromSession(session) && repairContinuationAllowed {
 		if korean {
-			b.WriteString("\n\n[3] 다음 선택\n위의 코드 finding을 기준으로 계속 수리할 수 있습니다.")
+			b.WriteString("\n\n[3] 다음 선택\n위에 있는 코드 지적 사항을 기준으로 계속 고칠 수 있습니다.")
 			if includeInlinePrompt {
-				b.WriteString(" 계속 수리할까요? [y=계속, n=중지]\n`y` 또는 `n`만 입력해 주세요.")
+				b.WriteString(" 계속 고칠까요? [y=계속, n=중지]\n`y` 또는 `n`만 입력해 주세요.")
 			}
 		} else {
 			b.WriteString("\n\n[3] Next decision\nI can keep repairing from the code findings above.")
@@ -6402,8 +6402,8 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		}
 	} else if !repairContinuationAllowed {
 		if korean {
-			b.WriteString("\n\n[3] 다음 조치\n원 요청은 읽기 전용 답변/분석 boundary로 분류되어 위 finding을 코드 수리 continuation으로 전환하지 않습니다.")
-			b.WriteString("\n- 코드 수정은 적용하지 않았고, 계속 수리 confirmation도 열지 않습니다.")
+			b.WriteString("\n\n[3] 다음 조치\n원래 요청이 읽기 전용(답변/분석)으로 분류되어, 위 지적 사항을 코드 수정 작업으로 이어가지 않습니다.")
+			b.WriteString("\n- 코드는 수정하지 않았고, 계속 진행할지 묻는 확인도 띄우지 않습니다.")
 			b.WriteString("\n- 실제 수정이 필요하면 별도의 수정 요청으로 다시 시작하세요.")
 		} else {
 			b.WriteString("\n\n[3] Next step\nThe original request is classified with a read-only answer/analysis boundary, so the findings above will not be converted into a code-repair continuation.")
@@ -6411,11 +6411,11 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 			b.WriteString("\n- Start a separate fix request if edits are required.")
 		}
 	} else if korean {
-		b.WriteString("\n\n[3] 다음 조치\n이번 중단은 코드 finding 때문이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답 때문입니다.")
-		b.WriteString("\n- 지금 계속해도 수정할 코드 항목이 없으므로 추가 편집은 진행하지 않습니다.")
-		b.WriteString("\n- `[0] 실패한 리뷰어`에 `primary`가 보이면 현재 메인 모델 route가 문제입니다. `/model`로 메인 모델을 바꾸거나 해당 provider route를 먼저 복구하세요.")
-		b.WriteString("\n- `cross` 또는 전용 reviewer가 보이면 `/model cross-review`로 해당 reviewer route를 정상 동작하는 모델로 바꾸거나 `/model clear cross-review`로 single-model mode를 사용하세요.")
-		b.WriteString("\n- route를 복구한 뒤 같은 요청을 다시 실행하세요.")
+		b.WriteString("\n\n[3] 다음 조치\n이번에 멈춘 건 코드에서 문제를 찾아서가 아니라, 리뷰를 담당하는 모델이 실패했거나 응답이 부실했기 때문입니다.")
+		b.WriteString("\n- 지금은 고칠 코드 항목이 없어서 추가 수정은 진행하지 않습니다.")
+		b.WriteString("\n- `[0] 실패한 리뷰어`에 `primary`가 보이면 지금 쓰는 메인 모델이 문제입니다. `/model`로 메인 모델을 바꾸거나 해당 프로바이더 연결을 먼저 복구하세요.")
+		b.WriteString("\n- `cross`나 별도 검토용 모델이 보이면 `/model cross-review`로 그 검토 모델을 제대로 동작하는 모델로 바꾸거나, `/model clear cross-review`로 단일 모델 모드를 사용하세요.")
+		b.WriteString("\n- 모델 연결을 복구한 뒤 같은 요청을 다시 실행하세요.")
 		if includeInlinePrompt {
 			b.WriteString("\n- 이 상태에서는 `y`/`n` 계속 선택을 받지 않습니다.")
 		}
@@ -6529,7 +6529,7 @@ func formatLatestPreWriteReviewForUserDecision(cfg Config, session *Session) str
 	warningCount := len(run.Gate.WarningFindings)
 	var b strings.Builder
 	if korean {
-		fmt.Fprintf(&b, "마지막 검토 결과: %s (차단=%d, 경고=%d)", valueOrUnset(verdict), blockerCount, warningCount)
+		fmt.Fprintf(&b, "마지막 검토 결과: %s (차단=%d, 경고=%d)", valueOrUnset(humanizeReviewVerdict(verdict, true)), blockerCount, warningCount)
 	} else {
 		fmt.Fprintf(&b, "Latest review result: %s (blockers=%d, warnings=%d)", valueOrUnset(verdict), blockerCount, warningCount)
 	}
@@ -6543,7 +6543,7 @@ func formatLatestPreWriteReviewForUserDecision(cfg Config, session *Session) str
 	findings := latestReviewDecisionFindings(run)
 	if len(findings) > 0 {
 		if korean {
-			b.WriteString("\n주요 finding:")
+			b.WriteString("\n주요 지적 사항:")
 		} else {
 			b.WriteString("\nKey findings:")
 		}

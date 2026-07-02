@@ -42,23 +42,25 @@ func localizedText(cfg Config, english string, korean string) string {
 
 func responseLanguageInstructionForUserText(text string, cfg Config) string {
 	language, reason := inferResponseLanguageForUserText(text, cfg)
+	const koNaturalStyle = " Write natural, conversational Korean the way a Korean engineer actually speaks, not a stiff word-for-word translation of English. Use plain everyday words over rare or academic ones, and keep sentences short and easy to read on the first pass. Keep code identifiers, paths, API names, and commands unchanged."
+	const enNaturalStyle = " Write in plain, natural English with short, clear sentences and everyday words; avoid stiff or jargon-heavy phrasing."
 	switch language {
 	case "ko":
 		if reason == "explicit" {
-			return "Always respond in Korean because the latest user request explicitly asks for Korean. Keep code identifiers, paths, API names, and commands unchanged."
+			return "Always respond in Korean because the latest user request explicitly asks for Korean." + koNaturalStyle
 		}
 		if reason == "question" {
-			return "Respond in Korean because the latest user request is written in Korean. Keep code identifiers, paths, API names, and commands unchanged."
+			return "Respond in Korean because the latest user request is written in Korean." + koNaturalStyle
 		}
-		return "Respond in Korean because the configured/system locale prefers Korean. A leading English code identifier, product name, file path, command, or model name does not override this. Keep code identifiers, paths, API names, and commands unchanged."
+		return "Respond in Korean because the configured/system locale prefers Korean. A leading English code identifier, product name, file path, command, or model name does not override this." + koNaturalStyle
 	case "en":
 		if reason == "explicit" {
-			return "Always respond in English because the latest user request explicitly asks for English."
+			return "Always respond in English because the latest user request explicitly asks for English." + enNaturalStyle
 		}
 		if reason == "question" {
-			return "Respond in English because the latest user request is written in English."
+			return "Respond in English because the latest user request is written in English." + enNaturalStyle
 		}
-		return "Respond in English because no clearer user-request language was detected."
+		return "Respond in English because no clearer user-request language was detected." + enNaturalStyle
 	default:
 		return ""
 	}
