@@ -6439,6 +6439,90 @@ func TestPreWriteReviewDoesNotBlockLowOptionalHardeningWarning(t *testing.T) {
 	}
 }
 
+// Regression (G-1): a model finding whose subject is a design document, raised
+// while the reviewed change is code, cannot be satisfied by any code edit, so
+// it must surface as a warning rather than hard-blocking the repair forever.
+// This is the "read the design doc and fix the code" deadlock shape.
+func TestGateDoesNotBlockDocDemandAgainstCodeChange(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   "post_change",
+		Mode:      reviewModeLiveFix,
+		ChangeSet: ReviewChangeSet{ChangedPaths: []string{"RegGit.Core/DatabaseService.cs"}},
+		Findings: []ReviewFinding{{
+			ID:          "RF-002",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "RegGit_Design_Doc.md",
+			Title:       "Delta table schema should add a value_type field",
+			Evidence:    "The design document does not define value_type on the Delta table.",
+			Impact:      "Registry value types may be lost.",
+			RequiredFix: "Add a value_type column to the Delta table schema in the design.",
+			BlocksGate:  true,
+		}},
+	}
+	gate := evaluateReviewGate(run)
+	if len(gate.BlockingFindings) != 0 {
+		t.Fatalf("a design-doc demand must not block a code change, got blockers %#v", gate.BlockingFindings)
+	}
+	if !reviewStringSliceContainsCI(gate.WarningFindings, "RF-002") {
+		t.Fatalf("the doc demand should surface as a warning, got %#v", gate.WarningFindings)
+	}
+}
+
+// A code-path finding outside the diff (a cross-file regression the reviewer
+// legitimately names) must keep its blocking authority — the doc-scope
+// downgrade must not swallow it.
+func TestGateStillBlocksCodePathFindingOutsideDiff(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   "post_change",
+		Mode:      reviewModeLiveFix,
+		ChangeSet: ReviewChangeSet{ChangedPaths: []string{"RegGit.Core/DatabaseService.cs"}},
+		Findings: []ReviewFinding{{
+			ID:          "RF-010",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "RegGit.Core/SnapshotService.cs",
+			Symbol:      "SnapshotService.Restore",
+			Title:       "Caller passes the wrong column order after the schema change",
+			Evidence:    "Restore still reads (value, type) but the writer now emits (type, value).",
+			Impact:      "Rollback corrupts every delta row.",
+			RequiredFix: "Update Restore to the new column order.",
+			BlocksGate:  true,
+		}},
+	}
+	gate := evaluateReviewGate(run)
+	if !reviewStringSliceContainsCI(gate.BlockingFindings, "RF-010") {
+		t.Fatalf("a code-path regression outside the diff must still block, got %#v", gate.BlockingFindings)
+	}
+}
+
+// Regression (G-5): a model evidence_gap finding at blocker severity (the
+// reviewer reporting it could not see the source) must not hard-block via the
+// BlocksGate short-circuit — an evidence gap is never itself a code defect.
+func TestGateDoesNotBlockModelEvidenceGapBlocker(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   "post_change",
+		Mode:      reviewModeLiveFix,
+		ChangeSet: ReviewChangeSet{ChangedPaths: []string{"RegGit.Core/DatabaseService.cs"}},
+		Evidence:  ReviewEvidencePack{Sources: []string{"file_excerpt"}, Text: "design doc excerpt"},
+		Findings: []ReviewFinding{{
+			ID:         "RF-001",
+			Source:     "model",
+			Severity:   reviewSeverityBlocker,
+			Category:   "evidence_gap",
+			Title:      "Source code absent; cannot fulfill the code review",
+			Evidence:   "Only the design document was provided.",
+			BlocksGate: true,
+		}},
+	}
+	gate := evaluateReviewGate(run)
+	if reviewStringSliceContainsCI(gate.BlockingFindings, "RF-001") {
+		t.Fatalf("a model evidence_gap finding must not hard-block, got %#v", gate.BlockingFindings)
+	}
+}
+
 func TestPreWriteReviewDoesNotBlockLowPreExistingWarningEvenIfModelMarksBlocking(t *testing.T) {
 	run := ReviewRun{
 		Trigger: "pre_write",

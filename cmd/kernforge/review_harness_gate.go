@@ -1516,6 +1516,22 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 	if reviewFindingIsDocsOnlyDescribedSecurity(run, finding) {
 		return false
 	}
+	// A model finding that demands a change to a document artifact while the
+	// reviewed change is code (the "fix the code per the design doc" case)
+	// cannot be satisfied by any code edit, so it must not hard-block a repair.
+	// This is checked before the blocker short-circuit below because Normalize
+	// forces BlocksGate for blocker severity.
+	if reviewModelFindingTargetsDocAgainstCodeChange(run, finding) {
+		return false
+	}
+	// A model-sourced evidence_gap finding is the reviewer reporting it could
+	// not see enough to judge; that is never itself a code defect, so it must
+	// not hard-block even at blocker severity. Deterministic evidence blockers
+	// (Source "deterministic") are the harness's own no-evidence gate and still
+	// block via the short-circuit below.
+	if reviewFindingSourceIsModelish(finding) && strings.EqualFold(finding.Category, "evidence_gap") {
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") &&
 		reviewFindingLooksLowNonBlockingPreWriteConcern(finding) {
 		return false
@@ -1538,6 +1554,12 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 		return false
 	}
 	if reviewFindingLooksAdvisoryStyleCategory(finding) {
+		return false
+	}
+	// Symmetric with the read-only branch below: a documentation or performance
+	// finding is advisory and does not hard-block a repair on its own.
+	if strings.EqualFold(finding.Category, "performance") ||
+		strings.EqualFold(finding.Category, "documentation") {
 		return false
 	}
 	if reviewRunLooksExplicitRepairIntent(run) &&
@@ -2670,7 +2692,11 @@ func reviewRawLooksNonBlockingApproval(raw string) bool {
 }
 
 func normalizeModelReviewFindingForGate(f *ReviewFinding, korean bool) {
-	if f == nil || !strings.EqualFold(strings.TrimSpace(f.Source), "model") {
+	// Apply to every model-ish source (model/reviewer/main/cross/empty), not
+	// just the exact "model" string: findings created with Source "reviewer" or
+	// "main" otherwise bypass the under-evidence demotion yet can still
+	// hard-block, laundering an under-evidenced blocker past the trust floor.
+	if f == nil || !reviewFindingSourceIsModelish(*f) {
 		return
 	}
 	if strings.TrimSpace(f.Quality) == "" {
@@ -3099,29 +3125,75 @@ func reviewFindingHasContent(f ReviewFinding) bool {
 func reviewChangedPathsDocsOnly(paths []string) bool {
 	sawPath := false
 	for _, path := range paths {
-		path = strings.ToLower(filepathSlash(path))
-		if path == "" {
+		if strings.TrimSpace(path) == "" {
 			continue
 		}
 		sawPath = true
-		base := strings.ToLower(filepath.Base(path))
-		ext := strings.ToLower(filepath.Ext(path))
-		if strings.HasPrefix(path, "docs/") ||
-			strings.HasPrefix(path, "doc/") ||
-			strings.HasPrefix(path, ".github/") ||
-			strings.HasPrefix(base, "readme") ||
-			base == "license" ||
-			base == "changelog" ||
-			ext == ".md" ||
-			ext == ".mdx" ||
-			ext == ".txt" ||
-			ext == ".rst" ||
-			ext == ".adoc" {
-			continue
+		if !reviewPathIsDocumentArtifact(path) {
+			return false
 		}
-		return false
 	}
 	return sawPath
+}
+
+// reviewPathIsDocumentArtifact reports whether a single path is a documentation
+// artifact (a design doc, README, changelog, etc.) rather than an executable
+// source or config file.
+func reviewPathIsDocumentArtifact(path string) bool {
+	path = strings.ToLower(filepathSlash(path))
+	if path == "" {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(path))
+	ext := strings.ToLower(filepath.Ext(path))
+	return strings.HasPrefix(path, "docs/") ||
+		strings.HasPrefix(path, "doc/") ||
+		strings.HasPrefix(path, ".github/") ||
+		strings.HasPrefix(base, "readme") ||
+		base == "license" ||
+		base == "changelog" ||
+		ext == ".md" ||
+		ext == ".mdx" ||
+		ext == ".txt" ||
+		ext == ".rst" ||
+		ext == ".adoc"
+}
+
+// reviewChangeSetContainsExecutableSource reports whether any changed path is an
+// executable source file. Used to decide whether a model finding whose subject
+// is a document artifact is out of scope for a code-repair gate.
+func reviewChangeSetContainsExecutableSource(paths []string) bool {
+	for _, path := range paths {
+		if reviewPathIsExecutableSource(path) {
+			return true
+		}
+	}
+	return false
+}
+
+// reviewModelFindingTargetsDocAgainstCodeChange reports whether a model finding
+// demands a change to a document artifact while the reviewed change set is
+// code. This is the "read the design doc and fix the code" failure mode: the
+// reviewer emits design-doc-level demands (path = the .md), which no code edit
+// can satisfy, so they would hard-block a code repair forever. Such a finding
+// must surface as a warning, not a blocker. A finding whose path is code
+// outside the diff (a cross-file regression the reviewer legitimately names)
+// is NOT matched here and keeps its blocking authority.
+func reviewModelFindingTargetsDocAgainstCodeChange(run ReviewRun, finding ReviewFinding) bool {
+	if !reviewFindingSourceIsModelish(finding) {
+		return false
+	}
+	path := strings.TrimSpace(finding.Path)
+	if path == "" {
+		return false
+	}
+	if !reviewPathIsDocumentArtifact(path) {
+		return false
+	}
+	// Only downgrade when the change under review is genuinely code. If the
+	// change set is itself docs-only (editing the document), a doc-path finding
+	// is in scope and the existing docs-only handling applies.
+	return reviewChangeSetContainsExecutableSource(run.ChangeSet.ChangedPaths)
 }
 
 // reviewFindingIsDocsOnlyDescribedSecurity reports whether a finding is a
