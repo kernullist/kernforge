@@ -6531,7 +6531,7 @@ func formatLatestPreWriteReviewForUserDecision(cfg Config, session *Session) str
 	if korean {
 		fmt.Fprintf(&b, "마지막 검토 결과: %s (차단=%d, 경고=%d)", valueOrUnset(humanizeReviewVerdict(verdict, true)), blockerCount, warningCount)
 	} else {
-		fmt.Fprintf(&b, "Latest review result: %s (blockers=%d, warnings=%d)", valueOrUnset(verdict), blockerCount, warningCount)
+		fmt.Fprintf(&b, "Latest review result: %s (blockers=%d, warnings=%d)", valueOrUnset(humanizeReviewVerdict(verdict, false)), blockerCount, warningCount)
 	}
 	if strings.TrimSpace(run.Result.Summary) != "" {
 		if korean {

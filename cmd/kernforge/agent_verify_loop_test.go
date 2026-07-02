@@ -9358,7 +9358,7 @@ func TestAgentReportsReviewAndProposalAfterRepeatedPreWriteBlock(t *testing.T) {
 	}
 	for _, want := range []string{
 		"did not pass the pre-write review",
-		"Latest review result: needs_revision",
+		"Latest review result: needs revision",
 		"RF-001",
 		"Latest edit proposal",
 		"*** Begin Patch",
@@ -9803,7 +9803,7 @@ func TestAgentAsksUserAfterPreWriteRepairInspectionNudgeIsExhausted(t *testing.T
 	}
 	for _, want := range []string{
 		"did not pass",
-		"Latest review result: needs_revision",
+		"Latest review result: needs revision",
 		"RF-002",
 		"Latest edit proposal",
 		"// attempt",
@@ -10049,7 +10049,7 @@ func TestAgentReviewerGateUnavailableShowsReviewProposalAndYN(t *testing.T) {
 		"did not pass",
 		"not write approval",
 		"[1] Latest review",
-		"Latest review result: insufficient_evidence",
+		"Latest review result: insufficient evidence",
 		"RF-001",
 		"Replace the confusing continue with break",
 		"[2] Latest edit proposal",
@@ -11003,7 +11003,7 @@ func TestEditTargetMismatchLoopLimitShowsPreWriteBlocker(t *testing.T) {
 		},
 	}
 	reply := formatEditTargetMismatchLoopLimitReply(Config{AutoLocale: boolPtr(false)}, session)
-	if !strings.Contains(reply, "Latest review result: insufficient_evidence") ||
+	if !strings.Contains(reply, "Latest review result: insufficient evidence") ||
 		!strings.Contains(reply, "RF-001") ||
 		!strings.Contains(reply, "Dynamic buffer repair evidence is missing") {
 		t.Fatalf("expected mismatch stop reply to surface the pre-write blocker, got %q", reply)
