@@ -17,6 +17,7 @@ const (
 	modelReviewSkipConfigNever          = "skipped_by_config_never"
 	modelReviewSkipReadOnlyBoundary     = "skipped_read_only_boundary"
 	modelReviewSkipTurnBudgetExceeded   = "skipped_turn_model_review_budget_exceeded"
+	modelReviewSkipSingleModelRoute     = "skipped_single_model_route"
 
 	maxImplicitModelReviewsPerTurn = 2
 )
@@ -123,6 +124,18 @@ func (rt *runtimeState) confirmImplicitModelReview(req ModelReviewConsentRequest
 	}
 	if rt == nil {
 		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "runtime_missing", SkipReason: modelReviewSkipNoInteractiveConsent}
+	}
+	// Single-model route: with no independent reviewer configured, an implicit
+	// model-backed review would be the main model reviewing its own output. That
+	// self-review cannot corroborate anything, and prompting for it on every edit
+	// only interrupts the session, so it is skipped automatically and disclosed as
+	// a skip (never as approval). The "always" policy above is the explicit opt-in
+	// that still runs it, and explicit /review is unaffected (it never consults
+	// implicit consent). Analysis-reviewer and disclosure triggers keep their own
+	// dedicated routes and stay exempt.
+	if !implicitModelReviewTriggerBypassesBoundaryBudget(req) && !reviewRuntimeHasDistinctCrossReviewer(rt) {
+		implicitModelReviewRecordSkip(session, req, modelReviewSkipSingleModelRoute)
+		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "single_model_route", SkipReason: modelReviewSkipSingleModelRoute}
 	}
 	if !rt.modelReviewConsentPromptEnabled {
 		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "runtime_prompt_not_enabled", SkipReason: modelReviewSkipNoInteractiveConsent}

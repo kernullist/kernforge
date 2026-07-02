@@ -143,6 +143,11 @@ func TestImplicitModelReviewConsentDeclineSkipsReviewerRequest(t *testing.T) {
 	cfg.Provider = "scripted"
 	cfg.Model = "main-model"
 	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	// A distinct cross route keeps this on the consent path; a single-model
+	// route would auto-skip before the non-interactive consent check.
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {Provider: "scripted", Model: "cross-model"},
+	}
 	reviewer := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("reviewer should not run")}}
 	session := NewSession(root, "scripted", "main-model", "", "default")
 	rt := &runtimeState{

@@ -6208,6 +6208,9 @@ func (rt *runtimeState) showModelRoutingStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", rt.describeProjectAnalysisRoleModel("reviewer")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("cross_review", rt.describeCrossReviewModel()))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("model_review_consent", configModelReviewConsent(rt.cfg)+"; session_auto="+fmt.Sprintf("%t", rt.alwaysApproveModelReview)))
+	if configModelReviewConsent(rt.cfg) == modelReviewConsentAsk && !reviewRuntimeHasDistinctCrossReviewer(rt) {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Single-model route: implicit model reviews are skipped automatically (no consent prompt). /review still runs on demand; set review.model_review_consent always to run implicit self-reviews."))
+	}
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows main; use /model cross-review for the optional cross route."))
 	profiles := explicitSpecialistModelProfiles(rt.cfg)
 	if len(profiles) == 0 {

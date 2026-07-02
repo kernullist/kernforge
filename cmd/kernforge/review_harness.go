@@ -971,7 +971,11 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		applyModelReviewConsentToRun(&run, decision)
 		if !decision.Allowed {
 			modelReviewSkippedByConsent = true
-			emitReviewPipelineProgress(rt, run, 3, "model review skipped", "모델 검토 생략", "Implicit model review was skipped because consent was not granted.", "사용자 동의가 없어 암시적 모델 리뷰를 생략했습니다.")
+			if decision.SkipReason == modelReviewSkipSingleModelRoute {
+				emitReviewPipelineProgress(rt, run, 3, "model review skipped", "모델 검토 생략", "Implicit model review is skipped automatically on the single-model route (no independent reviewer configured); deterministic checks and the diff preview remain the gate.", "독립 reviewer가 없는 단일 모델 라우트라 암시적 모델 리뷰를 자동 생략했습니다. deterministic check와 diff preview가 게이트로 유지됩니다.")
+			} else {
+				emitReviewPipelineProgress(rt, run, 3, "model review skipped", "모델 검토 생략", "Implicit model review was skipped because consent was not granted.", "사용자 동의가 없어 암시적 모델 리뷰를 생략했습니다.")
+			}
 		}
 	} else if opts.AutoTriggered {
 		run.ConsentSource = firstNonBlankString(run.ConsentSource, "not_applicable")
@@ -1022,6 +1026,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
 	normalizeNonBlockingReviewMetaFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	normalizeAdvisoryMainOnlyFallbackModelFindings(&run)
 	if !reuseCachedVerdict && !opts.NoModel && !modelReviewSkippedByConsent && len(run.Evidence.Sources) > 0 {
 		runReviewBlockerVerificationPass(ctx, rt, root, &run)
 		if err := ctx.Err(); err != nil {

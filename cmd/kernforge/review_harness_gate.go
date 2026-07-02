@@ -960,6 +960,37 @@ func reviewFindingSourceIsModelish(f ReviewFinding) bool {
 	return source == "" || source == "model" || source == "reviewer" || source == "main" || source == "cross"
 }
 
+// reviewRunUsesMainOnlyFallbackGatePolicy reports whether this run uses the
+// single-model advisory fallback (main_only_fallback): the main model's
+// self-review is informational and the diff preview is the gate.
+func reviewRunUsesMainOnlyFallbackGatePolicy(run ReviewRun) bool {
+	return strings.EqualFold(normalizeReviewReviewerGatePolicy(run.ReviewerGatePolicy), reviewReviewerGatePolicyMainOnlyFallback)
+}
+
+// normalizeAdvisoryMainOnlyFallbackModelFindings downgrades model-sourced
+// blocker findings to prominent warnings when the run uses the main-only
+// advisory fallback. Without the downgrade a blocker-severity self-review
+// finding would neither block (reviewFindingBlocksGate refuses under the
+// policy) nor count as a warning (blocker severity is outside the warning
+// set), so its signal would vanish from the gate summary entirely.
+func normalizeAdvisoryMainOnlyFallbackModelFindings(run *ReviewRun) {
+	if run == nil || !reviewRunUsesMainOnlyFallbackGatePolicy(*run) {
+		return
+	}
+	for i := range run.Findings {
+		if !reviewFindingSourceIsModelish(run.Findings[i]) {
+			continue
+		}
+		if !run.Findings[i].BlocksGate && !strings.EqualFold(run.Findings[i].Severity, reviewSeverityBlocker) {
+			continue
+		}
+		run.Findings[i].BlocksGate = false
+		if strings.EqualFold(run.Findings[i].Severity, reviewSeverityBlocker) {
+			run.Findings[i].Severity = reviewSeverityHigh
+		}
+	}
+}
+
 // reviewModelFindingMeetsBlockingFloor reports whether a model-sourced review
 // finding is reliable enough to hard-block on its own: it must not be
 // weak/invalid quality and must not be explicitly low confidence. Marginal model
@@ -1369,6 +1400,14 @@ func reviewFindingRoleCanReportVerificationOnly(f ReviewFinding) bool {
 }
 
 func reviewPromotePreWriteActionableWarnings(run ReviewRun, gate GateDecision) GateDecision {
+	// Under the main-only advisory fallback a warning must stay a warning:
+	// promoting a self-review warning back into a blocker would reintroduce the
+	// hard stop the fallback exists to prevent. Promotion only ever promotes
+	// model-sourced findings (preWriteReviewWarningShouldBlock requires
+	// Source=="model"), so skipping it wholesale drops no deterministic signal.
+	if reviewRunUsesMainOnlyFallbackGatePolicy(run) {
+		return gate
+	}
 	if len(gate.WarningFindings) == 0 {
 		return gate
 	}
@@ -1441,6 +1480,16 @@ func reviewFindingCountsAsWarning(finding ReviewFinding) bool {
 }
 
 func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
+	// Main-only advisory fallback: a single-model pre-write review is the main
+	// model reviewing its own proposed edit, and the harness explicitly promises
+	// the user that this self-review "runs as advisory and will not hard-block"
+	// (the diff preview is the gate). Honor that promise here: under the
+	// main_only_fallback gate policy a model-sourced finding never hard-blocks;
+	// it surfaces as a warning instead. Deterministic KernForge checks
+	// (credential leak, verification, evidence) are unaffected and still block.
+	if reviewRunUsesMainOnlyFallbackGatePolicy(run) && reviewFindingSourceIsModelish(finding) {
+		return false
+	}
 	// Trust floor: a model-sourced review finding that is weak/invalid quality or
 	// explicitly low confidence is not a reliable enough oracle to hard-block a
 	// write on its own, so it surfaces as a warning instead. Deterministic

@@ -2928,6 +2928,7 @@ func TestHelpDetailClarifiesReviewConsentSkipStatus(t *testing.T) {
 		"review.model_review_consent",
 		"model_review_status",
 		"skipped_by_user",
+		"skipped_single_model_route",
 		"skipped_no_interactive_consent",
 		"original user-visible main-model proposal/ref",
 	} {

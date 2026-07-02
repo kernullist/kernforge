@@ -3873,7 +3873,7 @@ func HelpDetail(topic string) (string, bool) {
 /goal --until-complete <objective>
 - Create the goal and keep running Kernforge's autonomous goal loop until completion or a concrete blocker.
 - Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without write, diff preview, shell, or git confirmation prompts.
-- Implicit model-backed review gates still follow review.model_review_consent and may ask Run model review now? [y=run once, a=session auto-review, n=skip, Esc=cancel].
+- Implicit model-backed review gates still follow review.model_review_consent and may ask Run model review now? [y=run once, a=session auto-review, n=skip, Esc=cancel]. On a single-model route (no independent reviewer) they are skipped automatically without asking.
 - Each loop iteration runs the agent, adaptive verification with scheduled full cadence, /session audit, final semantic review, and when needed /session recover execute-safe.
 - Generated/runtime/build artifacts are filtered out of goal patch scope; repeated failing verification without new patch-scope edits records a blocker instead of rerunning the same command.
 - Verification summaries show the first actionable compiler/linker/test error in the terminal and keep full raw output in artifacts.
@@ -4096,6 +4096,7 @@ Provider and model commands control which model is active and how planning/revie
 - /model cross-review 0 clears the independent route and returns reviews to default single-model mode.
 - /model clear cross-review clears the independent route and returns reviews to single-model mode.
 - /model cross-review status shows review.model_review_consent. Automatic review flags make a review eligible; consent still controls implicit model-backed review requests.
+- In single-model mode (no independent route) implicit model reviews are skipped automatically without a consent prompt; the main model's self-review runs only with review.model_review_consent always or via explicit /review.
 
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 - Show per-target reasoning effort when no value is provided. Empty config is displayed as undefined.
@@ -4494,7 +4495,8 @@ Memory commands inspect and manage loaded memory files, persistent memory record
 		return strings.TrimSpace(`
 Review commands all go through the common ReviewRun harness and write .kernforge/reviews/latest.json plus latest.md.
 Implicit automatic model-backed reviews obey review.model_review_consent: ask (default), always, or never.
-Skipped implicit reviews record model_review_status such as skipped_by_user or skipped_no_interactive_consent and do not send another reviewer model request.
+On a single-model route (no independent reviewer configured) implicit model reviews are skipped automatically with skipped_single_model_route and no consent prompt appears; explicit /review still runs, and consent always is the opt-in that keeps implicit self-reviews running.
+Skipped implicit reviews record model_review_status such as skipped_by_user, skipped_single_model_route, or skipped_no_interactive_consent and do not send another reviewer model request.
 When an automatic review is skipped or blocked, review artifacts preserve the original user-visible main-model proposal/ref when available.
 
 /review change [diff-or-note]

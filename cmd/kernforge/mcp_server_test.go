@@ -169,6 +169,11 @@ func TestMCPRuntimeAskConsentSkipsImplicitModelReview(t *testing.T) {
 	cfg.SessionDir = filepath.Join(root, ".kernforge", "sessions")
 	cfg.HooksEnabled = boolPtr(false)
 	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	// A distinct cross route keeps this on the non-interactive consent path; a
+	// single-model route would auto-skip earlier with skipped_single_model_route.
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {Provider: "scripted", Model: "cross-model"},
+	}
 
 	rt, err := newRuntimeStateForMCPServer(root, cfg, "", io.Discard)
 	if err != nil {

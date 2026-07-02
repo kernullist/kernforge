@@ -236,7 +236,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 			if crossReviewerConfigured {
 				a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "User approved main-model-only pre-write fallback. Cross-reviewer failure will be recorded, but it will not block this edit before diff preview.", "사용자가 메인 모델 기준 쓰기 전 리뷰 fallback을 승인했습니다. cross reviewer 실패는 기록하지만 이번 편집의 diff preview 진입을 막지는 않습니다."))
 			} else {
-				a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Single-model review (no cross reviewer): the main model's self-review runs as advisory and will not hard-block. Check the diff preview before approving, or set an independent reviewer with /model cross-review for a blocking gate.", "단일 모델 리뷰(크로스 리뷰어 없음): 메인 모델의 self-review는 권고용으로만 동작하며 강제 차단하지 않습니다. 승인 전에 diff preview를 확인하거나, 차단형 게이트가 필요하면 /model cross-review로 독립 리뷰어를 설정하세요."))
+				a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Single-model review (no cross reviewer): the implicit self-review is skipped by default (opt in with review.model_review_consent always, or run /review), and when it runs it stays advisory and will not hard-block. The diff preview is the gate; set an independent reviewer with /model cross-review for a blocking gate.", "단일 모델 리뷰(크로스 리뷰어 없음): 암시적 self-review는 기본적으로 생략됩니다(review.model_review_consent always 또는 /review로 실행). 실행되는 경우에도 권고용으로만 동작하며 강제 차단하지 않습니다. diff preview가 게이트이며, 차단형 게이트가 필요하면 /model cross-review로 독립 리뷰어를 설정하세요."))
 			}
 		}
 	} else if fallbackApproved && a.Workspace.PreviewEdit == nil && a.EmitProgress != nil {
@@ -1765,6 +1765,13 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 }
 
 func preWriteReviewBlockingWarningFindings(run ReviewRun) []ReviewFinding {
+	// Main-only advisory fallback: the single-model self-review must not stop
+	// the edit on its own warnings either -- the diff preview is the gate. Only
+	// model-sourced findings can pass preWriteReviewWarningShouldBlock below, so
+	// returning early loses no deterministic signal.
+	if reviewRunUsesMainOnlyFallbackGatePolicy(run) {
+		return nil
+	}
 	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
 	if len(warningIDs) == 0 {
 		return nil

@@ -934,6 +934,11 @@ func TestRuntimeStateModelReviewConsentClearsFooterAndShowsProposal(t *testing.T
 	cfg := DefaultConfig(t.TempDir())
 	cfg.AutoLocale = boolPtr(false)
 	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	// A distinct cross route keeps the consent prompt reachable; a single-model
+	// route auto-skips implicit model reviews without prompting.
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {Provider: "scripted", Model: "cross-model"},
+	}
 	var out bytes.Buffer
 	rt := &runtimeState{
 		reader:                          bufio.NewReader(strings.NewReader("n\n")),
@@ -942,6 +947,7 @@ func TestRuntimeStateModelReviewConsentClearsFooterAndShowsProposal(t *testing.T
 		cfg:                             cfg,
 		interactive:                     true,
 		modelReviewConsentPromptEnabled: true,
+		agent:                           &Agent{Config: cfg},
 	}
 
 	rt.renderFooterLine("[thinking] [-] Main model prepared an edit proposal. [0s | Esc]")
