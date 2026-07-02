@@ -71,3 +71,58 @@ func TestFuzzyReplaceTargetRefusesOversizedSearch(t *testing.T) {
 		t.Fatalf("search longer than file must be refused")
 	}
 }
+
+// A multi-line search written with bare LF must find its CRLF counterpart in
+// the file. This is the exact shape that dead-locked a real session: the model
+// re-read a CRLF C# file, re-issued an LF-only exact_search, and mismatched
+// forever until the retry-loop guard aborted the run.
+func TestResolveReplaceTargetMatchesCRLFContentWithLFSearch(t *testing.T) {
+	content := "                    );\";\r\n                    CREATE TABLE IF NOT EXISTS Deltas (\r\n"
+	search := "                    );\";\n                    CREATE TABLE IF NOT EXISTS Deltas ("
+	want := "                    );\";\r\n                    CREATE TABLE IF NOT EXISTS Deltas ("
+	got, n := resolveReplaceTarget(content, search)
+	if n != 1 || got != want {
+		t.Fatalf("crlf content: got %q n=%d, want %q n=1", got, n, want)
+	}
+}
+
+// The reverse direction: a CRLF search against an LF file.
+func TestResolveReplaceTargetMatchesLFContentWithCRLFSearch(t *testing.T) {
+	content := "alpha\nbeta\ngamma\n"
+	got, n := resolveReplaceTarget(content, "alpha\r\nbeta")
+	if n != 1 || got != "alpha\nbeta" {
+		t.Fatalf("lf content: got %q n=%d, want %q n=1", got, n, "alpha\nbeta")
+	}
+}
+
+// Whitespace drift inside a CRLF file resolves via the fuzzy ladder; the span
+// keeps the file's real bytes including interior CRLF and the trailing CR of
+// the final matched line.
+func TestResolveReplaceTargetFuzzyMatchInCRLFContent(t *testing.T) {
+	content := "func x() {\r\n\t\treturn 1\r\n}\r\n"
+	span, n := resolveReplaceTarget(content, "    return 1")
+	if n != 1 || span != "\t\treturn 1\r" {
+		t.Fatalf("crlf fuzzy: span=%q n=%d", span, n)
+	}
+}
+
+// Replacements are rewritten to the file's dominant line ending, and a
+// match-final bare CR stays paired so no mixed LF terminator is introduced.
+func TestAdaptReplacementToMatchPreservesCRLF(t *testing.T) {
+	content := "a\r\nb\r\nc\r\n"
+	got := adaptReplacementToMatch(content, "a\r\nb", "one\ntwo")
+	if got != "one\r\ntwo" {
+		t.Fatalf("crlf replacement: got %q, want %q", got, "one\r\ntwo")
+	}
+	got = adaptReplacementToMatch(content, "b\r", "middle")
+	if got != "middle\r" {
+		t.Fatalf("trailing CR: got %q, want %q", got, "middle\r")
+	}
+	got = adaptReplacementToMatch("a\nb\n", "a", "one\r\ntwo")
+	if got != "one\ntwo" {
+		t.Fatalf("lf replacement: got %q, want %q", got, "one\ntwo")
+	}
+	if got = adaptReplacementToMatch(content, "b\r", "plain"); got != "plain\r" {
+		t.Fatalf("newline-free replacement after CR match: got %q, want %q", got, "plain\r")
+	}
+}

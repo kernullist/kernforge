@@ -4922,11 +4922,13 @@ func (t ReplaceInFileTool) Definition() ToolDefinition {
 }
 
 // resolveReplaceTarget finds the text in content that a replace_in_file search
-// refers to. It tries an exact match first; on failure it falls back to the same
+// refers to. It tries an exact match first, then the same search rewritten to
+// the file's dominant line ending (an LF-only search must still find its CRLF
+// counterpart and vice versa); on failure it falls back to the same
 // whitespace-tolerant line ladder apply_patch uses (trailing-space, then full
 // per-line trim), accepting only a unique block so a replacement never lands at
 // the wrong place. Returns the text to replace (the search itself for an exact
-// match, or the file's actual span for a fuzzy one) and its occurrence count.
+// match, or the file's actual span otherwise) and its occurrence count.
 func resolveReplaceTarget(content, search string) (string, int) {
 	if search == "" {
 		return search, 0
@@ -4934,10 +4936,43 @@ func resolveReplaceTarget(content, search string) (string, int) {
 	if count := strings.Count(content, search); count > 0 {
 		return search, count
 	}
+	if converted := convertToContentLineEndings(content, search); converted != search {
+		if count := strings.Count(content, converted); count > 0 {
+			return converted, count
+		}
+	}
 	if span, ok := fuzzyReplaceTarget(content, search); ok {
 		return span, strings.Count(content, span)
 	}
 	return search, 0
+}
+
+// convertToContentLineEndings rewrites text to the dominant line ending of
+// content so payloads written with bare LF still line up with CRLF files and
+// vice versa. Text without any newline is returned unchanged.
+func convertToContentLineEndings(content, text string) string {
+	if !strings.Contains(text, "\n") && !strings.Contains(text, "\r") {
+		return text
+	}
+	eol := detectPatchLineEnding(content)
+	normalized := normalizePatchLineEndings(text)
+	if eol == "\n" {
+		return normalized
+	}
+	return strings.ReplaceAll(normalized, "\n", eol)
+}
+
+// adaptReplacementToMatch converts a replacement payload to the file's line
+// endings and keeps a match-final bare CR paired: when the matched span was cut
+// from CRLF content its last line still carries the trailing "\r" (the "\n"
+// stays in the file), so the replacement must end the same way or the file is
+// left with a mixed bare-LF terminator.
+func adaptReplacementToMatch(content, matchText, replacement string) string {
+	converted := convertToContentLineEndings(content, replacement)
+	if strings.HasSuffix(matchText, "\r") && !strings.HasSuffix(converted, "\r") {
+		converted += "\r"
+	}
+	return converted
 }
 
 // fuzzyReplaceTarget returns the file's actual text for a search whose whitespace
@@ -5002,11 +5037,12 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	if !all && count > 1 {
 		return "", fmt.Errorf("search text appears %d times; set all=true or use a more specific match", count)
 	}
+	payload := adaptReplacementToMatch(content, matchText, replace)
 	var updated string
 	if all {
-		updated = strings.ReplaceAll(content, matchText, replace)
+		updated = strings.ReplaceAll(content, matchText, payload)
 	} else {
-		updated = strings.Replace(content, matchText, replace, 1)
+		updated = strings.Replace(content, matchText, payload, 1)
 	}
 	if suspiciousReplacePayload(path, search, replace, content, updated) {
 		return "", fmt.Errorf("%w: replace_in_file replacement looks like a malformed serialized payload instead of real code; use apply_patch or provide the exact replacement text", ErrInvalidEditPayload)
@@ -5179,7 +5215,7 @@ func replaceInFileMutationPreview(ws Workspace, args map[string]any) (plannedTex
 			PlanAvailable: strings.TrimSpace(route.DisplayPath()) != "",
 		}, 0
 	}
-	replace := stringValue(args, "replace")
+	replace := adaptReplacementToMatch(before, matchText, stringValue(args, "replace"))
 	after := ""
 	if all {
 		after = strings.ReplaceAll(before, matchText, replace)

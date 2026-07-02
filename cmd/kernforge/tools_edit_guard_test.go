@@ -201,6 +201,40 @@ func TestPlanEditProposalUsesLookupRoutingForExistingFileOperations(t *testing.T
 	}
 }
 
+// Regression for the apply_edit_proposal dead-lock: a CRLF file edited with an
+// LF-only exact_search must plan successfully and keep the file CRLF-clean,
+// instead of reporting an edit target mismatch on every retry until the loop
+// guard aborts the session.
+func TestPlanEditProposalReplaceInFileToleratesCRLFDrift(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "DatabaseService.cs")
+	content := "line1\r\n                    );\";\r\n                    CREATE TABLE IF NOT EXISTS Deltas (\r\nline4\r\n"
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	proposal := EditProposal{
+		File:        "DatabaseService.cs",
+		Operation:   "replace_in_file",
+		ExactSearch: "                    );\";\n                    CREATE TABLE IF NOT EXISTS Deltas (",
+		Replacement: "                    );\n                    CREATE TABLE IF NOT EXISTS Deltas (",
+	}
+	planned, err := planEditProposal(ws, proposal, "", false)
+	if err != nil {
+		t.Fatalf("planEditProposal must tolerate CRLF drift, got %v", err)
+	}
+	want := "line1\r\n                    );\r\n                    CREATE TABLE IF NOT EXISTS Deltas (\r\nline4\r\n"
+	if planned.After != want {
+		t.Fatalf("planned.After = %q, want %q", planned.After, want)
+	}
+	if strings.Contains(strings.ReplaceAll(planned.After, "\r\n", ""), "\n") {
+		t.Fatalf("planned.After introduced a bare LF into a CRLF file: %q", planned.After)
+	}
+}
+
 func TestWorkspaceEnsureWriteAllowsActiveNestedClaudeWorktree(t *testing.T) {
 	base := t.TempDir()
 	activeRoot := filepath.Join(base, ".claude", "worktrees", "compassionate-goldberg")

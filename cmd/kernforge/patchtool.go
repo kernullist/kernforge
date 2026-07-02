@@ -1035,9 +1035,12 @@ func locatePatchChunk(lines, oldChunk []string, cursor int, header string, lineD
 }
 
 // patchLinesEqualTrailing treats two lines as equal when they differ only by
-// trailing spaces or tabs.
+// trailing spaces, tabs, or a carriage return. The CR case covers CRLF file
+// content matched by fuzzyReplaceTarget, which splits on bare LF and leaves
+// the "\r" attached to each line; apply_patch input is already normalized so
+// the extra cut character is inert there.
 func patchLinesEqualTrailing(a, b string) bool {
-	return strings.TrimRight(a, " \t") == strings.TrimRight(b, " \t")
+	return strings.TrimRight(a, " \t\r") == strings.TrimRight(b, " \t\r")
 }
 
 // patchLinesEqualTrimmed treats two lines as equal when they differ only by

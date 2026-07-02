@@ -543,17 +543,18 @@ func planEditProposal(ws Workspace, proposal EditProposal, ownerNodeID string, a
 		if proposal.ExactSearch == "" {
 			return plannedEditProposal{}, fmt.Errorf("edit proposal exact_search is required for replace_in_file")
 		}
-		count := strings.Count(before, proposal.ExactSearch)
+		matchText, count := resolveReplaceTarget(before, proposal.ExactSearch)
 		if count == 0 {
 			return plannedEditProposal{}, fmt.Errorf("%w: exact_search text not found in %s", ErrEditTargetMismatch, displayPath)
 		}
 		if !all && count > 1 {
 			return plannedEditProposal{}, fmt.Errorf("exact_search appears %d times; set all=true or provide a narrower exact_search", count)
 		}
+		replacement := adaptReplacementToMatch(before, matchText, proposal.Replacement)
 		if all {
-			planned.After = strings.ReplaceAll(before, proposal.ExactSearch, proposal.Replacement)
+			planned.After = strings.ReplaceAll(before, matchText, replacement)
 		} else {
-			planned.After = strings.Replace(before, proposal.ExactSearch, proposal.Replacement, 1)
+			planned.After = strings.Replace(before, matchText, replacement, 1)
 		}
 		planned.Count = count
 		if suspiciousReplacePayload(path, proposal.ExactSearch, proposal.Replacement, before, planned.After) {
