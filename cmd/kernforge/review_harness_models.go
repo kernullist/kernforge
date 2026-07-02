@@ -815,7 +815,17 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		roleFindings = retryFindings
 		quality = retryQuality
 	}
-	reviewerRun.Status = "completed"
+	// A run whose final output is the empty-response placeholder produced no
+	// usable review: record it as failed, not completed, so route-health and
+	// telemetry (LastStatus) do not read a dead call as a successful one.
+	if quality == reviewModelQualityFailed && strings.TrimSpace(raw) == "(empty review response)" {
+		reviewerRun.Status = "failed"
+		if strings.TrimSpace(reviewerRun.Error) == "" {
+			reviewerRun.Error = "review model returned an empty response"
+		}
+	} else {
+		reviewerRun.Status = "completed"
+	}
 	reviewerRun.ModelQuality = quality
 	if quality == reviewModelQualityWeak || quality == reviewModelQualityFailed {
 		reviewerRun.WeakOutputDegraded = true

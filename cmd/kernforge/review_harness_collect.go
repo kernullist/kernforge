@@ -148,7 +148,13 @@ func reviewRequestNamesNonChangeTarget(request string) bool {
 	if lower == "" {
 		return false
 	}
-	return containsAny(lower,
+	// Word-boundary matching for the short ASCII tokens: bare substring matching
+	// let "pr" match "improve"/"print"/"process", and "plan"/"design" match
+	// inside an unrelated word or a filename like RegGit_Design_Doc.md, misrouting
+	// a code-change request away from the session-changed seed. Multi-word phrases
+	// and Hangul tokens are matched as-is by containsWord (Hangul falls back to
+	// substring inside the helper).
+	return containsWord(lower,
 		"plan", "design", "architecture", "설계", "계획",
 		"pull request", "merge request", "pr review", "review pr",
 		"final answer", "최종 답변",
@@ -180,16 +186,16 @@ func inferReviewTarget(rt *runtimeState, root string, request string, discovery 
 		}
 		return reviewTargetChange
 	}
-	if containsAny(lower, "plan", "design", "architecture", "설계", "계획") {
+	if containsWord(lower, "plan", "design", "architecture", "설계", "계획") {
 		return reviewTargetPlan
 	}
-	if containsAny(lower, "pr", "pull request", "merge request") {
+	if containsWord(lower, "pr", "pull request", "merge request") {
 		return reviewTargetPR
 	}
-	if containsAny(lower, "final answer", "최종 답변") {
+	if containsWord(lower, "final answer", "최종 답변") {
 		return reviewTargetFinal
 	}
-	if containsAny(lower, "analysis", "report", "root cause", "분석", "보고서") {
+	if containsWord(lower, "analysis", "report", "root cause", "분석", "보고서") {
 		return reviewTargetAnalysis
 	}
 	if rt != nil && rt.session != nil {
