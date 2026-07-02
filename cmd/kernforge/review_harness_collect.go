@@ -1858,10 +1858,15 @@ func collectGitReviewEvidence(ctx context.Context, root string, paths []string, 
 	if changeSet.Source == "" {
 		changeSet.Source = "git_worktree"
 	}
-	pathArgs, err := reviewGitPathArgs(root, paths)
+	pathArgs, droppedPaths, err := reviewGitPathArgs(root, paths)
 	if err != nil {
 		evidence.Warnings = append(evidence.Warnings, err.Error())
 		return
+	}
+	if len(droppedPaths) > 0 {
+		// Skip out-of-root paths but keep collecting git evidence for the valid
+		// in-root ones instead of dropping the whole change diff.
+		evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("git evidence skipped paths outside workspace: %s", strings.Join(limitStrings(droppedPaths, 16), ", ")))
 	}
 	statusArgs := []string{"status", "--short", "--branch"}
 	statusArgs = append(statusArgs, pathArgs...)
@@ -1934,10 +1939,21 @@ func collectFileReviewEvidence(rt *runtimeState, root string, paths []string, sy
 		return
 	}
 	cleanPaths := mcpReviewCleanPaths(paths)
+	// Order source files ahead of document artifacts so that when the context
+	// budget is exhausted the files that were dropped are the docs, not the
+	// executable source under review. The sort is stable so same-class ordering
+	// (already deterministic from scope discovery) is preserved, keeping the
+	// evidence text — and therefore the change fingerprint — stable.
+	cleanPaths = reviewOrderEvidencePathsSourceFirst(cleanPaths)
 	remaining := maxChars
 	for i, raw := range cleanPaths {
 		if remaining <= 0 {
-			evidence.Warnings = append(evidence.Warnings, "file excerpts truncated by review context budget")
+			dropped := reviewRemainingEvidencePaths(cleanPaths[i:])
+			if len(dropped) > 0 {
+				evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("file excerpts truncated by review context budget; not collected: %s", strings.Join(dropped, ", ")))
+			} else {
+				evidence.Warnings = append(evidence.Warnings, "file excerpts truncated by review context budget")
+			}
 			return
 		}
 		if shouldSkipMCPReviewFile(raw) {
@@ -1955,11 +1971,27 @@ func collectFileReviewEvidence(rt *runtimeState, root string, paths []string, sy
 			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: %v", raw, err))
 			continue
 		}
+		// Use the workspace-relative form in warnings so an absolute input path
+		// is never echoed back into the reviewer prompt.
+		rel := filepath.ToSlash(relOrAbs(root, resolved))
 		info, err := os.Stat(resolved)
-		if err != nil || info.IsDir() {
+		if err != nil {
+			if os.IsNotExist(err) && reviewChangeSetHasPath(changeSet, rel) {
+				// Already represented in the change set (e.g., collected via the git
+				// diff): a redundant direct-read miss is not a coverage gap.
+				continue
+			}
+			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: %v", rel, reviewSanitizeCollectError(err)))
 			continue
 		}
-		rel := filepath.ToSlash(relOrAbs(root, resolved))
+		if info.IsDir() {
+			// A directory path yields no excerpt on its own; the harness does not
+			// enumerate its files here. Surface it instead of silently dropping a
+			// whole scope entry so the reviewer is not told to review a directory
+			// that produced zero evidence.
+			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: directory paths are not expanded into per-file review evidence", rel))
+			continue
+		}
 		fileSymbols := reviewFileEvidenceSymbols(symbols, rel)
 		if info.Size() > 8*1024*1024 {
 			if len(fileSymbols) > 0 {
@@ -1983,18 +2015,32 @@ func collectFileReviewEvidence(rt *runtimeState, root string, paths []string, sy
 			continue
 		}
 		data, err := os.ReadFile(resolved)
-		if err != nil || !isText(data) {
+		if err != nil {
+			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: %s", rel, reviewSanitizeCollectError(err)))
+			continue
+		}
+		if !isText(data) {
+			// Non-text (binary, or a UTF-16 source file that trips the NUL heuristic)
+			// cannot be excerpted. Warn so the reviewer does not silently miss a file
+			// it was asked to review.
+			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: not decodable as text (binary or non-UTF-8 encoding)", rel))
+			continue
+		}
+		body, title, symbolMatched := reviewFileEvidenceBody(rel, string(data), fileSymbols, fileBudget)
+		if strings.TrimSpace(body) == "" {
+			// Collect no ChangedPaths entry for a file that yielded no evidence:
+			// otherwise the run claims coverage of a file whose content never
+			// entered the evidence pack while the reviewer is told not to reference
+			// files absent from evidence.
+			if len(fileSymbols) > 0 {
+				evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: requested symbols not found: %s", rel, strings.Join(fileSymbols, ", ")))
+			} else {
+				evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: no reviewable excerpt could be collected", rel))
+			}
 			continue
 		}
 		changeSet.ChangedPaths = append(changeSet.ChangedPaths, rel)
 		evidence.ChangedPaths = append(evidence.ChangedPaths, rel)
-		body, title, symbolMatched := reviewFileEvidenceBody(rel, string(data), fileSymbols, fileBudget)
-		if strings.TrimSpace(body) == "" {
-			if len(fileSymbols) > 0 {
-				evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("skipped %s: requested symbols not found: %s", rel, strings.Join(fileSymbols, ", ")))
-			}
-			continue
-		}
 		if len(fileSymbols) > 0 && !symbolMatched {
 			evidence.Warnings = append(evidence.Warnings, fmt.Sprintf("symbol-focused excerpt unavailable in %s: %s", rel, strings.Join(fileSymbols, ", ")))
 		}
@@ -2005,6 +2051,79 @@ func collectFileReviewEvidence(rt *runtimeState, root string, paths []string, sy
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, title, body)
 		remaining -= len(evidence.Text) - beforeLen
 		evidence.Sources = append(evidence.Sources, "file_excerpt")
+	}
+}
+
+// reviewOrderEvidencePathsSourceFirst returns the paths with executable source
+// files ahead of document artifacts, preserving relative order within each
+// class (stable). This keeps deterministic scope-discovery ordering while
+// ensuring the budget drops docs before code.
+func reviewOrderEvidencePathsSourceFirst(paths []string) []string {
+	if len(paths) < 2 {
+		return paths
+	}
+	source := make([]string, 0, len(paths))
+	docs := make([]string, 0, len(paths))
+	other := make([]string, 0, len(paths))
+	for _, p := range paths {
+		switch {
+		case reviewPathIsExecutableSource(p):
+			source = append(source, p)
+		case reviewPathIsDocumentArtifact(p):
+			docs = append(docs, p)
+		default:
+			other = append(other, p)
+		}
+	}
+	ordered := make([]string, 0, len(paths))
+	ordered = append(ordered, source...)
+	ordered = append(ordered, other...)
+	ordered = append(ordered, docs...)
+	return ordered
+}
+
+// reviewRemainingEvidencePaths lists the collectable paths in the tail (skipping
+// entries the collector itself would skip), for a truncation warning that names
+// what was dropped.
+func reviewRemainingEvidencePaths(tail []string) []string {
+	var out []string
+	for _, p := range tail {
+		if shouldSkipMCPReviewFile(p) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return limitStrings(out, 24)
+}
+
+// reviewChangeSetHasPath reports whether rel (slash-normalized) is already in
+// the change set's changed paths, so a redundant direct-read miss for a file
+// already represented via the git diff is not reported as a coverage gap.
+func reviewChangeSetHasPath(changeSet *ReviewChangeSet, rel string) bool {
+	if changeSet == nil {
+		return false
+	}
+	want := filepath.ToSlash(strings.TrimSpace(rel))
+	for _, p := range changeSet.ChangedPaths {
+		if filepath.ToSlash(strings.TrimSpace(p)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// reviewSanitizeCollectError maps a filesystem error to a short reason that
+// never echoes the absolute OS path back into the reviewer prompt.
+func reviewSanitizeCollectError(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case os.IsNotExist(err):
+		return "file not found"
+	case os.IsPermission(err):
+		return "permission denied"
+	default:
+		return "unreadable"
 	}
 }
 
@@ -2458,11 +2577,17 @@ func compactReviewEvidenceSectionBlock(section reviewEvidenceSectionBlock, maxCh
 	return appendReviewEvidenceSection("", title, compactPromptSectionPreserveHeadTail(body, bodyBudget))
 }
 
-func reviewGitPathArgs(root string, paths []string) ([]string, error) {
+// reviewGitPathArgs builds the `-- <path>...` pathspec for the git evidence
+// commands. Paths that resolve outside the workspace root are skipped and
+// reported in dropped, rather than aborting collection of git evidence for the
+// valid in-root paths. It returns args==nil only when there are no usable
+// in-root paths (fall back to whole-worktree scope in that case).
+func reviewGitPathArgs(root string, paths []string) ([]string, []string, error) {
 	if len(paths) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	out := []string{"--"}
+	var dropped []string
 	for _, path := range mcpReviewCleanPaths(paths) {
 		resolved := path
 		if !filepath.IsAbs(resolved) {
@@ -2470,11 +2595,16 @@ func reviewGitPathArgs(root string, paths []string) ([]string, error) {
 		}
 		rel := filepath.ToSlash(relOrAbs(root, resolved))
 		if strings.HasPrefix(rel, "..") {
-			return nil, fmt.Errorf("review path is outside workspace: %s", path)
+			dropped = append(dropped, path)
+			continue
 		}
 		out = append(out, rel)
 	}
-	return out, nil
+	if len(out) == 1 {
+		// Every requested path was out of root: no pathspec to scope by.
+		return nil, dropped, nil
+	}
+	return out, dropped, nil
 }
 
 func reviewGitOutputIsUnavailable(text string) bool {
