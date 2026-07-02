@@ -3934,6 +3934,126 @@ func TestCrossReviewerRepeatedFailureFallsBackToSingleModel(t *testing.T) {
 	}
 }
 
+// Regression: auto post_change reviews promote the configured reviewer to
+// primary. That promoted run must (1) feed the same consecutive-failure
+// counter as the cross route so a dead route engages the D-A fallback instead
+// of re-running forever, (2) stop being promoted once the fallback engages,
+// and (3) label itself as reviewer-primary rather than single-model.
+func TestPostChangeReviewerPromotionRespectsFallback(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "SampleReview.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &failingReviewProviderClient{err: fmt.Errorf("review model soft timeout after 3m0s")}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	mainReplies := []ChatResponse{}
+	for i := 0; i < (crossReviewerFallbackThreshold+1)*3; i++ {
+		mainReplies = append(mainReplies, approvedReviewResponse("main model approved the change"))
+	}
+	agent := &Agent{
+		Config:         cfg,
+		Client:         &scriptedProviderClient{replies: mainReplies},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	newOpts := func() ReviewHarnessOptions {
+		return ReviewHarnessOptions{
+			Trigger:       "post_change",
+			Target:        reviewTargetChange,
+			Request:       "automatic post-change review",
+			Paths:         []string{path},
+			ProvidedDiff:  "- break;\n+ continue;\n",
+			AutoTriggered: true,
+		}
+	}
+
+	// Promoted-primary failures must reach the fallback threshold.
+	for i := 0; i < crossReviewerFallbackThreshold; i++ {
+		if _, err := runReviewHarness(context.Background(), rt, newOpts()); err != nil {
+			t.Fatalf("runReviewHarness promoted run %d: %v", i, err)
+		}
+	}
+	if got := agent.Session.CrossReviewerConsecutiveFailures; got != crossReviewerFallbackThreshold {
+		t.Fatalf("promoted-primary failures must feed the cross fallback counter: want %d, got %d", crossReviewerFallbackThreshold, got)
+	}
+
+	reviewerCallsBeforeFallback := len(reviewer.requests)
+	run, err := runReviewHarness(context.Background(), rt, newOpts())
+	if err != nil {
+		t.Fatalf("runReviewHarness fallback run: %v", err)
+	}
+	if len(reviewer.requests) != reviewerCallsBeforeFallback {
+		t.Fatalf("fallback run must not re-promote the dead reviewer route: before=%d after=%d", reviewerCallsBeforeFallback, len(reviewer.requests))
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("fallback run should not block on RF-REVIEWER-001, got findings=%#v", run.Findings)
+	}
+	if strings.EqualFold(run.SingleModelPolicy.IndependenceLevel, "reviewer_primary") {
+		t.Fatalf("fallback run is a genuine main-model self-review, not reviewer_primary")
+	}
+}
+
+// Regression: a healthy promoted reviewer-primary run must label itself
+// honestly (reviewer_primary, not an unconfigured single-model self-review)
+// and reset the cross failure counter on success.
+func TestPostChangeReviewerPromotionLabelsAndResetsCounter(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "SampleReview.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	reviewerReplies := []ChatResponse{
+		approvedReviewResponse("review model approved the change"),
+		approvedReviewResponse("review model second pass approved"),
+	}
+	agent := &Agent{
+		Config:         cfg,
+		Client:         &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("main model approved")}},
+		ReviewerClient: &scriptedProviderClient{replies: reviewerReplies},
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	// One prior transient failure: a usable promoted run must reset it.
+	agent.Session.CrossReviewerConsecutiveFailures = 1
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:       "post_change",
+		Target:        reviewTargetChange,
+		Request:       "automatic post-change review",
+		Paths:         []string{path},
+		ProvidedDiff:  "- break;\n+ continue;\n",
+		AutoTriggered: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if !strings.EqualFold(run.SingleModelPolicy.IndependenceLevel, "reviewer_primary") {
+		t.Fatalf("promoted run must label independence reviewer_primary, got %q", run.SingleModelPolicy.IndependenceLevel)
+	}
+	if !strings.EqualFold(run.SingleModelPolicy.NoCrossReviewReason, "reviewer_promoted_primary") {
+		t.Fatalf("promoted run must record reviewer_promoted_primary, got %q", run.SingleModelPolicy.NoCrossReviewReason)
+	}
+	if got := agent.Session.CrossReviewerConsecutiveFailures; got != 0 {
+		t.Fatalf("usable promoted run must reset the cross failure counter, got %d", got)
+	}
+}
+
 func TestReviewerGateUnavailableReplyOffersMainModelFallback(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.AutoLocale = boolPtr(false)

@@ -222,7 +222,13 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	}
 	rt := a.reviewHarnessRuntime(root)
 	reviewerGatePolicy := ""
-	crossReviewerConfigured := a.reviewerClientDiffersFromMain(a.ReviewerClient, a.ReviewerModel)
+	// A route that engaged the consecutive-failure fallback is not a usable
+	// independent reviewer: the run below will execute as a main-model
+	// self-review, so the gate policy must be the advisory main_only_fallback
+	// (a self-review that hard-blocks contradicts the promise documented on
+	// preWriteUsesMainOnlyReviewerFallback).
+	crossReviewerConfigured := a.reviewerClientDiffersFromMain(a.ReviewerClient, a.ReviewerModel) &&
+		!reviewCrossReviewerFallbackEngaged(rt)
 	fallbackApproved := preWriteMainOnlyReviewerFallbackApproved(a.Session)
 	// Single-model review (no independent cross reviewer) is the main model
 	// reviewing its own proposed edit: it cannot corroborate, and a reasoning

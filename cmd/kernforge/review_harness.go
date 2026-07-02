@@ -960,7 +960,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	}
 	emitReviewPipelineProgress(rt, run, 3, "model review", "모델 검토", "Run the main code review and the configured cross-review when available.", "메인 코드 검토와 설정된 교차 리뷰를 실행합니다.")
 	reviewCacheKey := reviewVerdictCacheKey(run)
-	reviewPrimaryModelLabel := reviewMainModelLabel(rt.cfg)
+	reviewPrimaryModelLabel := reviewPrimaryAuthoringModelLabel(rt, run)
 	modelReviewSkippedByConsent := false
 	if opts.AutoTriggered && !opts.NoModel && len(run.Evidence.Sources) > 0 {
 		decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{

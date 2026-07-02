@@ -335,6 +335,7 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		}
 		run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, fmt.Sprintf("Cross reviewer %s failed on %d consecutive reviews; falling back to single-model review for this turn. Fix or clear that route with /model cross-review to restore independent cross review.", strings.TrimSpace(crossLabel), reviewCrossReviewerConsecutiveFailures(rt)))
 	}
+	promotedReviewerPrimary := false
 	if reviewRunShouldUseConfiguredReviewerAsPrimary(rt, *run, hasCrossReviewer) {
 		if hasCrossReviewer {
 			mainClient = crossClient
@@ -348,8 +349,16 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		mainErr = nil
 		mainRole = "primary_reviewer"
 		hasCrossReviewer = false
+		promotedReviewerPrimary = true
 	}
 	run.SingleModelPolicy = buildSingleModelReviewPolicy(*run, hasCrossReviewer)
+	if promotedReviewerPrimary {
+		// Honesty: a distinct configured review model authors this run as the
+		// primary reviewer. It must not read as an unconfigured single-model
+		// self-review in policy, guidance, or progress output.
+		run.SingleModelPolicy.IndependenceLevel = "reviewer_primary"
+		run.SingleModelPolicy.NoCrossReviewReason = "reviewer_promoted_primary"
+	}
 	phaseTotal := 1
 	if hasCrossReviewer || run.SingleModelPolicy.Enabled {
 		phaseTotal = 2
@@ -361,6 +370,13 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 	mainFindings, mainRun, mainRaw := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, mainRole, "main", mainPrompt, mainErr, reviewModelRunPeerContext{})
 	reviewerRuns = append(reviewerRuns, mainRun)
 	findings = append(findings, mainFindings...)
+	if promotedReviewerPrimary {
+		// D-A: the promoted primary run uses the same physical route as the cross
+		// reviewer, so its outcome must feed the same consecutive-failure counter.
+		// Otherwise a route that fails only on post_change reviews never engages
+		// the fallback, and a recovered route never resets the counter.
+		reviewRecordCrossReviewerOutcome(rt, reviewCrossReviewerRunFailed(mainRun))
+	}
 
 	if hasCrossReviewer {
 		emitReviewModelCrossHandoffProgress(rt, mainRun)
@@ -383,11 +399,16 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		if crossFallbackEngaged {
 			run.SingleModelPolicy.NoCrossReviewReason = "cross_reviewer_repeated_failure_fallback"
 		}
-		emitReviewModelNoCrossReviewerProgress(rt)
 		if run.ModelPlan.UserGuidance == nil {
 			run.ModelPlan.UserGuidance = []string{}
 		}
-		run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, "Single-model review mode is active; no independent cross reviewer is configured for this run.")
+		if promotedReviewerPrimary {
+			emitReviewModelReviewerPrimaryProgress(rt)
+			run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, "The configured review model authored this review as the primary reviewer; no second independent cross reviewer ran for this pass.")
+		} else {
+			emitReviewModelNoCrossReviewerProgress(rt)
+			run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, "Single-model review mode is active; no independent cross reviewer is configured for this run.")
+		}
 		if shouldRunSingleModelSecondPass(rt, run, mainRun, mainRaw) {
 			secondPassFingerprint := singleModelSecondPassFingerprint(*run, mainRaw, findings)
 			// Label the second-pass route honestly: it reuses the primary model, so
@@ -482,10 +503,30 @@ func reviewRunShouldUseConfiguredReviewerAsPrimary(rt *runtimeState, run ReviewR
 	if hasCrossReviewer {
 		return true
 	}
+	// D-A: a reviewer route that already engaged the consecutive-failure
+	// fallback must not be re-promoted to primary. Re-promoting re-runs the
+	// dead route forever, and its failures bypass the fallback accounting.
+	if reviewCrossReviewerFallbackEngaged(rt) {
+		return false
+	}
 	return rt != nil &&
 		rt.agent != nil &&
 		rt.agent.ReviewerClient != nil &&
 		strings.TrimSpace(rt.agent.ReviewerModel) != ""
+}
+
+// reviewPrimaryAuthoringModelLabel returns the label of the route that will
+// author the primary model findings for this run: the configured reviewer on
+// auto post_change promotions, the main model otherwise. Verdict-cache lookup
+// and record must both use this label so cached findings stay attributed to
+// the model that actually produced them (a reviewer-authored verdict cached
+// under the main-model label would survive a review-model change unnoticed).
+func reviewPrimaryAuthoringModelLabel(rt *runtimeState, run ReviewRun) string {
+	if rt != nil && rt.agent != nil && rt.agent.ReviewerClient != nil &&
+		reviewRunShouldUseConfiguredReviewerAsPrimary(rt, run, false) {
+		return formatProviderModelEffortLabel(rt.cfg.Provider, rt.agent.ReviewerModel, rt.cfg.ReasoningEffort)
+	}
+	return reviewMainModelLabel(rt.cfg)
 }
 
 type reviewModelRunPeerContext struct {
@@ -1954,6 +1995,14 @@ func emitReviewModelNoCrossReviewerProgress(rt *runtimeState) {
 		rt,
 		"No separate review model is configured, so Kernforge will use the main model review result.",
 		"별도 리뷰 모델이 없어 메인 모델 리뷰 결과를 사용합니다.",
+	)
+}
+
+func emitReviewModelReviewerPrimaryProgress(rt *runtimeState) {
+	emitReviewModelFlowProgress(
+		rt,
+		"The configured review model reviewed this change as the primary reviewer for this run.",
+		"설정된 리뷰 모델이 이번 리뷰의 primary reviewer로 변경 내용을 검토했습니다.",
 	)
 }
 
