@@ -948,24 +948,47 @@ func (rt *runtimeState) promptUserChoice(q UserQuestion) (UserQuestionResult, er
 	if rt == nil || !rt.interactive {
 		return UserQuestionResult{Canceled: true}, nil
 	}
+	korean := localePrefersKorean(rt.cfg)
 	if header := strings.TrimSpace(q.Header); header != "" {
 		rt.printAssistant("[" + header + "] " + strings.TrimSpace(q.Question))
 	} else {
 		rt.printAssistant(strings.TrimSpace(q.Question))
 	}
+	hasRecommended := false
 	for i, opt := range q.Options {
 		line := fmt.Sprintf("  %d) %s", i+1, opt.Label)
+		if opt.Recommended {
+			hasRecommended = true
+			line += localizedText(rt.cfg, " (recommended)", " (권장)")
+		}
 		if d := strings.TrimSpace(opt.Description); d != "" {
 			line += " - " + d
 		}
 		fmt.Fprintln(rt.writer, rt.ui.infoLine(line))
 	}
-	hint := "Enter the option number"
-	if q.Multiple {
-		hint += " (comma-separated for more than one)"
-	}
-	if q.AllowCustom {
-		hint += ", or type a custom answer"
+	var hint string
+	if korean {
+		hint = "번호를 입력하세요"
+		if q.Multiple {
+			hint += " (여러 개는 쉼표로 구분)"
+		}
+		if q.AllowCustom {
+			hint += ", 직접 입력도 가능"
+		}
+		if hasRecommended {
+			hint += ", 그냥 Enter를 누르면 권장 옵션이 선택됩니다"
+		}
+	} else {
+		hint = "Enter the option number"
+		if q.Multiple {
+			hint += " (comma-separated for more than one)"
+		}
+		if q.AllowCustom {
+			hint += ", or type a custom answer"
+		}
+		if hasRecommended {
+			hint += "; press Enter to accept the recommended option"
+		}
 	}
 	var (
 		result UserQuestionResult
@@ -1001,7 +1024,9 @@ func (rt *runtimeState) readUserChoice(q UserQuestion, prompt string) (UserQuest
 			}
 			parsed, ok := parseUserChoiceAnswer(q, strings.TrimSpace(answer))
 			if !ok {
-				fmt.Fprintln(rt.writer, rt.ui.warnLine("Please enter a valid option number (comma-separated for multiple, or a custom answer when allowed)."))
+				fmt.Fprintln(rt.writer, rt.ui.warnLine(localizedText(rt.cfg,
+					"Please enter a valid option number (comma-separated for multiple, or a custom answer when allowed).",
+					"유효한 번호를 입력해 주세요 (여러 개는 쉼표로 구분, 허용된 경우 직접 입력도 가능합니다).")))
 				continue
 			}
 			result = parsed
@@ -1017,6 +1042,12 @@ func (rt *runtimeState) readUserChoice(q UserQuestion, prompt string) (UserQuest
 func parseUserChoiceAnswer(q UserQuestion, answer string) (UserQuestionResult, bool) {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
+		// A bare Enter accepts the model's recommended option when one exists.
+		for _, opt := range q.Options {
+			if opt.Recommended {
+				return UserQuestionResult{Selected: []string{opt.Label}}, true
+			}
+		}
 		return UserQuestionResult{}, false
 	}
 	parts := strings.Split(answer, ",")

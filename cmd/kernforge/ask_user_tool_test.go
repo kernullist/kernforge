@@ -30,6 +30,35 @@ func TestParseUserChoiceAnswer(t *testing.T) {
 	if r, ok := parseUserChoiceAnswer(qc, "freeform"); !ok || r.Custom != "freeform" {
 		t.Fatalf("custom: ok=%v %#v", ok, r)
 	}
+
+	// A bare Enter accepts the recommended option; without one it is rejected.
+	if _, ok := parseUserChoiceAnswer(q, ""); ok {
+		t.Fatalf("empty answer must be rejected when nothing is recommended")
+	}
+	qr := UserQuestion{Options: []UserQuestionOption{{Label: "A", Recommended: true}, {Label: "B"}}}
+	if r, ok := parseUserChoiceAnswer(qr, ""); !ok || len(r.Selected) != 1 || r.Selected[0] != "A" {
+		t.Fatalf("empty answer must select the recommended option: ok=%v %#v", ok, r)
+	}
+}
+
+func TestAskUserToolParsesRecommendedOption(t *testing.T) {
+	var captured UserQuestion
+	ws := Workspace{PromptUserChoice: func(q UserQuestion) (UserQuestionResult, error) {
+		captured = q
+		return UserQuestionResult{Selected: []string{q.Options[0].Label}}, nil
+	}}
+	if _, err := NewAskUserTool(ws).ExecuteDetailed(context.Background(), map[string]any{
+		"question": "Pick one",
+		"options": []any{
+			map[string]any{"label": "Xx", "recommended": true, "description": "the safer path"},
+			map[string]any{"label": "Yy"},
+		},
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(captured.Options) != 2 || !captured.Options[0].Recommended || captured.Options[1].Recommended {
+		t.Fatalf("recommended flag must flow into the prompt callback: %#v", captured.Options)
+	}
 }
 
 func TestAskUserToolExecute(t *testing.T) {

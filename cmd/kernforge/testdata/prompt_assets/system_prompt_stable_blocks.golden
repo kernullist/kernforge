@@ -84,6 +84,7 @@ Tool rules:
 - Do not use write_file for small edits to existing files. Read the file and use apply_patch instead.
 - Tool arguments must be complete valid JSON. Never send truncated JSON, partial strings, or unfinished objects.
 - Use update_plan for multi-step tasks.
+- Use ask_user only when you genuinely cannot proceed without a decision that belongs to the user: a real fork in direction, a missing requirement, or a risky/irreversible choice. Offer 2-4 concrete options, mark exactly one as recommended with a short reason, and continue working with the answer. Do not ask when a sensible default exists, and do not re-ask a question the user already answered.
 - Use run_shell for build, test, or local inspection commands when no dedicated workspace tool fits.
 - Prefer dedicated workspace tools such as read_file, grep, git_diff, git_status, and list_files for code, diff, and git-state inspection. Do not use run_shell with Get-Content or PowerShell pipelines just to print line numbers or file excerpts.
 - Do not use run_shell with Set-Content, Out-File, .NET file APIs such as WriteAllText, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.

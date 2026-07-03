@@ -10,6 +10,7 @@ import (
 type UserQuestionOption struct {
 	Label       string
 	Description string
+	Recommended bool
 }
 
 // UserQuestion is a structured multiple-choice question the model asks the user.
@@ -42,7 +43,7 @@ func (t AskUserTool) ReadOnlyToolCall() bool { return true }
 func (t AskUserTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "ask_user",
-		Description: "Ask the user a structured multiple-choice question and wait for their answer. Use ONLY when you genuinely cannot proceed without a decision that is the user's to make -- a real fork, a missing requirement, or a risky/irreversible choice. Prefer acting on a sensible default over asking. Returns the chosen option label(s).",
+		Description: "Ask the user a structured multiple-choice question and wait for their answer. Use ONLY when you genuinely cannot proceed without a decision that is the user's to make -- a real fork, a missing requirement, or a risky/irreversible choice. Prefer acting on a sensible default over asking. Always include your own recommendation: mark exactly one option with recommended:true, list it first, and say why in its description. Returns the chosen option label(s).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -56,6 +57,7 @@ func (t AskUserTool) Definition() ToolDefinition {
 						"properties": map[string]any{
 							"label":       map[string]any{"type": "string", "description": "Short choice text."},
 							"description": map[string]any{"type": "string", "description": "One-line explanation of the choice."},
+							"recommended": map[string]any{"type": "boolean", "description": "Mark this option as your recommended choice (exactly one). It is shown to the user as the default; pressing Enter accepts it."},
 						},
 						"required": []any{"label"},
 					},
@@ -126,7 +128,12 @@ func parseUserQuestionOptions(raw any) []UserQuestionOption {
 		case map[string]any:
 			label := strings.TrimSpace(stringValue(v, "label"))
 			if label != "" {
-				out = append(out, UserQuestionOption{Label: label, Description: strings.TrimSpace(stringValue(v, "description"))})
+				recommended, _ := v["recommended"].(bool)
+				out = append(out, UserQuestionOption{
+					Label:       label,
+					Description: strings.TrimSpace(stringValue(v, "description")),
+					Recommended: recommended,
+				})
 			}
 		}
 	}
