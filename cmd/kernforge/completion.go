@@ -454,6 +454,9 @@ func (rt *runtimeState) completeLine(buffer string) (string, []string, bool) {
 	if completed, suggestions, ok := rt.completeShellPath(buffer); ok {
 		return completed, suggestions, true
 	}
+	if completed, suggestions, ok := rt.completeSkillMention(buffer); ok {
+		return completed, suggestions, true
+	}
 	if completed, suggestions, ok := rt.completeMCPMention(buffer); ok {
 		return completed, suggestions, true
 	}
@@ -1949,6 +1952,102 @@ func (rt *runtimeState) completeWorkspacePathValue(typed string, preferFiles boo
 		return common, nil, true
 	}
 	return typed, names, true
+}
+
+// completeSkillMention completes a "$name" skill mention against the loaded
+// skill catalog. A skill is reachable by a user "$name" mention only when it is
+// user-invocable, so only those names are offered. The completer stays out of
+// shell ("!") and slash ("/") lines so a "$VAR" typed inside a shell command is
+// never rewritten into a skill name.
+func (rt *runtimeState) completeSkillMention(buffer string) (string, []string, bool) {
+	if rt == nil || rt.skills.Count() == 0 {
+		return buffer, nil, false
+	}
+	trimmedLeft := strings.TrimLeft(buffer, " \t")
+	if strings.HasPrefix(trimmedLeft, "!") || strings.HasPrefix(trimmedLeft, "/") {
+		return buffer, nil, false
+	}
+	start := lastSkillMentionStart(buffer)
+	if start < 0 {
+		return buffer, nil, false
+	}
+	partial := buffer[start+1:]
+	// A skill token begins with an alphanumeric, matching the injection pattern
+	// $([A-Za-z0-9][A-Za-z0-9._-]*). If the first typed character cannot start a
+	// skill name, leave the token alone instead of swallowing the completion.
+	if partial != "" && !isSkillMentionStartByte(partial[0]) {
+		return buffer, nil, false
+	}
+	lowerPartial := strings.ToLower(partial)
+	var matches []string
+	for _, skill := range rt.skills.Items() {
+		if !skill.UserInvocable {
+			continue
+		}
+		name := strings.TrimSpace(skill.Name)
+		if name == "" {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(name), lowerPartial) {
+			matches = append(matches, name)
+		}
+	}
+	if len(matches) == 0 {
+		return buffer, nil, true
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return strings.ToLower(matches[i]) < strings.ToLower(matches[j])
+	})
+	if len(matches) == 1 {
+		return buffer[:start] + "$" + matches[0] + " ", nil, true
+	}
+	common := longestCommonPrefixInsensitive(matches)
+	if len(common) > len(partial) {
+		return buffer[:start] + "$" + common, nil, true
+	}
+	suggestions := make([]string, 0, len(matches))
+	for _, name := range matches {
+		suggestions = append(suggestions, "$"+name)
+	}
+	return buffer, suggestions, true
+}
+
+// isSkillMentionStartByte reports whether b can be the first character of a
+// skill name in a "$name" mention.
+func isSkillMentionStartByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z':
+		return true
+	case b >= 'A' && b <= 'Z':
+		return true
+	case b >= '0' && b <= '9':
+		return true
+	default:
+		return false
+	}
+}
+
+// lastSkillMentionStart returns the index of the "$" that begins the trailing
+// skill mention token, or -1. The "$" must sit at a word boundary (start of the
+// line or after whitespace) and the token must extend to the end of the buffer
+// with no interior whitespace, mirroring lastMentionStart for "@".
+func lastSkillMentionStart(buffer string) int {
+	for i := len(buffer) - 1; i >= 0; i-- {
+		if buffer[i] != '$' {
+			continue
+		}
+		if i > 0 {
+			prev := buffer[i-1]
+			if prev != ' ' && prev != '\t' && prev != '\n' {
+				continue
+			}
+		}
+		if strings.ContainsAny(buffer[i+1:], " \t\n") {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 func lastMentionStart(buffer string) int {

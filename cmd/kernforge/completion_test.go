@@ -112,6 +112,108 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 	}
 }
 
+func TestCompleteSkillMention(t *testing.T) {
+	// model-only is user-invocable:false, so it must never be offered for a user
+	// "$name" completion; the four workflow built-ins and goal-to-slice-planner
+	// are user-invocable and must be.
+	rt := &runtimeState{
+		skills: SkillCatalog{
+			items: []Skill{
+				{Name: "visual-explainer", UserInvocable: true},
+				{Name: "humanize-doc", UserInvocable: true},
+				{Name: "goal-loop", UserInvocable: true},
+				{Name: "goal-to-slice-planner", UserInvocable: true},
+				{Name: "model-only", UserInvocable: false},
+			},
+		},
+	}
+
+	t.Run("unique prefix completes with trailing space", func(t *testing.T) {
+		got, suggestions, ok := rt.completeLine("$vis")
+		if !ok {
+			t.Fatalf("expected completion to apply")
+		}
+		if got != "$visual-explainer " {
+			t.Fatalf("unexpected buffer: got %q", got)
+		}
+		if len(suggestions) != 0 {
+			t.Fatalf("expected no suggestions, got %#v", suggestions)
+		}
+	})
+
+	t.Run("shared prefix extends to common prefix", func(t *testing.T) {
+		got, _, ok := rt.completeLine("$goal")
+		if !ok {
+			t.Fatalf("expected completion to apply")
+		}
+		if got != "$goal-" {
+			t.Fatalf("expected extension to shared prefix, got %q", got)
+		}
+	})
+
+	t.Run("further typing disambiguates", func(t *testing.T) {
+		got, _, ok := rt.completeLine("$goal-l")
+		if !ok || got != "$goal-loop " {
+			t.Fatalf("expected $goal-loop, got %q ok=%v", got, ok)
+		}
+	})
+
+	t.Run("bare dollar lists all user-invocable skills", func(t *testing.T) {
+		_, suggestions, ok := rt.completeLine("$")
+		if !ok {
+			t.Fatalf("expected completion to apply")
+		}
+		want := map[string]bool{
+			"$visual-explainer":      true,
+			"$humanize-doc":          true,
+			"$goal-loop":             true,
+			"$goal-to-slice-planner": true,
+		}
+		if len(suggestions) != len(want) {
+			t.Fatalf("unexpected suggestion count: got %#v", suggestions)
+		}
+		for _, s := range suggestions {
+			if !want[s] {
+				t.Fatalf("unexpected or model-only suggestion offered: %q", s)
+			}
+		}
+	})
+
+	t.Run("model-only skill is never offered", func(t *testing.T) {
+		got, suggestions, ok := rt.completeLine("$model")
+		// ok is true (the $ token is handled) but there is no match, so the buffer
+		// is left unchanged and nothing is suggested.
+		if !ok {
+			t.Fatalf("expected the $ token to be handled")
+		}
+		if got != "$model" || len(suggestions) != 0 {
+			t.Fatalf("model-only should not complete: got %q suggestions %#v", got, suggestions)
+		}
+	})
+
+	t.Run("shell lines are not treated as skill mentions", func(t *testing.T) {
+		got, _, _ := rt.completeLine("!echo $vis")
+		if got != "!echo $vis" {
+			t.Fatalf("shell $VAR must not be rewritten as a skill: got %q", got)
+		}
+	})
+
+	t.Run("mid-word dollar is ignored", func(t *testing.T) {
+		got, _, _ := rt.completeLine("cost$vis")
+		if got != "cost$vis" {
+			t.Fatalf("mid-word $ must not complete: got %q", got)
+		}
+	})
+
+	t.Run("empty catalog does not complete", func(t *testing.T) {
+		empty := &runtimeState{}
+		got, _, ok := empty.completeLine("$vis")
+		if ok || got != "$vis" {
+			t.Fatalf("empty catalog should not complete: got %q ok=%v", got, ok)
+		}
+	})
+}
+
 func TestCompleteAnalyzeProjectPathArgument(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "src", "driver"), 0o755); err != nil {
