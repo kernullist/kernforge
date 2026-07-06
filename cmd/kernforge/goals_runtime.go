@@ -17,6 +17,12 @@ import (
 const (
 	goalNoProgressBlockThreshold      = 3
 	goalRepeatedFailureBlockThreshold = 3
+	// goalSemanticRejectBlockThreshold bounds the audit-ready-but-semantic-rejected
+	// loop: when the completion audit keeps reporting ready while the final semantic
+	// reviewer keeps rejecting completion, the no-progress fingerprint guard never
+	// accrues (applyProgress resets it on audit.Ready), so this dedicated counter is
+	// the only thing that stops that path short of the absolute ceiling.
+	goalSemanticRejectBlockThreshold = 3
 )
 
 type goalReviewDecision struct {
@@ -677,8 +683,29 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 					goal.Status = goalStatusComplete
 					goal.CompletedAt = time.Now()
 					goal.LastError = ""
+					goal.SemanticRejectCount = 0
 					rt.session.SetPlanNodeLifecycle("plan-06", "completed", "Completion audit and semantic goal review are ready.")
+					if semanticReview.IndependentReviewSkipped {
+						rt.printPersistentBlockWhileThinking(rt.ui.warnLine(localizedText(rt.cfg,
+							"goal completed WITHOUT an independent semantic review (no cross-review route or consent); completion is process-gated on the deterministic audit and verification only. Configure /model cross-review or pass --require-review for stronger assurance.",
+							"독립 semantic review 없이 goal이 완료되었습니다(cross-review 라우트/동의 없음). 완료는 결정적 audit과 검증만으로 게이트된 상태입니다. 더 강한 보증이 필요하면 /model cross-review를 설정하거나 --require-review를 사용하세요.")))
+					}
+				} else if goal.SemanticRejectCount+1 >= goalSemanticRejectBlockThreshold {
+					// The completion audit is ready but the final semantic reviewer
+					// keeps rejecting. applyProgress resets NoProgressCount whenever the
+					// audit is ready, so the fingerprint guard can never bound this
+					// path; a dedicated consecutive-reject counter does.
+					goal.SemanticRejectCount++
+					blocker := fmt.Sprintf("final semantic review rejected completion for %d consecutive audit-ready cycles without converging", goal.SemanticRejectCount)
+					iteration.Status = goalStatusBlocked
+					goal.Status = goalStatusBlocked
+					goal.LastError = blocker
+					rt.session.SetPlanNodeLifecycle("plan-06", "blocked", blocker)
+					if goal.AutoRollback {
+						iteration.RollbackStatus = rt.rollbackGoalIterationCheckpoint(goal, iteration)
+					}
 				} else {
+					goal.SemanticRejectCount++
 					repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalSemanticRepairPrompt(goal, iteration, semanticReview))
 					iteration.RepairReply = compactPromptSection(strings.Join([]string{iteration.RepairReply, repairReply}, "\n\n"), 1200)
 					if isGoalCancellationError(repairErr) {
@@ -696,6 +723,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 				}
 			}
 		} else if goal.Status != goalStatusBlocked {
+			// Audit not ready this cycle: the semantic path did not run, so the
+			// consecutive audit-ready reject streak is broken.
+			goal.SemanticRejectCount = 0
 			if blocker := goalStagnationBlocker(goal); blocker != "" {
 				iteration.Status = goalStatusBlocked
 				goal.Status = goalStatusBlocked
@@ -771,10 +801,11 @@ func (rt *runtimeState) goalIterationGeneratedDocumentArtifactChangedPaths(root 
 
 func generatedDocumentArtifactGoalSemanticReview() GoalSemanticReview {
 	return GoalSemanticReview{
-		Verdict:    "approved",
-		Approved:   true,
-		Feedback:   "Generated document artifact quality gate accepted this documentation-only change; semantic review model was not required.",
-		ReviewedAt: time.Now(),
+		Verdict:                  "approved",
+		Approved:                 true,
+		Feedback:                 "Generated document artifact quality gate accepted this documentation-only change; semantic review model was not required.",
+		ReviewedAt:               time.Now(),
+		IndependentReviewSkipped: true,
 	}
 }
 
@@ -996,7 +1027,46 @@ func (rt *runtimeState) runGoalSemanticReview(ctx context.Context, goal GoalStat
 		review.Verdict = "needs_revision"
 		review.Feedback = compactPromptSection("Completion audit is not ready; approval cannot be accepted. "+review.Feedback, 1200)
 	}
+	if goalReviewerReplyWasSkipped(reply) {
+		review.IndependentReviewSkipped = true
+		// Honesty gate: when there is no independent reviewer route/consent the
+		// verdict is auto-derived, not an independent judgment. Under
+		// --require-review, refuse to auto-approve completion on that basis.
+		if goal.RequireIndependentReview && review.Approved {
+			review.Approved = false
+			review.Verdict = "needs_revision"
+			review.Feedback = compactPromptSection("--require-review is set but no independent reviewer route or consent was available, so completion cannot be auto-approved. Configure /model cross-review (or grant model-review consent) and re-run. "+review.Feedback, 1200)
+		}
+	}
 	return review, nil
+}
+
+// goalReviewerReplyWasSkipped reports whether a reviewer reply was synthesized
+// because no independent reviewer route/consent was available (rather than a real
+// reviewer verdict). It matches the sentinels emitted by skippedGoalReviewerReply
+// and skippedGoalReviewerReplyByConsent.
+func goalReviewerReplyWasSkipped(reply string) bool {
+	lower := strings.ToLower(reply)
+	return strings.Contains(lower, "no reviewer model request was sent") ||
+		strings.Contains(lower, "no cross review route is configured") ||
+		strings.Contains(lower, "reviewer skipped because")
+}
+
+// renderGoalUserCriteriaSection formats the user-provided acceptance criteria as
+// an explicit pass/fail checklist. Natural-language criteria cannot be asserted
+// deterministically, so they are handed to the reviewer as required checks; the
+// section is empty when the user provided none.
+func renderGoalUserCriteriaSection(goal GoalState) string {
+	if len(goal.UserCriteria) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("User acceptance criteria (EVERY item must be satisfied; if any is unmet or unverifiable, start with NEEDS_REVISION and name the failing item):\n")
+	for _, item := range goal.UserCriteria {
+		fmt.Fprintf(&b, "- [ ] %s\n", item)
+	}
+	b.WriteString("\n")
+	return b.String()
 }
 
 func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact, iteration GoalIteration, root string, checkpoints *CheckpointManager) string {
@@ -1005,7 +1075,11 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 	fmt.Fprintf(&b, "Objective:\n%s\n\n", strings.TrimSpace(goal.Objective))
 	b.WriteString("Decide whether the actual workspace state satisfies the goal, not merely whether a command succeeded.\n")
 	b.WriteString("Start with APPROVED only if the objective, completion criteria, verification result, and completion audit evidence are all sufficient.\n")
-	b.WriteString("Start with NEEDS_REVISION if any meaningful implementation, test, documentation, artifact, or evidence gap remains.\n\n")
+	b.WriteString("Start with NEEDS_REVISION if any meaningful implementation, test, documentation, artifact, or evidence gap remains.\n")
+	b.WriteString("There is no deterministic, objective-specific completion check for arbitrary repositories, so you are the authority on whether the objective's substance is actually implemented. Do not APPROVE on the basis of a green build, passing pre-existing tests, or a zero-blocker audit alone when the requested behavior is not demonstrably present in the workspace.\n\n")
+	if section := renderGoalUserCriteriaSection(goal); section != "" {
+		b.WriteString(section)
+	}
 	if len(goal.CompletionCriteria) > 0 {
 		b.WriteString("Completion criteria:\n")
 		for _, item := range goal.CompletionCriteria {
@@ -1082,6 +1156,16 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 
 func parseGoalReviewDecision(text string) goalReviewDecision {
 	trimmed := strings.TrimSpace(text)
+	// An empty verdict is not a pass: a reviewer that returned nothing has not
+	// cleared the change, so treat it as needing revision rather than silently
+	// letting the iteration proceed as "reviewed".
+	if trimmed == "" {
+		return goalReviewDecision{
+			Verdict:       "needs_revision",
+			NeedsRevision: true,
+			Feedback:      "reviewer returned an empty verdict; treating as needs_revision",
+		}
+	}
 	upper := strings.ToUpper(trimmed)
 	decision := goalReviewDecision{
 		Verdict:       "reviewed",

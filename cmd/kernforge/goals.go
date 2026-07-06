@@ -31,6 +31,17 @@ const (
 	ephemeralThreadGoalCause       = "thread goals require a persisted thread; this thread is ephemeral"
 )
 
+// goalAbsoluteIterationCeiling is an always-on backstop that stops the
+// autonomous loop even when MaxIterations is 0 (the "until-complete" default) and
+// even when the fingerprint-based no-progress guard is defeated by churn (a run
+// that keeps touching different files without converging). It is a package var so
+// tests can lower it. goalDefaultWallClockCeiling is the always-on per-run
+// wall-clock backstop applied when the user set no explicit --time-budget.
+var (
+	goalAbsoluteIterationCeiling = 50
+	goalDefaultWallClockCeiling  = 2 * time.Hour
+)
+
 var errThreadGoalsRequirePersistedThread = errors.New(ephemeralThreadGoalCause)
 
 type ephemeralThreadGoalError struct{}
@@ -66,12 +77,27 @@ type GoalState struct {
 	NoProgressCount         int                 `json:"no_progress_count,omitempty"`
 	LastFailureSignature    string              `json:"last_failure_signature,omitempty"`
 	RepeatedFailureCount    int                 `json:"repeated_failure_count,omitempty"`
+	SemanticRejectCount     int                 `json:"semantic_reject_count,omitempty"`
 	CompletionCriteria      []string            `json:"completion_criteria,omitempty"`
-	Plan                    []PlanItem          `json:"plan,omitempty"`
-	CheckpointRefs          []GoalCheckpointRef `json:"checkpoint_refs,omitempty"`
-	CommandHistory          []GoalCommandRecord `json:"command_history,omitempty"`
-	Iterations              []GoalIteration     `json:"iterations,omitempty"`
-	ArtifactRefs            []string            `json:"artifact_refs,omitempty"`
+	// UserCriteria holds explicit, user-provided acceptance criteria (from
+	// --criteria / --criteria-file). Unlike the boilerplate CompletionCriteria,
+	// these are surfaced to the semantic reviewer as an explicit pass/fail
+	// checklist so completion is judged against the actual objective.
+	UserCriteria []string `json:"user_criteria,omitempty"`
+	// RequireIndependentReview blocks auto-completion when the final semantic
+	// review could not run against an independent reviewer route (no cross-review
+	// model or consent), instead of silently auto-approving.
+	RequireIndependentReview bool `json:"require_independent_review,omitempty"`
+	// GatedPermissions runs the loop with edits auto-approved but shell, git, and
+	// network actions gated (ModeAcceptEdits): an interactive user is prompted to
+	// approve them and a headless run blocks them with a recorded blocker, instead
+	// of the default full-auto ModeBypass that auto-approves every action.
+	GatedPermissions bool                `json:"gated_permissions,omitempty"`
+	Plan             []PlanItem          `json:"plan,omitempty"`
+	CheckpointRefs   []GoalCheckpointRef `json:"checkpoint_refs,omitempty"`
+	CommandHistory   []GoalCommandRecord `json:"command_history,omitempty"`
+	Iterations       []GoalIteration     `json:"iterations,omitempty"`
+	ArtifactRefs     []string            `json:"artifact_refs,omitempty"`
 }
 
 type GoalAuditState struct {
@@ -87,6 +113,10 @@ type GoalSemanticReview struct {
 	Approved   bool      `json:"approved"`
 	Feedback   string    `json:"feedback,omitempty"`
 	ReviewedAt time.Time `json:"reviewed_at,omitempty"`
+	// IndependentReviewSkipped is true when this verdict did not come from a real
+	// independent reviewer (no cross-review route or consent) and was auto-derived.
+	// It keeps a "complete" from being read as independently verified.
+	IndependentReviewSkipped bool `json:"independent_review_skipped,omitempty"`
 }
 
 type GoalProgressState struct {
@@ -151,13 +181,16 @@ type GoalIteration struct {
 }
 
 type goalStartOptions struct {
-	Objective         string
-	SourcePath        string
-	Run               bool
-	MaxIterations     int
-	TimeBudgetSeconds int
-	TokenBudget       int
-	AutoRollback      bool
+	Objective                string
+	SourcePath               string
+	Run                      bool
+	MaxIterations            int
+	TimeBudgetSeconds        int
+	TokenBudget              int
+	AutoRollback             bool
+	UserCriteria             []string
+	RequireIndependentReview bool
+	GatedPermissions         bool
 }
 
 func (rt *runtimeState) handleGoalCommand(args string) error {
@@ -280,16 +313,19 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 	}
 	now := time.Now()
 	goal := GoalState{
-		ID:                fmt.Sprintf("goal-%s-%03d", now.Format("20060102-150405"), now.Nanosecond()/1_000_000),
-		Objective:         strings.TrimSpace(options.Objective),
-		SourcePath:        strings.TrimSpace(options.SourcePath),
-		Status:            goalStatusPending,
-		MaxIterations:     options.MaxIterations,
-		TimeBudgetSeconds: options.TimeBudgetSeconds,
-		TokenBudget:       options.TokenBudget,
-		AutoRollback:      options.AutoRollback,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:                       fmt.Sprintf("goal-%s-%03d", now.Format("20060102-150405"), now.Nanosecond()/1_000_000),
+		Objective:                strings.TrimSpace(options.Objective),
+		SourcePath:               strings.TrimSpace(options.SourcePath),
+		Status:                   goalStatusPending,
+		MaxIterations:            options.MaxIterations,
+		TimeBudgetSeconds:        options.TimeBudgetSeconds,
+		TokenBudget:              options.TokenBudget,
+		AutoRollback:             options.AutoRollback,
+		UserCriteria:             options.UserCriteria,
+		RequireIndependentReview: options.RequireIndependentReview,
+		GatedPermissions:         options.GatedPermissions,
+		CreatedAt:                now,
+		UpdatedAt:                now,
 	}
 	goal.Normalize()
 	rt.primeGoalRuntimeState(&goal, "created")
@@ -519,6 +555,28 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 			options.AutoRollback = true
 		case "--no-rollback":
 			options.AutoRollback = false
+		case "--require-review", "--strict":
+			options.RequireIndependentReview = true
+		case "--gated":
+			options.GatedPermissions = true
+		case "--full-auto":
+			options.GatedPermissions = false
+		case "--criteria":
+			if i+1 >= len(fields) {
+				return options, fmt.Errorf("%s requires one or more criteria (separate with ';')", field)
+			}
+			i++
+			options.UserCriteria = append(options.UserCriteria, splitGoalUserCriteria(fields[i])...)
+		case "--criteria-file":
+			if i+1 >= len(fields) {
+				return options, fmt.Errorf("%s requires a file path", field)
+			}
+			i++
+			content, _, err := readGoalObjectiveFile(rt.workspace.Root, fields[i])
+			if err != nil {
+				return options, err
+			}
+			options.UserCriteria = append(options.UserCriteria, splitGoalUserCriteria(content)...)
 		case "--until-complete":
 			options.Run = true
 			options.MaxIterations = 0
@@ -594,6 +652,31 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 	return options, nil
 }
 
+// splitGoalUserCriteria breaks a --criteria / --criteria-file value into
+// individual acceptance criteria. It accepts ';' and newlines as separators and
+// strips common list markers ("- ", "* ", "1. ") so a pasted checklist works.
+func splitGoalUserCriteria(raw string) []string {
+	replaced := strings.ReplaceAll(raw, "\r\n", "\n")
+	replaced = strings.ReplaceAll(replaced, ";", "\n")
+	out := []string{}
+	for _, line := range strings.Split(replaced, "\n") {
+		item := strings.TrimSpace(line)
+		if item == "" {
+			continue
+		}
+		item = strings.TrimSpace(strings.TrimLeft(item, "-*"))
+		if dot := strings.IndexByte(item, '.'); dot > 0 && dot <= 3 {
+			if _, err := strconv.Atoi(strings.TrimSpace(item[:dot])); err == nil {
+				item = strings.TrimSpace(item[dot+1:])
+			}
+		}
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride int) error {
 	index, ok := rt.session.GoalIndex(selector)
 	if !ok {
@@ -612,6 +695,7 @@ func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride
 	if strings.EqualFold(goal.Status, goalStatusBlocked) {
 		goal.NoProgressCount = 0
 		goal.RepeatedFailureCount = 0
+		goal.SemanticRejectCount = 0
 		goal.LastProgressFingerprint = ""
 		goal.LastFailureSignature = ""
 	}
@@ -649,7 +733,15 @@ func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride
 	fmt.Fprintln(rt.writer, rt.ui.section("Goal"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("id", goal.ID))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("mode", "autonomous"))
-	return rt.withAutonomousGoalPermissions(func() error {
+	if goal.GatedPermissions {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("permissions", "gated (edits auto; shell/git/network need approval)"))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("permissions", "full-auto (all actions auto-approved; use --gated to require approval)"))
+	}
+	if goal.RequireIndependentReview {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("completion", "requires an independent semantic review"))
+	}
+	return rt.withAutonomousGoalPermissions(goal.GatedPermissions, func() error {
 		requestCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		rt.clearRequestCancelState()
@@ -668,7 +760,25 @@ func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride
 	})
 }
 
+// blockGoalWithReason marks a goal blocked, persists it, writes artifacts, and
+// warns the user. It is the fail-closed exit used by every loop backstop: the
+// loop STOPS and records a clear reason rather than running unbounded.
+func (rt *runtimeState) blockGoalWithReason(goal GoalState, reason string) {
+	goal.Status = goalStatusBlocked
+	goal.LastError = reason
+	goal.Touch()
+	rt.session.UpsertGoal(goal)
+	_ = rt.writeGoalArtifacts(goal)
+	if rt.store != nil {
+		_ = rt.store.Save(rt.session)
+	}
+	if rt.writer != nil {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine(reason))
+	}
+}
+
 func (rt *runtimeState) runGoalLoop(ctx context.Context, goalID string) error {
+	loopStart := time.Now()
 	for {
 		index, ok := rt.session.GoalIndex(goalID)
 		if !ok {
@@ -682,16 +792,19 @@ func (rt *runtimeState) runGoalLoop(ctx context.Context, goalID string) error {
 			rt.interruptGoalExecution(goal, "goal interrupted by user")
 			return nil
 		}
+		// Always-on backstops. Unlike MaxIterations (opt-in, default 0) and the
+		// fingerprint no-progress guard (defeated by churn), these two always bound
+		// the run: an absolute iteration ceiling and a per-run wall-clock ceiling.
+		if goalAbsoluteIterationCeiling > 0 && goal.Iteration >= goalAbsoluteIterationCeiling {
+			rt.blockGoalWithReason(goal, fmt.Sprintf("goal hit the absolute safety ceiling of %d iterations without an approved completion gate; stopping to avoid an unbounded loop", goalAbsoluteIterationCeiling))
+			return nil
+		}
+		if goalDefaultWallClockCeiling > 0 && time.Since(loopStart) > goalDefaultWallClockCeiling {
+			rt.blockGoalWithReason(goal, fmt.Sprintf("goal run exceeded the %s wall-clock safety ceiling without completion; stopping to avoid an unbounded loop", goalDefaultWallClockCeiling))
+			return nil
+		}
 		if goal.MaxIterations > 0 && goal.Iteration >= goal.MaxIterations {
-			goal.Status = goalStatusBlocked
-			goal.LastError = fmt.Sprintf("goal reached max iterations (%d) without approved completion gates", goal.MaxIterations)
-			goal.Touch()
-			rt.session.UpsertGoal(goal)
-			_ = rt.writeGoalArtifacts(goal)
-			if rt.store != nil {
-				_ = rt.store.Save(rt.session)
-			}
-			fmt.Fprintln(rt.writer, rt.ui.warnLine(goal.LastError))
+			rt.blockGoalWithReason(goal, fmt.Sprintf("goal reached max iterations (%d) without approved completion gates", goal.MaxIterations))
 			return nil
 		}
 		updated, done, err := rt.runGoalIteration(ctx, goal)
@@ -954,6 +1067,9 @@ func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
 			fmt.Fprintf(&b, "%d. [%s] %s\n", index+1, canonicalGoalPlanStatus(item.Status), item.Step)
 		}
 		b.WriteString("\n")
+	}
+	if section := renderGoalUserCriteriaSection(goal); section != "" {
+		b.WriteString(section)
 	}
 	b.WriteString("Codex-grade staged loop:\n")
 	b.WriteString("1. Classify whether the objective needs review, bug finding, targeted modification, implementation plus verification, review-after-modification, documentation/status update, or commit-ready cleanup.\n")
@@ -2141,7 +2257,7 @@ func goalShouldShowRunNextCommand(goal GoalState) bool {
 	return !goalHasStartedExecution(goal) && canonicalGoalStatus(goal.Status) == goalStatusActive
 }
 
-func (rt *runtimeState) withAutonomousGoalPermissions(fn func() error) error {
+func (rt *runtimeState) withAutonomousGoalPermissions(gated bool, fn func() error) error {
 	prevWrites := rt.alwaysApproveWrites
 	prevPreview := rt.alwaysApprovePreview
 	rt.alwaysApproveWrites = true
@@ -2149,7 +2265,16 @@ func (rt *runtimeState) withAutonomousGoalPermissions(fn func() error) error {
 	var prevMode Mode
 	if rt.perms != nil {
 		prevMode = rt.perms.Mode()
-		rt.perms.SetMode(ModeBypass)
+		// Full-auto (default) auto-approves every action via ModeBypass. Gated runs
+		// use ModeAcceptEdits: file edits and diff previews stay auto-approved so the
+		// loop can work, but shell, git, and network actions fall through to the
+		// normal decision -- an interactive user is prompted (escalate-and-ask) and a
+		// headless run is denied and recorded as a blocker (fail-closed).
+		if gated {
+			rt.perms.SetMode(ModeAcceptEdits)
+		} else {
+			rt.perms.SetMode(ModeBypass)
+		}
 	}
 	defer func() {
 		rt.alwaysApproveWrites = prevWrites
@@ -2272,6 +2397,7 @@ func (g *GoalState) Normalize() {
 		g.TimeUsedSeconds = 0
 	}
 	g.CompletionCriteria = normalizeTaskStateList(g.CompletionCriteria, 16)
+	g.UserCriteria = normalizeTaskStateList(g.UserCriteria, 16)
 	g.Plan = normalizeGoalPlanItems(g.Plan)
 	for i := range g.CheckpointRefs {
 		g.CheckpointRefs[i].Normalize()
@@ -2305,6 +2431,9 @@ func (g *GoalState) Normalize() {
 	g.LastFailureSignature = strings.TrimSpace(g.LastFailureSignature)
 	if g.RepeatedFailureCount < 0 {
 		g.RepeatedFailureCount = 0
+	}
+	if g.SemanticRejectCount < 0 {
+		g.SemanticRejectCount = 0
 	}
 }
 

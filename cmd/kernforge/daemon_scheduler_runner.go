@@ -306,7 +306,7 @@ func (rt *runtimeState) runScheduledGoal(ctx context.Context, job JobDefinition)
 		_ = rt.store.Save(rt.session)
 		return rt.clientErr
 	}
-	return rt.withAutonomousGoalPermissions(func() error {
+	return rt.withAutonomousGoalPermissions(goal.GatedPermissions, func() error {
 		return rt.runGoalLoop(ctx, goal.ID)
 	})
 }
