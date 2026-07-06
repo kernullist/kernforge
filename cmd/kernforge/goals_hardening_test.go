@@ -229,6 +229,46 @@ func TestGoalWallClockCeilingBlocksLoop(t *testing.T) {
 	}
 }
 
+func TestHasIndependentReviewerRouteNilAgent(t *testing.T) {
+	rt := &runtimeState{}
+	if rt.hasIndependentReviewerRoute() {
+		t.Fatalf("no agent must mean no independent reviewer route")
+	}
+}
+
+func TestBuildGoalSemanticSelfReviewPrompt(t *testing.T) {
+	out := buildGoalSemanticSelfReviewPrompt("BASE PROMPT BODY")
+	for _, want := range []string{"no independent reviewer", "adversarial", "NEEDS_REVISION", "BASE PROMPT BODY"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("self-review prompt missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestGoalRequireReviewWithoutRouteFailsFast(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	goal := GoalState{ID: "goal-req", Objective: "do the thing", Status: goalStatusActive, RequireIndependentReview: true}
+	goal.Normalize()
+	session.UpsertGoal(goal)
+	rt := &runtimeState{
+		writer:    &bytes.Buffer{},
+		ui:        NewUI(),
+		session:   session,
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{BaseRoot: root, Root: root},
+		// goalReply nil and agent nil => no independent reviewer route.
+		goalReply: nil,
+	}
+	if err := rt.runGoalBySelector(goal.ID, 0); err != nil {
+		t.Fatalf("runGoalBySelector: %v", err)
+	}
+	current, _ := session.ActiveGoal()
+	if current.Status != goalStatusBlocked || !strings.Contains(current.LastError, "--require-review") {
+		t.Fatalf("expected fail-fast require-review block, got %#v", current)
+	}
+}
+
 func TestGoalSemanticRejectBoundBlocksLoop(t *testing.T) {
 	root := t.TempDir()
 	writeGoalTestModule(t, root)

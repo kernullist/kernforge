@@ -741,6 +741,13 @@ func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride
 	if goal.RequireIndependentReview {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("completion", "requires an independent semantic review"))
 	}
+	// Fail fast: --require-review can never be satisfied without an independent
+	// reviewer route, so block up front with an actionable message instead of
+	// spinning iterations and blocking with a misleading stagnation reason.
+	if goal.RequireIndependentReview && rt.goalReply == nil && !rt.hasIndependentReviewerRoute() {
+		rt.blockGoalWithReason(goal, "goal requires an independent review (--require-review) but no cross-review route is configured; run `/model cross-review <provider>` (or configure a separate reviewer model) and resume, or drop --require-review")
+		return nil
+	}
 	return rt.withAutonomousGoalPermissions(goal.GatedPermissions, func() error {
 		requestCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -905,6 +912,38 @@ func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string)
 	})
 	if err != nil {
 		return rt.runGoalAgentReply(ctx, prompt+"\n\nReviewer provider failed: "+err.Error()+"\nRun the review/fix pass with the main agent now.")
+	}
+	return strings.TrimSpace(resp.Message.Text), nil
+}
+
+// runGoalSelfReviewReply runs the final completion gate as a one-shot main-model
+// self-review when no independent reviewer route exists (single-model). It uses a
+// tool-less model turn (like the reviewer path) rather than the full edit-capable
+// agent turn, so the review judges rather than silently editing. It falls back to
+// the full agent only if the one-shot turn is unavailable or errors.
+func (rt *runtimeState) runGoalSelfReviewReply(ctx context.Context, prompt string) (string, error) {
+	if rt == nil {
+		return "", fmt.Errorf("no active runtime")
+	}
+	userPrompt := buildGoalSemanticSelfReviewPrompt(prompt)
+	if rt.agent == nil || rt.agent.Client == nil || rt.session == nil {
+		return rt.runGoalAgentReply(ctx, userPrompt)
+	}
+	resp, err := rt.agent.completeModelTurnWithClient(ctx, rt.agent.Client, ChatRequest{
+		Model: rt.session.Model,
+		System: strings.Join([]string{
+			"You implemented this goal and are now its only reviewer; there is no independent reviewer.",
+			"Be adversarial toward your own work and do not approve to be agreeable.",
+			"Review the actual workspace state against the goal, not merely whether a command succeeded.",
+			"Start with APPROVED only if the objective is demonstrably and fully implemented; otherwise start with NEEDS_REVISION and name the exact gap.",
+		}, "\n"),
+		Messages:    []Message{{Role: "user", Text: userPrompt}},
+		MaxTokens:   min(1536, max(512, rt.cfg.MaxTokens/2)),
+		Temperature: 0.1,
+		WorkingDir:  rt.session.WorkingDir,
+	})
+	if err != nil {
+		return rt.runGoalAgentReply(ctx, userPrompt)
 	}
 	return strings.TrimSpace(resp.Message.Text), nil
 }

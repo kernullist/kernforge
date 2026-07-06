@@ -1017,7 +1017,21 @@ func (rt *runtimeState) runGoalSemanticReview(ctx context.Context, goal GoalStat
 	if completionAuditSessionOwnsGoal(rt.session, &audit) {
 		audit.OpenTasks = filterCompletionAuditOpenGoalTasks(audit.OpenTasks)
 	}
-	reply, err := rt.runGoalReviewerReply(ctx, buildGoalSemanticReviewPrompt(goal, audit, iteration, rt.goalWorkspaceRoot(), rt.checkpoints))
+	prompt := buildGoalSemanticReviewPrompt(goal, audit, iteration, rt.goalWorkspaceRoot(), rt.checkpoints)
+	// Single-model self-review fallback: when there is no independent reviewer
+	// route (and this is not the test hook), run the final completion gate as a
+	// main-model self-review instead of a blind auto-approve, so completion still
+	// carries a real judgment against the objective. It is bounded by
+	// SemanticRejectCount and is still marked not-independent below.
+	selfReview := false
+	var reply string
+	var err error
+	if rt.goalReply == nil && !rt.hasIndependentReviewerRoute() {
+		selfReview = true
+		reply, err = rt.runGoalSelfReviewReply(ctx, prompt)
+	} else {
+		reply, err = rt.runGoalReviewerReply(ctx, prompt)
+	}
 	if err != nil {
 		return GoalSemanticReview{}, err
 	}
@@ -1027,11 +1041,10 @@ func (rt *runtimeState) runGoalSemanticReview(ctx context.Context, goal GoalStat
 		review.Verdict = "needs_revision"
 		review.Feedback = compactPromptSection("Completion audit is not ready; approval cannot be accepted. "+review.Feedback, 1200)
 	}
-	if goalReviewerReplyWasSkipped(reply) {
+	// A self-review and a skipped review are both "not independent": label them so
+	// completion is never read as independently verified, and honor --require-review.
+	if selfReview || goalReviewerReplyWasSkipped(reply) {
 		review.IndependentReviewSkipped = true
-		// Honesty gate: when there is no independent reviewer route/consent the
-		// verdict is auto-derived, not an independent judgment. Under
-		// --require-review, refuse to auto-approve completion on that basis.
 		if goal.RequireIndependentReview && review.Approved {
 			review.Approved = false
 			review.Verdict = "needs_revision"
@@ -1039,6 +1052,27 @@ func (rt *runtimeState) runGoalSemanticReview(ctx context.Context, goal GoalStat
 		}
 	}
 	return review, nil
+}
+
+// hasIndependentReviewerRoute reports whether a distinct reviewer model (cross
+// review or aux) is configured, i.e. whether goal reviews can be independent
+// rather than a self-review or a skip.
+func (rt *runtimeState) hasIndependentReviewerRoute() bool {
+	if rt == nil || rt.agent == nil {
+		return false
+	}
+	client, model := rt.agent.ensureInteractiveReviewerClient()
+	return client != nil && strings.TrimSpace(model) != ""
+}
+
+// buildGoalSemanticSelfReviewPrompt wraps the semantic-review prompt with an
+// explicit self-critical framing for the single-model case, where the model that
+// implemented the goal is also judging completion.
+func buildGoalSemanticSelfReviewPrompt(basePrompt string) string {
+	return "You implemented this goal and are now the ONLY reviewer available; there is no independent reviewer.\n" +
+		"Be adversarial toward your own work: assume it is incomplete until the evidence proves otherwise, and do not APPROVE to be agreeable.\n" +
+		"Start with NEEDS_REVISION unless the objective is demonstrably and fully implemented in the actual workspace state.\n\n" +
+		basePrompt
 }
 
 // goalReviewerReplyWasSkipped reports whether a reviewer reply was synthesized
