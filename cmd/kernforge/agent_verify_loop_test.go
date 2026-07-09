@@ -9232,7 +9232,7 @@ func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testin
 		t.Fatalf("expected pre-write review hook to run")
 	}
 	if !strings.Contains(reply, "Pre-write reviewer gate: not approved") ||
-		!strings.Contains(reply, "no code changes were applied") ||
+		!strings.Contains(reply, "the blocked edit proposal was not applied") ||
 		!strings.Contains(reply, "[3] Next step") ||
 		!strings.Contains(reply, "/model cross-review") {
 		t.Fatalf("expected reviewer-gate stop reply, got %q", reply)
@@ -11002,7 +11002,7 @@ func TestEditTargetMismatchLoopLimitShowsPreWriteBlocker(t *testing.T) {
 			},
 		},
 	}
-	reply := formatEditTargetMismatchLoopLimitReply(Config{AutoLocale: boolPtr(false)}, session)
+	reply := formatEditTargetMismatchLoopLimitReply(Config{AutoLocale: boolPtr(false)}, session, nil)
 	if !strings.Contains(reply, "Latest review result: insufficient evidence") ||
 		!strings.Contains(reply, "RF-001") ||
 		!strings.Contains(reply, "Dynamic buffer repair evidence is missing") {
@@ -11021,7 +11021,7 @@ func TestEditTargetMismatchLoopLimitDistinguishesLookupOwnership(t *testing.T) {
 			},
 		},
 	}
-	reply := formatEditTargetMismatchLoopLimitReply(Config{AutoLocale: boolPtr(false)}, session)
+	reply := formatEditTargetMismatchLoopLimitReply(Config{AutoLocale: boolPtr(false)}, session, nil)
 	if !strings.Contains(reply, "Read-only inspection tools") {
 		t.Fatalf("expected lookup ownership wording, got %q", reply)
 	}

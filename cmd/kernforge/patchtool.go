@@ -869,9 +869,20 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 	return planned, nil
 }
 
+// utf8BOMPrefix is the leading UTF-8 byte-order mark as a string. Kept as
+// a named constant so BOM-aware matching code stays ASCII-only in source.
+const utf8BOMPrefix = "\uFEFF"
+
 func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 	lineEnding := detectPatchLineEnding(content)
 	content = normalizePatchLineEndings(content)
+	// A leading UTF-8 BOM is invisible in read_file output, so a model can
+	// never reproduce it in patch context and any hunk anchored at line 1 of
+	// a BOM file would mismatch forever. Match against the BOM-less text and
+	// restore the marker on output so the file keeps its original encoding
+	// signature.
+	hadBOM := strings.HasPrefix(content, utf8BOMPrefix)
+	content = strings.TrimPrefix(content, utf8BOMPrefix)
 	// Capture the original EOF-newline state before trimming so a file that
 	// ended without a trailing newline does not silently gain one.
 	hadTrailingNewline := strings.HasSuffix(content, "\n")
@@ -942,6 +953,9 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 	result := strings.Join(oldLines, lineEnding)
 	if result != "" && hadTrailingNewline {
 		result += lineEnding
+	}
+	if hadBOM {
+		result = utf8BOMPrefix + result
 	}
 	return result, nil
 }
@@ -1038,14 +1052,21 @@ func locatePatchChunk(lines, oldChunk []string, cursor int, header string, lineD
 // trailing spaces, tabs, or a carriage return. The CR case covers CRLF file
 // content matched by fuzzyReplaceTarget, which splits on bare LF and leaves
 // the "\r" attached to each line; apply_patch input is already normalized so
-// the extra cut character is inert there.
+// the extra cut character is inert there. A leading UTF-8 BOM is ignored on
+// both sides: it is not Unicode whitespace, is invisible in read output, and
+// only ever appears on a file's first line, where fuzzyReplaceTarget still
+// sees it because that path does not pre-strip file content.
 func patchLinesEqualTrailing(a, b string) bool {
+	a = strings.TrimPrefix(a, utf8BOMPrefix)
+	b = strings.TrimPrefix(b, utf8BOMPrefix)
 	return strings.TrimRight(a, " \t\r") == strings.TrimRight(b, " \t\r")
 }
 
 // patchLinesEqualTrimmed treats two lines as equal when they differ only by
-// leading or trailing whitespace (indentation drift).
+// leading or trailing whitespace (indentation drift) or a leading UTF-8 BOM.
 func patchLinesEqualTrimmed(a, b string) bool {
+	a = strings.TrimPrefix(a, utf8BOMPrefix)
+	b = strings.TrimPrefix(b, utf8BOMPrefix)
 	return strings.TrimSpace(a) == strings.TrimSpace(b)
 }
 

@@ -742,13 +742,13 @@ func formatPreFixNoReliableActionableFindingsReply(cfg Config, run ReviewRun) st
 	var b strings.Builder
 	if korean {
 		b.WriteString("수정 전 리뷰가 충분히 신뢰 가능한 버그 finding을 만들지 못해서 수리 단계로 진행하지 않았습니다.")
-		b.WriteString("\n\n- 결과: 코드 수정은 적용하지 않았습니다.")
+		b.WriteString("\n\n- 결과: 이 요청의 수리 편집은 적용되지 않았습니다.")
 		b.WriteString("\n- 원인: review route가 실패/weak/empty 응답을 반환했고, 수리 기준으로 삼을 실행 가능한 code finding이 없습니다.")
 		b.WriteString("\n- 중요한 점: 이 상태에서 Qwen 같은 로컬 모델을 독립 수리로 넘기면 추측성 패치가 나올 수 있으므로 멈추는 것이 맞습니다.")
 		b.WriteString("\n- 다음 조치: `primary` 실패면 `/model`로 메인 route를 바꾸고, `cross` 실패면 `/model cross-review` 또는 `/model clear cross-review`로 route를 바꾸거나 복구한 뒤 같은 요청을 다시 실행하세요.")
 	} else {
 		b.WriteString("The pre-fix review did not produce reliable actionable bug findings, so I did not continue into repair.")
-		b.WriteString("\n\n- Result: no code changes were applied.")
+		b.WriteString("\n\n- Result: no repair edits were applied for this request.")
 		b.WriteString("\n- Cause: a review route failed or returned weak/empty output, and there is no actionable code finding to repair from.")
 		b.WriteString("\n- Important: handing this state to a local model for independent repair can produce speculative patches, so stopping is intentional.")
 		b.WriteString("\n- Next step: if `primary` failed, switch the main route with `/model`; if `cross` failed, switch or restore it with `/model cross-review` or `/model clear cross-review`, then rerun the same request.")
@@ -1190,7 +1190,7 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 		if reviewRunHasUsableMainReviewer(run) {
 			b.WriteString("\n- 선택: 그래도 위 메인 모델 리뷰 결과를 기준으로 사용자가 직접 diff preview에서 판단하려면 `메인 모델 리뷰 기준으로 진행`이라고 답하세요.")
 		}
-		b.WriteString("\n\n코드 수정은 적용하지 않았습니다.")
+		b.WriteString("\n\n이번에 차단된 편집은 적용되지 않았습니다.")
 	} else {
 		if preWriteGate {
 			b.WriteString("The pre-write reviewer gate did not produce enough reliable evidence, so I stopped the edit.")
@@ -1203,7 +1203,7 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 		if reviewRunHasUsableMainReviewer(run) {
 			b.WriteString("\n- Option: if you still want to decide from the main model review shown above, reply with `proceed with the main model review` and I will retry the edit with diff-preview confirmation.")
 		}
-		b.WriteString("\n\nNo code changes were applied.")
+		b.WriteString("\n\nThe blocked edit was not applied.")
 	}
 	if recoveryOptions := formatReviewerGateRecoveryOptions(korean, &run); recoveryOptions != "" {
 		b.WriteString("\n\n")

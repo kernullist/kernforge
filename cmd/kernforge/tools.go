@@ -4992,7 +4992,11 @@ func fuzzyReplaceTarget(content, search string) (string, bool) {
 		matches := findChunkFuzzyMatchesAtOrAfter(contentLines, searchLines, 0, eq)
 		if len(matches) == 1 {
 			start := matches[0]
-			return strings.Join(contentLines[start:start+len(searchLines)], "\n"), true
+			span := strings.Join(contentLines[start:start+len(searchLines)], "\n")
+			// A match on the first line of a BOM file captures the BOM in the
+			// span; trim it so the marker survives the caller's replacement.
+			// The trimmed span is still an exact substring of content.
+			return strings.TrimPrefix(span, utf8BOMPrefix), true
 		}
 		if len(matches) > 1 {
 			// Ambiguous at this leniency; do not loosen further and risk the wrong spot.

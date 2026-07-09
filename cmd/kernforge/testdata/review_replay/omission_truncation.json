@@ -44,7 +44,7 @@
   ],
   "expected_reply_contains": [
     "required review-stage model route failed",
-    "No code changes were applied"
+    "The blocked edit was not applied"
   ],
   "expected_markdown_contains": [
     "State Transitions",

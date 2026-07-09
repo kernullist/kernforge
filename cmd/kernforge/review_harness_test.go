@@ -7189,7 +7189,7 @@ func TestPreFixUnreliableNoActionableReplyDoesNotOfferRepairChoice(t *testing.T)
 	reply := formatPreFixNoReliableActionableFindingsReply(cfg, run)
 	for _, want := range []string{
 		"did not produce reliable actionable bug findings",
-		"no code changes were applied",
+		"no repair edits were applied for this request",
 		"local model for independent repair can produce speculative patches",
 	} {
 		if !strings.Contains(reply, want) {

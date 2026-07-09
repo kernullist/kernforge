@@ -42,6 +42,6 @@
   ],
   "expected_reply_contains": [
     "proceed with the main model review",
-    "No code changes were applied"
+    "The blocked edit was not applied"
   ]
 }
