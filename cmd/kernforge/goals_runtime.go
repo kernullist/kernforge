@@ -575,6 +575,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	if err != nil {
 		return rt.finishGoalIterationError(goal, iteration, err)
 	}
+	if rt.session.PendingImplementationDecision != nil {
+		return rt.finishGoalIterationPendingImplementationDecision(goal, iteration, "implementation")
+	}
 	rt.session.SetPlanNodeLifecycle("plan-01", "completed", "Implementation pass inspected current goal state.")
 	rt.session.SetPlanNodeLifecycle("plan-02", "completed", "Implementation pass completed or confirmed no code change was needed.")
 
@@ -597,6 +600,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		if err != nil {
 			return rt.finishGoalIterationError(goal, iteration, err)
 		}
+		if rt.session.PendingImplementationDecision != nil {
+			return rt.finishGoalIterationPendingImplementationDecision(goal, iteration, "review")
+		}
 		decision := parseGoalReviewDecision(reviewReply)
 		iteration.ReviewerVerdict = decision.Verdict
 		iteration.ReviewerFeedback = compactPromptSection(decision.Feedback, 900)
@@ -605,6 +611,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 			iteration.RepairReply = compactPromptSection(repairReply, 900)
 			if repairErr != nil {
 				return rt.finishGoalIterationError(goal, iteration, repairErr)
+			}
+			if rt.session.PendingImplementationDecision != nil {
+				return rt.finishGoalIterationPendingImplementationDecision(goal, iteration, "review repair")
 			}
 		}
 	}
@@ -717,6 +726,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 						goal.Status = goalStatusBlocked
 						goal.LastError = repairErr.Error()
 					} else {
+						if rt.session.PendingImplementationDecision != nil {
+							return rt.finishGoalIterationPendingImplementationDecision(goal, iteration, "semantic repair")
+						}
 						iteration.Status = goalStatusPending
 						rt.session.SetPlanNodeLifecycle("plan-06", "in_progress", "Semantic goal review requested a repair before completion.")
 					}
@@ -832,6 +844,24 @@ func (rt *runtimeState) finishGoalIterationError(goal GoalState, iteration GoalI
 	return goal, true, err
 }
 
+func (rt *runtimeState) finishGoalIterationPendingImplementationDecision(goal GoalState, iteration GoalIteration, phase string) (GoalState, bool, error) {
+	if rt == nil || rt.session == nil || rt.session.PendingImplementationDecision == nil {
+		return goal, false, nil
+	}
+	pending := rt.session.PendingImplementationDecision
+	reason := fmt.Sprintf("waiting for user implementation decision %s", pending.DecisionID)
+	if strings.TrimSpace(phase) != "" {
+		reason += " after " + strings.TrimSpace(phase)
+	}
+	iteration.Status = goalStatusPaused
+	goal.Status = goalStatusPaused
+	goal.LastError = reason
+	rt.session.SetPlanNodeLifecycle("plan-02", "pending", reason)
+	rt.printPersistentBlockWhileThinking(rt.ui.warnLine(reason + "; resume the session, complete the pending choice, then run the goal again"))
+	finished := rt.recordGoalIteration(goal, iteration, false)
+	return finished, true, nil
+}
+
 func (rt *runtimeState) finishGoalIterationCanceled(goal GoalState, iteration GoalIteration, err error) (GoalState, bool, error) {
 	reason := goalCancellationReason(err)
 	if iteration.Index <= 0 {
@@ -869,6 +899,10 @@ func (rt *runtimeState) finishGoalIterationCanceled(goal GoalState, iteration Go
 }
 
 func (rt *runtimeState) finishGoalIteration(goal GoalState, iteration GoalIteration) GoalState {
+	return rt.recordGoalIteration(goal, iteration, true)
+}
+
+func (rt *runtimeState) recordGoalIteration(goal GoalState, iteration GoalIteration, consumeIterationBudget bool) GoalState {
 	if iteration.Status == "" || iteration.Status == goalStatusRunning {
 		iteration.Status = goal.Status
 	}
@@ -878,7 +912,9 @@ func (rt *runtimeState) finishGoalIteration(goal GoalState, iteration GoalIterat
 	}
 	iteration.ReplySummary = compactPromptSection(strings.Join([]string{iteration.ImplementReply, iteration.ReviewReply, iteration.RepairReply, semanticSummary}, "\n\n"), 1200)
 	iteration.FinishedAt = time.Now()
-	goal.Iteration = iteration.Index
+	if consumeIterationBudget {
+		goal.Iteration = iteration.Index
+	}
 	goal.CommandHistory = append(goal.CommandHistory, iteration.Commands...)
 	goal.Iterations = append(goal.Iterations, iteration)
 	goal.Touch()

@@ -66,6 +66,7 @@ type Session struct {
 	LastJobSupervisorReport         *JobSupervisorReport             `json:"last_job_supervisor_report,omitempty"`
 	LastReviewRun                   *ReviewRun                       `json:"last_review_run,omitempty"`
 	PendingReviewRepairConfirm      *ReviewRepairConfirmationState   `json:"pending_review_repair_confirmation,omitempty"`
+	PendingImplementationDecision   *PendingImplementationDecision   `json:"pending_implementation_decision,omitempty"`
 	// PriorReviewArtifactConsent is a per-session, one-time decision about whether
 	// the model may read review artifacts under .kernforge/reviews that were
 	// produced by a PRIOR session (stale cross-session findings). Empty means not
@@ -195,6 +196,9 @@ func normalizeSessionMessage(msg Message) Message {
 
 func (s *Session) ApproxChars() int {
 	total := len(s.Summary)
+	if s.PendingImplementationDecision != nil {
+		total += s.PendingImplementationDecision.ApproxChars()
+	}
 	if s.TaskState != nil {
 		total += s.TaskState.ApproxChars()
 	}
@@ -807,6 +811,7 @@ func loadSessionFile(path string) (*Session, []byte, error) {
 	sess.normalizeAutomations()
 	sess.normalizeGoals()
 	sess.normalizeSpawnedTasks()
+	sess.normalizePendingImplementationDecision()
 	sess.ResetProviderStateForReload("session_load")
 	return &sess, data, nil
 }

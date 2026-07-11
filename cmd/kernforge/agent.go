@@ -1034,6 +1034,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if a.shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification, attemptedEditTool, successfulEditTool) {
 			onTextDelta = nil
 		}
+		if a.Session != nil && a.Session.PendingImplementationDecision != nil {
+			onTextDelta = nil
+		}
 		systemPrompt := a.systemPrompt()
 		if finalAnswerOnlyCorrection {
 			systemPrompt += "\n\n" + finalAnswerOnlyHarnessPromptGuidance()
@@ -1154,7 +1157,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			a.lastEmittedText = strings.TrimSpace(resp.Message.Text)
 		}
 		lastStopReason = normalizeStopReason(resp.StopReason)
-		a.Session.AddMessage(resp.Message)
+		persistedResponseMessage := sanitizeImplementationDecisionMessageForPersistence(resp.Message)
+		a.Session.AddMessage(persistedResponseMessage)
 		if resp.Message.Phase != messagePhaseFinalAnswerCandidate {
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
@@ -1729,6 +1733,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 		}
 		if len(resp.Message.ToolCalls) == 0 {
+			if pending := a.Session.PendingImplementationDecision; pending != nil {
+				reply := fmt.Sprintf("Implementation decision %s is still waiting for your answer. No workspace changes were made. Resume the pending choice before implementation continues.", pending.DecisionID)
+				if len(a.Session.Messages) > 0 {
+					last := &a.Session.Messages[len(a.Session.Messages)-1]
+					last.Text = reply
+					last.Phase = messagePhaseFinalAnswer
+				}
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				return reply, nil
+			}
 			turnRuntime.Transition(TurnRuntimeNeedFinalGate, "assistant_final_candidate")
 			a.Session.LastTurnRuntimeState = turnRuntime
 			lastToolCallSignature = ""
@@ -2381,12 +2397,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		editMismatchRetryQueued := false
 		preWriteForceEditQueued := false
 		toolRetryQueued := false
+		implementationDecisionCallIndex := implementationDecisionToolCallIndex(resp.Message.ToolCalls)
 		toolMsgIndexes, saveErr := a.beginToolExecutions(resp.Message.ToolCalls)
 		if saveErr != nil {
 			return "", saveErr
 		}
 		parallelBatchExecuted := false
-		if !deferEditToolsInBatch &&
+		if implementationDecisionCallIndex < 0 &&
+			!deferEditToolsInBatch &&
 			!verificationOutOfScopeFinalOnly &&
 			!verificationDeclinedThisTurn &&
 			!verificationOutOfScopeThisTurn &&
@@ -2418,6 +2436,44 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			toolMsgIndex := -1
 			if callIndex >= 0 && callIndex < len(toolMsgIndexes) {
 				toolMsgIndex = toolMsgIndexes[callIndex]
+			}
+			if implementationDecisionCallIndex >= 0 && callIndex != implementationDecisionCallIndex {
+				reason := "NOT_EXECUTED: present_implementation_decision must run as the only tool call in its checkpoint response; re-evaluate all other calls after the recorded user choice."
+				result := notExecutedToolResult(call, reason)
+				a.setToolExecutionResult(toolMsgIndex, Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					IsError:    true,
+					ToolMeta:   result.Meta,
+				})
+				a.noteToolConversationBlockedResult(call, result, nil)
+				a.noteToolExecutionResultDetailed(call, result, nil)
+				sawToolResultThisTurn = true
+				continue
+			}
+			if pendingImplementationDecisionBlocksToolCall(a.Session, call, a.Tools) {
+				pending := a.Session.PendingImplementationDecision
+				reason := fmt.Sprintf("NOT_EXECUTED: implementation decision %s is still pending; complete the user choice before any workspace mutation.", pending.DecisionID)
+				result := notExecutedToolResult(call, reason)
+				a.setToolExecutionResult(toolMsgIndex, Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					IsError:    true,
+					ToolMeta:   result.Meta,
+				})
+				a.noteToolConversationBlockedResult(call, result, nil)
+				a.noteToolExecutionResultDetailed(call, result, nil)
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, reason)
+				reply := fmt.Sprintf("Implementation decision %s is still waiting for your answer. No workspace changes were made. Resume the pending choice before implementation continues.", pending.DecisionID)
+				a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				return reply, nil
 			}
 			if deferEditToolsInBatch && shouldDeferToolCallInMixedEditBatch(call) {
 				result := deferredMixedToolResult(call)
@@ -3180,6 +3236,31 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 			} else {
 				iterationHadToolSuccess = true
+				if toolMetaImplementationDecisionCheckpoint(result.Meta) {
+					reason := "NOT_EXECUTED: an implementation decision checkpoint completed; re-evaluate the selected approach from the next model turn before issuing any edit."
+					if toolMetaImplementationDecisionRequiresUserInput(result.Meta) {
+						reason = "NOT_EXECUTED: the implementation decision checkpoint requires user input; stop and resume only after the pending choice is completed."
+					}
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, reason)
+					if toolMetaImplementationDecisionRequiresUserInput(result.Meta) {
+						reply := strings.TrimSpace(result.DisplayText)
+						if reply == "" {
+							reply = "An implementation decision is waiting for user input. No workspace changes were made. Resume the pending choice before implementation continues."
+						}
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						return reply, nil
+					}
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					lastToolError = ""
+					lastToolErrorCount = 0
+					toolRetryQueued = true
+					break
+				}
 				if toolResultAttemptedWorkspaceEdit(call.Name, result.Meta) {
 					attemptedEditTool = true
 				}
@@ -8124,6 +8205,9 @@ func shouldDeferToolCallInMixedEditBatch(call ToolCall) bool {
 }
 
 func toolCallIsReadOnlyDuringMixedEditBatch(call ToolCall) bool {
+	if strings.TrimSpace(call.Name) == "present_implementation_decision" {
+		return true
+	}
 	switch inferToolExecutionEffect(call.Name) {
 	case "inspect", "plan":
 		return true
@@ -10842,6 +10926,11 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString(compactPromptSection(stateText, 1100))
 		b.WriteString("\n")
 	}
+	if pendingText := strings.TrimSpace(renderPendingImplementationDecisionPrompt(a.Session.PendingImplementationDecision)); pendingText != "" {
+		b.WriteString("\nPending implementation decision:\n")
+		b.WriteString(pendingText)
+		b.WriteString("\n")
+	}
 	if eventsText := strings.TrimSpace(renderRecentConversationEventsPrompt(recentNonUserConversationEvents(a.Session, 5), 5)); eventsText != "" {
 		b.WriteString("\nRecent runtime/session events:\n")
 		b.WriteString(compactPromptSection(eventsText, 1600))
@@ -11065,6 +11154,9 @@ func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
 	}
 	b.WriteString("- Classify the latest external request before acting with request_class review_only, document_artifact, review_then_modify, modify_then_review, verification_only, or validation_only, plus lifecycle_kind such as implementation, fix_from_review, analysis, or mixed_flow.\n")
 	b.WriteString("- Inspect current repository state before making assumptions, and preserve unrelated user changes in a dirty worktree.\n")
+	if envelope.AllowsFileMutation {
+		b.WriteString("- After inspecting the relevant code and before the first edit, if 2-4 materially valid implementation approaches remain with meaningful tradeoffs, call present_implementation_decision as a single tool call and wait for the recorded choice. Do not invoke it for trivial syntax, naming, formatting, or an approach already fixed by the user's requirements.\n")
+	}
 	b.WriteString("- For review-only requests, use a code-review stance: findings first, ordered by severity, with concrete file/function/line evidence when available; do not edit files unless the user asks for a fix.\n")
 	b.WriteString("- For document_artifact requests, use artifact-quality checks as the primary gate: artifact exists, requested topic is covered, content is not placeholder/TODO-only, and verification claims are not unsupported.\n")
 	b.WriteString("- For review_then_modify requests, produce review findings first, tie the repair plan to those findings, patch narrowly, then run post-change review or single-model second pass.\n")

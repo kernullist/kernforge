@@ -39,6 +39,10 @@ func TestParseUserChoiceAnswer(t *testing.T) {
 	if r, ok := parseUserChoiceAnswer(qr, ""); !ok || len(r.Selected) != 1 || r.Selected[0] != "A" {
 		t.Fatalf("empty answer must select the recommended option: ok=%v %#v", ok, r)
 	}
+	qr.RequireExplicit = true
+	if _, ok := parseUserChoiceAnswer(qr, ""); ok {
+		t.Fatal("explicit decision prompts must not accept the recommendation on bare Enter")
+	}
 }
 
 func TestAskUserToolParsesRecommendedOption(t *testing.T) {

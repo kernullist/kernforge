@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>KernForge Decision Journal</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div id="auth-gate" class="auth-gate" hidden>
+    <div class="auth-panel">
+      <p class="eyebrow">LOCAL JOURNAL</p>
+      <h1>Dashboard authentication required</h1>
+      <p>Run <code>/decision</code> again in the active KernForge session to open a fresh authenticated link.</p>
+    </div>
+  </div>
+
+  <div class="app-shell">
+    <aside class="scope-rail">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">KF</div>
+        <div>
+          <p class="eyebrow">KERNFORGE</p>
+          <h1>Decision Journal</h1>
+        </div>
+      </div>
+
+      <nav class="primary-nav" aria-label="Dashboard sections">
+        <button class="nav-item active" data-view="journal" type="button" aria-current="page" aria-pressed="true">
+          <span>Journal</span><span id="nav-decision-count" class="nav-count">0</span>
+        </button>
+        <button class="nav-item" data-view="preferences" type="button" aria-pressed="false">
+          <span>Preference profile</span><span id="nav-profile-count" class="nav-count">0</span>
+        </button>
+      </nav>
+
+      <section class="scope-section">
+        <div class="section-label-row">
+          <span class="section-label">Project scope</span>
+          <button id="scope-all" class="text-button" type="button">All</button>
+        </div>
+        <div id="project-list" class="project-list"></div>
+      </section>
+
+      <section class="current-workspace">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div>
+          <p class="section-label">Current workspace</p>
+          <p id="workspace-alias" class="workspace-alias">Loading...</p>
+          <p id="workspace-path" class="workspace-path"></p>
+        </div>
+      </section>
+
+      <div class="rail-actions">
+        <button id="export-open" class="secondary-button" type="button">Export journal</button>
+      </div>
+    </aside>
+
+    <main class="journal-workspace">
+      <header class="workspace-header">
+        <div>
+          <p id="view-kicker" class="eyebrow">CROSS-PROJECT EVIDENCE</p>
+          <h2 id="view-title">Implementation decisions</h2>
+          <p id="view-subtitle" class="header-subtitle">The choice, its rationale, and the alternatives that were ruled out.</p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh data">Refresh</button>
+          <button id="rebuild-profile" class="secondary-button" type="button" hidden>Rebuild profile</button>
+        </div>
+      </header>
+
+      <section id="issue-banner" class="issue-banner" hidden>
+        <strong id="issue-title"></strong>
+        <p id="issue-copy"></p>
+      </section>
+
+      <section id="journal-view" class="view-panel">
+        <div class="filter-bar">
+          <label class="mobile-project-filter">
+            <span class="sr-only">Project scope</span>
+            <select id="project-filter" aria-label="Project scope"></select>
+          </label>
+          <label class="search-field">
+            <span class="sr-only">Search decisions</span>
+            <input id="decision-search" type="search" placeholder="Search problem, rationale, tag, or option">
+          </label>
+          <label>
+            <span class="sr-only">Domain</span>
+            <select id="domain-filter"><option value="">All domains</option></select>
+          </label>
+          <label>
+            <span class="sr-only">Decision kind</span>
+            <select id="kind-filter"><option value="">All decision kinds</option></select>
+          </label>
+          <label class="toggle-label">
+            <input id="deleted-filter" type="checkbox">
+            <span>Deleted</span>
+          </label>
+        </div>
+
+        <div class="journal-heading-row">
+          <p id="journal-summary" class="table-caption">Loading decisions...</p>
+          <span class="column-hint">Updated</span>
+        </div>
+        <div id="decision-list" class="decision-list" aria-live="polite"></div>
+        <div class="load-more-row">
+          <button id="load-more" class="secondary-button" type="button" hidden>Load more</button>
+        </div>
+        <div id="decision-empty" class="empty-state" hidden>
+          <p class="empty-kicker">NO MATCHING RECORDS</p>
+          <h3>No decision forks in this scope</h3>
+          <p>When KernForge encounters a material implementation fork, the completed choice will appear here.</p>
+        </div>
+      </section>
+
+      <section id="profile-view" class="view-panel" hidden>
+        <div class="profile-explainer">
+          <div>
+            <p class="eyebrow">EVIDENCE THRESHOLD</p>
+            <h3>Learned preferences stay reversible</h3>
+          </div>
+          <p>Rules are derived only from repeated, explicit user choices. Disable, pin, or annotate a rule without changing the source decisions.</p>
+        </div>
+        <div id="profile-list" class="profile-list"></div>
+        <div id="profile-empty" class="empty-state" hidden>
+          <p class="empty-kicker">NO PROMOTED RULES</p>
+          <h3>More repeated evidence is required</h3>
+          <p>Project rules need two consistent choices; broader rules need support across multiple projects.</p>
+        </div>
+      </section>
+    </main>
+
+    <div id="inspector-backdrop" class="inspector-backdrop" hidden></div>
+    <aside id="inspector" class="inspector-pane" aria-label="Decision inspector" tabindex="-1">
+      <div id="inspector-empty" class="inspector-empty">
+        <div class="fork-glyph" aria-hidden="true"><span></span><span></span><span></span></div>
+        <p class="eyebrow">DECISION FORK</p>
+        <h2>Select a journal entry</h2>
+        <p>Inspect the selected path, every rejected branch, provenance, and revision history.</p>
+      </div>
+      <div id="inspector-content" hidden></div>
+    </aside>
+  </div>
+
+  <dialog id="export-dialog" class="export-dialog">
+    <form method="dialog" class="dialog-shell">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">PORTABLE EVIDENCE</p>
+          <h2>Export decision journal</h2>
+        </div>
+        <button class="dialog-close" value="cancel" aria-label="Close">Close</button>
+      </div>
+      <p>The default export removes session IDs, absolute workspace paths, feature/goal IDs, and evidence paths.</p>
+      <label class="dialog-check"><input id="export-deleted" type="checkbox"> Include soft-deleted decisions</label>
+      <label class="dialog-check warning-check"><input id="export-private" type="checkbox"> Include private local metadata</label>
+      <p id="export-warning" class="export-warning" hidden>Private export may contain local paths and session identifiers. Keep it on a trusted machine.</p>
+      <div class="dialog-actions">
+        <button class="secondary-button" value="cancel">Cancel</button>
+        <button id="export-download" class="primary-button" type="button">Download JSON</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

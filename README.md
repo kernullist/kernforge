@@ -1234,6 +1234,7 @@ Explain the structure of this repository
 ```text
 /config
 /context
+/decision
 /provider status
 /model
 /effort
@@ -1253,6 +1254,7 @@ Explain the structure of this repository
 - `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter and DeepSeek perform live lookups, while OpenAI and Anthropic expose officially documented limits and billing guidance.
 - `/model` is the model-routing hub for the main model, the analysis worker/reviewer, the optional cross review route, and task-owner overrides. The primary review route follows the main model; only the optional cross review route is configured through `/model cross-review`.
 - `/effort` shows or sets the `openai-codex` and DeepSeek reasoning effort per configured model target.
+- `/decision` opens the authenticated local [Decision Journal dashboard](./docs/decision-journal.md). When code inspection reveals two to four materially valid implementation approaches, KernForge can pause before the first edit, collect an explicit choice plus selected/rejected rationale, and store the result in a private cross-project journal under `~/.kernforge/decision-rationales/`. Browsing, editing, revision history, soft delete/restore, preference rules, rebuild, and JSON export all live inside this one dashboard; there are no `/decision` subcommands.
 
 ### Conversation And Session Commands
 

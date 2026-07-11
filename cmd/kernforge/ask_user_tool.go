@@ -15,11 +15,12 @@ type UserQuestionOption struct {
 
 // UserQuestion is a structured multiple-choice question the model asks the user.
 type UserQuestion struct {
-	Question    string
-	Header      string
-	Options     []UserQuestionOption
-	Multiple    bool
-	AllowCustom bool
+	Question        string
+	Header          string
+	Options         []UserQuestionOption
+	Multiple        bool
+	AllowCustom     bool
+	RequireExplicit bool
 }
 
 // UserQuestionResult carries the user's answer back to the model.
@@ -95,6 +96,9 @@ func (t AskUserTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecut
 			ModelText:   "ask_user error: " + msg + " Proceed with a sensible default instead of asking.",
 			Meta:        map[string]any{"success": false},
 		}, nil
+	}
+	if t.ws.UserInputRequests != nil {
+		t.ws.UserInputRequests.MarkRequested()
 	}
 	multiple, _ := args["multiple"].(bool)
 	allowCustom, _ := args["allow_custom"].(bool)

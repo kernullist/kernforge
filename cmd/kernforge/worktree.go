@@ -257,6 +257,14 @@ func (rt *runtimeState) syncWorkspaceFromSession() {
 	rt.workspace.PrepareEditAtRoot = rt.prepareEditAtRoot
 	rt.workspace.ReviewEdit = rt.reviewProposedEdit
 	rt.workspace.PromptUserChoice = rt.promptUserChoice
+	rt.workspace.PromptUserText = rt.promptUserText
+	rt.workspace.DecisionStore = rt.decisionStore
+	rt.workspace.DecisionProfileStore = rt.decisionProfileStore
+	rt.workspace.DecisionSession = rt.session
+	rt.workspace.DecisionSessionStore = rt.store
+	if rt.decisionDashboard != nil {
+		rt.decisionDashboard.SetWorkspace(firstNonBlankString(rt.workspace.BaseRoot, rt.workspace.Root))
+	}
 	rt.workspace.ResolveEditTarget = rt.resolveEditTarget
 	rt.workspace.ResolveShellRoot = rt.resolveShellRoot
 	rt.workspace.GoalSession = rt.session

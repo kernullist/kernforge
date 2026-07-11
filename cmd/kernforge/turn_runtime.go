@@ -406,7 +406,9 @@ func cloneRuntimeInterventionToolCalls(calls []ToolCall) []ToolCall {
 		return nil
 	}
 	out := make([]ToolCall, len(calls))
-	copy(out, calls)
+	for index, call := range calls {
+		out[index] = sanitizeImplementationDecisionToolCallForPersistence(call)
+	}
 	return out
 }
 

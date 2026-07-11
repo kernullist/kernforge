@@ -56,6 +56,9 @@ type runtimeState struct {
 	checkpoints                     *CheckpointManager
 	autoCP                          *AutoCheckpointController
 	verifyHistory                   *VerificationHistoryStore
+	decisionStore                   *ImplementationDecisionStore
+	decisionProfileStore            *ImplementationPreferenceProfileStore
+	decisionDashboard               *DecisionDashboardServer
 	backgroundJobs                  *BackgroundJobManager
 	lspPool                         *LSPServerPool
 	modelRoutes                     *ModelRouteScheduler
@@ -384,6 +387,8 @@ func run(args []string) error {
 		checkpoints:                     NewCheckpointManager(),
 		autoCP:                          &AutoCheckpointController{},
 		verifyHistory:                   NewVerificationHistoryStore(),
+		decisionStore:                   NewImplementationDecisionStore(),
+		decisionProfileStore:            NewImplementationPreferenceProfileStore(),
 		modelRoutes:                     defaultModelRouteScheduler(),
 		strictConfig:                    strictConfig,
 		configProfile:                   profileFlag,
@@ -433,6 +438,12 @@ func run(args []string) error {
 		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
 			return rt.promptConfirmAutoVerify(plan)
 		},
+		PromptUserChoice:     rt.promptUserChoice,
+		PromptUserText:       rt.promptUserText,
+		DecisionStore:        rt.decisionStore,
+		DecisionProfileStore: rt.decisionProfileStore,
+		DecisionSession:      rt.session,
+		DecisionSessionStore: rt.store,
 		UpdatePlan: func(items []PlanItem) {
 			rt.session.SetSharedPlan(items)
 			_ = rt.store.Save(rt.session)
@@ -745,6 +756,7 @@ func buildRegistry(ws Workspace, mcp *MCPManager, skills SkillCatalog) *ToolRegi
 		NewLSPNavigationTool(ws),
 		NewReviewSecondOpinionTool(ws),
 		NewAskUserTool(ws),
+		NewImplementationDecisionTool(ws),
 	}
 	if goalToolsAvailable(ws) {
 		items = append(items,
@@ -976,7 +988,11 @@ func (rt *runtimeState) promptUserChoice(q UserQuestion) (UserQuestionResult, er
 			hint += ", 직접 입력도 가능"
 		}
 		if hasRecommended {
-			hint += ", 그냥 Enter를 누르면 권장 옵션이 선택됩니다"
+			if q.RequireExplicit {
+				hint += ", 권장 표시는 참고용이며 번호를 직접 선택해야 합니다"
+			} else {
+				hint += ", 그냥 Enter를 누르면 권장 옵션이 선택됩니다"
+			}
 		}
 	} else {
 		hint = "Enter the option number"
@@ -987,7 +1003,11 @@ func (rt *runtimeState) promptUserChoice(q UserQuestion) (UserQuestionResult, er
 			hint += ", or type a custom answer"
 		}
 		if hasRecommended {
-			hint += "; press Enter to accept the recommended option"
+			if q.RequireExplicit {
+				hint += "; the recommendation is advisory and requires an explicit selection"
+			} else {
+				hint += "; press Enter to accept the recommended option"
+			}
 		}
 	}
 	var (
@@ -996,6 +1016,56 @@ func (rt *runtimeState) promptUserChoice(q UserQuestion) (UserQuestionResult, er
 	)
 	rt.withRequestCancelSuspended(func() {
 		result, err = rt.readUserChoice(q, hint+":")
+	})
+	return result, err
+}
+
+func (rt *runtimeState) promptUserText(q UserTextQuestion) (UserTextResult, error) {
+	if rt == nil || !rt.interactive {
+		return UserTextResult{Canceled: true}, nil
+	}
+	if header := strings.TrimSpace(q.Header); header != "" {
+		rt.printAssistant("[" + header + "] " + strings.TrimSpace(q.Question))
+	} else {
+		rt.printAssistant(strings.TrimSpace(q.Question))
+	}
+	prompt := strings.TrimSpace(q.Placeholder)
+	if prompt == "" {
+		prompt = localizedText(rt.cfg, "Enter your answer", "답변을 입력하세요")
+	}
+	var result UserTextResult
+	err := rt.withPinnedPrompt(func() error {
+		for {
+			answer, usedInteractive, lineErr := rt.readInteractiveLine(prompt+": ", "", nil, true)
+			if !usedInteractive {
+				fmt.Fprint(rt.writer, prompt+": ")
+				if rt.reader == nil {
+					return ErrPromptCanceled
+				}
+				var readErr error
+				answer, readErr = rt.reader.ReadString('\n')
+				if readErr != nil {
+					return readErr
+				}
+			} else if lineErr != nil {
+				if errors.Is(lineErr, ErrPromptCanceled) {
+					result.Canceled = true
+					return nil
+				}
+				return lineErr
+			}
+			answer = strings.TrimSpace(answer)
+			if q.Required && answer == "" {
+				fmt.Fprintln(rt.writer, rt.ui.warnLine(localizedText(rt.cfg, "A non-empty answer is required.", "빈 답변은 사용할 수 없습니다.")))
+				continue
+			}
+			if q.MaxLength > 0 && len(answer) > q.MaxLength {
+				fmt.Fprintln(rt.writer, rt.ui.warnLine(fmt.Sprintf(localizedText(rt.cfg, "The answer must be at most %d bytes.", "답변은 최대 %d바이트여야 합니다."), q.MaxLength)))
+				continue
+			}
+			result.Text = answer
+			return nil
+		}
 	})
 	return result, err
 }
@@ -1042,6 +1112,9 @@ func (rt *runtimeState) readUserChoice(q UserQuestion, prompt string) (UserQuest
 func parseUserChoiceAnswer(q UserQuestion, answer string) (UserQuestionResult, bool) {
 	answer = strings.TrimSpace(answer)
 	if answer == "" {
+		if q.RequireExplicit {
+			return UserQuestionResult{}, false
+		}
 		// A bare Enter accepts the model's recommended option when one exists.
 		for _, opt := range q.Options {
 			if opt.Recommended {
@@ -1344,6 +1417,7 @@ func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
 		"hooks",
 		"override",
 		"memory",
+		"decision",
 		"model",
 		"effort",
 		"provider",
@@ -8270,6 +8344,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleMemoryFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "decision":
+		if err := rt.handleDecisionCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "evidence":
 		if err := rt.handleEvidenceFamilyCommand(cmd.Args); err != nil {
 			return false, err
@@ -11007,6 +11085,12 @@ func (rt *runtimeState) persistPerformanceReport(report string, result Performan
 }
 
 func (rt *runtimeState) closeExtensions() {
+	if rt.decisionDashboard != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = rt.decisionDashboard.Close(ctx)
+		cancel()
+		rt.decisionDashboard = nil
+	}
 	if rt.mcp != nil {
 		rt.mcp.Close()
 		rt.mcp = nil

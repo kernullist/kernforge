@@ -1475,6 +1475,11 @@ type Workspace struct {
 	PreviewEdit           func(EditPreview) (bool, error)
 	ConfirmVerification   func(VerificationPlan) (bool, error)
 	PromptUserChoice      func(UserQuestion) (UserQuestionResult, error)
+	PromptUserText        func(UserTextQuestion) (UserTextResult, error)
+	DecisionStore         *ImplementationDecisionStore
+	DecisionProfileStore  *ImplementationPreferenceProfileStore
+	DecisionSession       *Session
+	DecisionSessionStore  *SessionStore
 	UpdatePlan            func([]PlanItem)
 	GetPlan               func() []PlanItem
 	RunHook               func(context.Context, HookEvent, HookPayload) (HookVerdict, error)

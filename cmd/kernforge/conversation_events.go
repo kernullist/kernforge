@@ -292,6 +292,7 @@ func (a *Agent) noteToolConversationError(call ToolCall, err error, displayText 
 	if a == nil || a.Session == nil || err == nil {
 		return
 	}
+	call = sanitizeImplementationDecisionToolCallForPersistence(call)
 	toolName := strings.TrimSpace(call.Name)
 	raw := strings.TrimSpace(strings.Join([]string{displayText, err.Error()}, "\n"))
 	normalized := normalizeRuntimeError(err)
@@ -313,6 +314,7 @@ func (a *Agent) noteToolConversationStart(call ToolCall) {
 	if a == nil || a.Session == nil {
 		return
 	}
+	call = sanitizeImplementationDecisionToolCallForPersistence(call)
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
 		return
@@ -338,6 +340,7 @@ func (a *Agent) noteToolConversationResult(call ToolCall, result ToolExecutionRe
 	if a == nil || a.Session == nil {
 		return
 	}
+	call = sanitizeImplementationDecisionToolCallForPersistence(call)
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
 		return
@@ -371,6 +374,7 @@ func (a *Agent) noteToolConversationFailureResult(call ToolCall, result ToolExec
 	if a == nil || a.Session == nil {
 		return
 	}
+	call = sanitizeImplementationDecisionToolCallForPersistence(call)
 	if err == nil && !blocked {
 		return
 	}

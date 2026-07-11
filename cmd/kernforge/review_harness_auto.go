@@ -186,6 +186,9 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	if a == nil || a.Session == nil {
 		return nil
 	}
+	if pending := a.Session.PendingImplementationDecision; pending != nil {
+		return fmt.Errorf("implementation decision %s is still pending at stage %s; complete it before editing", pending.DecisionID, pending.Stage)
+	}
 	reviewCfg := configReviewHarness(a.Config)
 	if reviewCfg.AutoAfterChange == nil || !*reviewCfg.AutoAfterChange {
 		return nil

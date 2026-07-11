@@ -3609,6 +3609,7 @@ General:
 /config                Show effective runtime config
 /trust [status|on|off] Show or set project-local config and hook trust
 /context               Show context usage summary
+/decision              Open the local decision journal, editor, profile, and export dashboard
 /exit                  Exit the CLI
 /help                  Show available commands
 /reload                Reload config, memory, skills, hooks, and MCP extensions
@@ -3777,6 +3778,14 @@ func HelpDetail(topic string) (string, bool) {
 	switch key {
 	case "":
 		return "", false
+	case "decision", "decisions", "decision-journal":
+		return strings.TrimSpace(`
+/decision
+- Open one authenticated loopback dashboard owned by the active interactive KernForge process.
+- Browse implementation choices across projects, inspect selected and rejected rationale, edit records with revision history, soft-delete or restore decisions, manage learned preference rules, rebuild the derived profile, and export privacy-reduced JSON.
+- The command has no subcommands. All journal actions are performed inside the dashboard.
+- The server closes when the interactive KernForge session exits.
+`), true
 	case "suggest", "suggestions", "proactive":
 		return strings.TrimSpace(`
 /suggest [status|list]
