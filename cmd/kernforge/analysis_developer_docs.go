@@ -147,6 +147,9 @@ func buildAnalysisStructureDiagramsDoc(run ProjectAnalysisRun) string {
 	fmt.Fprintf(&b, "# Structure Diagrams\n\n")
 	analysisDocsWriteHeader(&b, run)
 	analysisDocsWriteDocMetadata(&b, run, "STRUCTURE_DIAGRAMS.md")
+	if report := renderProjectStructureMetricsReport(run.Snapshot.StructureMetrics); strings.TrimSpace(report) != "" {
+		fmt.Fprintf(&b, "\n%s\n", strings.TrimSpace(report))
+	}
 	fmt.Fprintf(&b, "\n## Module Dependency Graph\n\n")
 	moduleViews := developerModuleGraphViews(structureGraph)
 	if len(moduleViews) > 0 {

@@ -135,6 +135,7 @@ type ProjectSnapshot struct {
 	ArchitectureFacts   ArchitectureFactPack       `json:"architecture_facts,omitempty"`
 	CoverageLedger      AnalysisCoverageLedger     `json:"coverage_ledger,omitempty"`
 	StructuralIndex     StructuralIndex            `json:"structural_index,omitempty"`
+	StructureMetrics    ProjectStructureMetrics    `json:"structure_metrics,omitempty"`
 	TotalFiles          int                        `json:"total_files"`
 	TotalLines          int                        `json:"total_lines"`
 	ImportGraph         map[string][]string        `json:"import_graph"`
@@ -3292,6 +3293,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		a.debug(fmt.Sprintf("root-cause plan prepared: hypotheses=%d symptom=%q", len(rootCausePlan.Hypotheses), rootCausePlan.Symptom.Symptom))
 	}
 	snapshot.ProjectEdges = buildProjectEdges(snapshot)
+	a.statusLocalized("Computing dependency structure metrics...", "의존성 구조 지표를 계산하는 중입니다...")
+	snapshot.StructureMetrics = buildProjectStructureMetrics(ctx, snapshot, findGitProjectRoot(a.workspace.Root))
+	a.debug(fmt.Sprintf("structure metrics computed: packages=%d package_edges=%d cycles=%d hubs=%d orphans=%d hotspots=%d health=%d git=%t", snapshot.StructureMetrics.PackageCount, snapshot.StructureMetrics.PackageEdgeCount, len(snapshot.StructureMetrics.Cycles), len(snapshot.StructureMetrics.Hubs), len(snapshot.StructureMetrics.Orphans), len(snapshot.StructureMetrics.Hotspots), snapshot.StructureMetrics.HealthScore, snapshot.StructureMetrics.GitAvailable))
 	a.status("Building structural index...")
 	snapshot.StructuralIndex = buildStructuralIndex(snapshot, goal, run.Summary.RunID)
 	a.debug(fmt.Sprintf("structural index built: files=%d symbols=%d refs=%d fallback=%d failures=%d", snapshot.StructuralIndex.Metrics.IndexedFiles, snapshot.StructuralIndex.Metrics.IndexedSymbols, snapshot.StructuralIndex.Metrics.IndexedReferences, snapshot.StructuralIndex.Metrics.FallbackFiles, snapshot.StructuralIndex.Metrics.ParserFailures))
@@ -9788,6 +9792,7 @@ func ensureFinalDocumentInsights(text string, snapshot ProjectSnapshot, shards [
 		trimmed = ensureStartupProjectCoverage(trimmed, snapshot)
 		trimmed = ensureExecutionChainCoverage(trimmed, snapshot, reports)
 		trimmed = ensureSecuritySurfaceCoverage(trimmed, snapshot, items)
+		trimmed = ensureProjectStructureMetricsSection(trimmed, snapshot)
 	}
 	trimmed = ensureAnalysisExecutionCoverage(trimmed, shards)
 	trimmed = normalizeUnexpectedLocaleArtifacts(trimmed)
@@ -9828,6 +9833,25 @@ func ensureSecuritySurfaceCoverage(document string, snapshot ProjectSnapshot, it
 	updated := insertBeforeSection(document, "## Subsystem Breakdown", snippet)
 	if updated != document {
 		return updated
+	}
+	return strings.TrimSpace(document) + "\n\n" + snippet
+}
+
+func ensureProjectStructureMetricsSection(document string, snapshot ProjectSnapshot) string {
+	if !projectStructureMetricsHasData(snapshot.StructureMetrics) {
+		return document
+	}
+	if strings.Contains(strings.ToLower(document), "## project structure metrics") {
+		return document
+	}
+	snippet := strings.TrimSpace(renderProjectStructureMetricsCompact(snapshot.StructureMetrics))
+	if snippet == "" {
+		return document
+	}
+	for _, anchor := range []string{"## Subsystem Breakdown", "## Dependencies And Integration Points", "## Risks And Unknowns"} {
+		if updated := insertBeforeSection(document, anchor, snippet); updated != document {
+			return updated
+		}
 	}
 	return strings.TrimSpace(document) + "\n\n" + snippet
 }
@@ -11000,6 +11024,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 	structuralIndexJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_structural_index.json")
 	semanticIndexJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_semantic_index.json")
 	structuralIndexV2JSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_structural_index_v2.json")
+	structureMetricsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_structure_metrics.json")
 	unrealGraphJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_unreal_graph.json")
 	vectorCorpusJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_corpus.json")
 	vectorCorpusJSONLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_corpus.jsonl")
@@ -11145,6 +11170,15 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 	}
 	if err := os.WriteFile(snapshotJSONPath, snapshotData, 0o644); err != nil {
 		return "", err
+	}
+	if projectStructureMetricsHasData(run.Snapshot.StructureMetrics) {
+		structureMetricsData, err := json.MarshalIndent(run.Snapshot.StructureMetrics, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(structureMetricsJSONPath, structureMetricsData, 0o644); err != nil {
+			return "", err
+		}
 	}
 	if hasLegacySemanticIndex {
 		indexData, err := json.MarshalIndent(run.SemanticIndex, "", "  ")
@@ -11337,6 +11371,15 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "snapshot.json"), snapshotData, 0o644); err != nil {
 			return "", err
+		}
+		if projectStructureMetricsHasData(run.Snapshot.StructureMetrics) {
+			latestStructureMetricsData, err := json.MarshalIndent(run.Snapshot.StructureMetrics, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "structure_metrics.json"), latestStructureMetricsData, 0o644); err != nil {
+				return "", err
+			}
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), knowledgeData, 0o644); err != nil {
 			return "", err
@@ -13202,6 +13245,12 @@ func (a *projectAnalyzer) resolveImportCandidateRecords(snapshot ProjectSnapshot
 		return a.resolveCStyleImportCandidateRecords(snapshot, file, raw)
 	case ".js", ".jsx", ".ts", ".tsx":
 		return importResolutionRecordsFromTargets(snapshot, file, raw, a.resolveJSImportCandidate(snapshot, file, raw), "language_import", "medium", "js_import")
+	case ".py":
+		return importResolutionRecordsFromTargets(snapshot, file, raw, a.resolveLanguageScopedImport(snapshot, file, raw, pythonImportExtensions), "language_import", "medium", "python_import")
+	case ".cs":
+		return importResolutionRecordsFromTargets(snapshot, file, raw, a.resolveLanguageScopedImport(snapshot, file, raw, csharpImportExtensions), "language_import", "low", "csharp_using")
+	case ".rs":
+		return importResolutionRecordsFromTargets(snapshot, file, raw, a.resolveLanguageScopedImport(snapshot, file, raw, rustImportExtensions), "language_import", "medium", "rust_use")
 	default:
 		return importResolutionRecordsFromTargets(snapshot, file, raw, a.resolveGenericImportCandidate(snapshot, file, raw), "heuristic_import", "medium", "generic_import")
 	}
@@ -16369,6 +16418,9 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 		}
 		b.WriteString("\n")
 	}
+	if section := strings.TrimSpace(renderProjectStructureMetricsCompact(snapshot.StructureMetrics)); section != "" {
+		fmt.Fprintf(&b, "%s\n\n", section)
+	}
 	execution := buildAnalysisExecutionSummary(shards)
 	if execution.TotalShards > 0 {
 		fmt.Fprintf(&b, "## Analysis Execution\n\n")
@@ -18176,6 +18228,12 @@ func discoverImports(ext string, content string) []string {
 				out = append(out, extractQuotedImport(trimmed)...)
 			}
 		}
+	case ".py":
+		out = append(out, extractPythonImports(content)...)
+	case ".cs":
+		out = append(out, extractCSharpImports(content)...)
+	case ".rs":
+		out = append(out, extractRustImports(content)...)
 	}
 	return analysisUniqueStrings(out)
 }

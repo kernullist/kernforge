@@ -8,7 +8,7 @@
 
 가장 먼저 봐야 할 대표 기능은 다음 다섯 가지입니다.
 
-- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`는 재사용 가능한 project intelligence를 만든다. architecture map, knowledge pack, coverage ledger, evidence packet, performance lens, structural index, vector-ready analysis set, 운영 문서, HTML 대시보드까지 산출한다.
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`는 재사용 가능한 project intelligence를 만든다. architecture map, deterministic 의존성 구조 지표(순환 의존성, coupling, 레이어링, hub, hotspot, health score), knowledge pack, coverage ledger, evidence packet, performance lens, structural index, vector-ready analysis set, 운영 문서, HTML 대시보드까지 산출한다.
 - `/review`는 plan, code, selection, PR, goal, final answer, analysis report, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 evidence-backed review harness다. structured finding, request class, classification confidence와 ambiguity warning, lifecycle phase, route mode와 route quality, action envelope, approval ledger, capability manifest, freshness, next command, repair guidance를 함께 관리한다. 자연어 리뷰/수정 요청은 `review_only`, `document_artifact`, `review_then_modify`, `modify_then_review`, `verification_only`, `validation_only` 같은 lifecycle로 먼저 분류된다. 애매한 혼합 요청은 안전한 lifecycle로 보수적으로 선택하고 이유를 남기며, 단순 리뷰는 read-only와 findings-first를 유지한다. 문서 artifact 요청은 code review loop가 아니라 artifact-quality gate를 우선한다. 단일 모델 모드에서는 별도 second-pass review 상태를 실행하거나 명시적으로 기록하며, cross reviewer가 있으면 독립 피드백을 `cross_review_triage`로 조정하도록 repair handoff를 강화한다. 기본 terminal 출력은 compact-first라 verdict, finding count, 핵심 finding, report, 단일 next command를 먼저 보여주고, 상세 lifecycle/route 진단은 `/progress-display stream`과 artifact에 남긴다.
 - fuzzing은 `/fuzz-func` source-level triage에서 시작해 `/fuzz-campaign`으로 campaign manifest, corpus/crash/coverage artifact, sanitizer 또는 verifier evidence, verification gate lifecycle까지 이어진다.
 - `/goal`, `-goal`, `-goal-file`은 긴 목표를 끝까지 밀어붙이는 autonomous execution 계층이다. interactive `/goal`은 prompt나 markdown 파일의 목표를 visible artifact와 함께 먼저 영속화하고, 명시 실행 form이 구현, 독립 review, repair, adaptive verification과 주기적 full verification, completion audit, 최종 semantic review, recovery를 목표 완료 또는 구체 blocker 기록까지 반복한다.
@@ -1585,6 +1585,8 @@ goal은 선택값입니다. 생략하면 Kernforge가 선택된 mode와 path에�
 - conductor와 여러 worker/reviewer 패스를 사용
 - worker slot 수, wave 시작/완료, shard 완료/실패 상태, analysis stage와 shard 이름이 붙은 model wait event를 실행 중 progress로 출력
 - parser-backed structural index와 Unreal semantic graph를 생성
+- deterministic 의존성 구조 지표(`structure_metrics.json`)를 계산한다. package 의존성 그래프, 순환 의존성(SCC) 탐지와 끊을 edge, afferent/efferent coupling과 instability, 아키텍처 레이어링, PageRank hub/bottleneck, orphan 파일, test topology, git 변경 hotspot과 숨은 change coupling, 구조 health score를 담고 `STRUCTURE_DIAGRAMS.md`와 map 모드 리포트에 렌더링한다.
+- Go, C/C++, JS/TS에 더해 Python, C#, Rust import까지 의존성 그래프에 반영해 단일 언어 저장소도 단일 모듈로 뭉치지 않고 실제 구조 맵을 얻는다.
 - cached deep-structure Q&A를 위한 deterministic `architecture_facts.json`을 생성한다. 여기에는 current-source anchor, 닫힌 top-level directory 목록, driver/control-flow hint, answer invariant가 들어간다.
 - semantic fingerprint와 structured invalidation diff로 재사용 여부와 재분석 원인을 추적
 - startup, IOCTL, callback registration, handle/memory, RPC, asset/config, build-context, generated-artifact community를 graph-guided shard로 먼저 분리하고 directory chunking은 fallback으로 사용
