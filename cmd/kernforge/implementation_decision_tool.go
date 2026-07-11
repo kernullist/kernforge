@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -73,7 +74,36 @@ func (session *Session) normalizePendingImplementationDecision() {
 	if pending.Stage != implementationDecisionPendingChoice && pending.Stage != implementationDecisionPendingRationale {
 		pending.Stage = implementationDecisionPendingChoice
 	}
+	if pending.Stage == implementationDecisionPendingRationale && !pendingImplementationDecisionSelectionIsValid(pending) {
+		pending.Stage = implementationDecisionPendingChoice
+		pending.SelectedOptionID = ""
+		pending.CustomSelection = ""
+	}
+	if pending.Stage == implementationDecisionPendingChoice {
+		pending.SelectedOptionID = ""
+		pending.CustomSelection = ""
+	}
 	redactPendingImplementationDecision(pending)
+}
+
+func pendingImplementationDecisionSelectionIsValid(pending *PendingImplementationDecision) bool {
+	if pending == nil {
+		return false
+	}
+	selectedID := strings.TrimSpace(pending.SelectedOptionID)
+	custom := strings.TrimSpace(pending.CustomSelection)
+	if (selectedID == "") == (custom == "") {
+		return false
+	}
+	if custom != "" {
+		return len(custom) <= 1024
+	}
+	for _, option := range pending.Record.Options {
+		if option.ID == selectedID {
+			return true
+		}
+	}
+	return false
 }
 
 // ImplementationDecisionTool captures a material implementation fork before
@@ -142,6 +172,9 @@ func (t ImplementationDecisionTool) Execute(ctx context.Context, input any) (str
 }
 
 func (t ImplementationDecisionTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -152,6 +185,9 @@ func (t ImplementationDecisionTool) ExecuteDetailed(ctx context.Context, input a
 	if t.ws.DecisionStore == nil {
 		return implementationDecisionUnavailableResult("the decision journal is not configured"), nil
 	}
+	if t.ws.DecisionSession != nil {
+		t.ws.DecisionSession.normalizePendingImplementationDecision()
+	}
 	resumeID := strings.TrimSpace(stringValue(args, "decision_id"))
 	var (
 		record     ImplementationDecisionRecord
@@ -161,9 +197,6 @@ func (t ImplementationDecisionTool) ExecuteDetailed(ctx context.Context, input a
 	if resumeID != "" {
 		if !validImplementationDecisionID(resumeID) {
 			return ToolExecutionResult{}, fmt.Errorf("invalid pending implementation decision id %q", resumeID)
-		}
-		if t.ws.DecisionSession != nil {
-			t.ws.DecisionSession.normalizePendingImplementationDecision()
 		}
 		current := (*PendingImplementationDecision)(nil)
 		if t.ws.DecisionSession != nil {
@@ -203,6 +236,12 @@ func (t ImplementationDecisionTool) ExecuteDetailed(ctx context.Context, input a
 			return ToolExecutionResult{}, err
 		}
 		record.ID = decisionID
+	}
+	if t.ws.DecisionSession != nil && t.ws.DecisionSession.PendingImplementationDecision != nil {
+		current := t.ws.DecisionSession.PendingImplementationDecision
+		if current.DecisionID != decisionID {
+			return ToolExecutionResult{}, fmt.Errorf("implementation decision %s is still pending; cannot present %s", current.DecisionID, decisionID)
+		}
 	}
 
 	if existing, ok, getErr := t.ws.DecisionStore.Get(decisionID); getErr != nil {
@@ -332,7 +371,7 @@ func (t ImplementationDecisionTool) parseRecord(input any) (ImplementationDecisi
 		return ImplementationDecisionRecord{}, "", err
 	}
 	confidence, ok := implementationDecisionFloat(args["detector_confidence"])
-	if !ok || confidence < 0 || confidence > 1 {
+	if !ok || math.IsNaN(confidence) || math.IsInf(confidence, 0) || confidence < 0 || confidence > 1 {
 		return ImplementationDecisionRecord{}, "", fmt.Errorf("present_implementation_decision requires detector_confidence between 0 and 1")
 	}
 	if confidence < 0.65 {
@@ -384,6 +423,9 @@ func (t ImplementationDecisionTool) parseRecord(input any) (ImplementationDecisi
 }
 
 func validateImplementationDecisionProposal(record ImplementationDecisionRecord) error {
+	if strings.TrimSpace(record.Problem) == "" || strings.TrimSpace(record.DecisionKind) == "" {
+		return fmt.Errorf("implementation decision requires non-empty problem and decision_kind")
+	}
 	if len(record.Problem) > 4096 {
 		return fmt.Errorf("implementation decision problem exceeds 4096 bytes")
 	}
@@ -399,6 +441,12 @@ func validateImplementationDecisionProposal(record ImplementationDecisionRecord)
 	}
 	if len(record.Domains) > 32 || len(record.Languages) > 32 || len(record.EvidenceRefs) > 64 {
 		return fmt.Errorf("implementation decision proposal list exceeds the storage limit")
+	}
+	if math.IsNaN(record.DetectorConfidence) || math.IsInf(record.DetectorConfidence, 0) || record.DetectorConfidence < 0.65 || record.DetectorConfidence > 1 {
+		return fmt.Errorf("implementation decision detector_confidence must be finite and between 0.65 and 1")
+	}
+	if len(record.Options) < 2 || len(record.Options) > 4 {
+		return fmt.Errorf("implementation decision requires 2 to 4 options")
 	}
 	for _, value := range append(append([]string{}, record.Domains...), record.Languages...) {
 		if len(value) > 512 {
@@ -422,18 +470,39 @@ func validateImplementationDecisionProposal(record ImplementationDecisionRecord)
 			return fmt.Errorf("implementation decision %s must not contain sensitive material", label)
 		}
 	}
+	seenIDs := map[string]bool{}
+	seenLabels := map[string]bool{}
+	recommended := ""
 	for _, option := range record.Options {
 		if len(option.ID) > 128 || len(option.Label) > 256 || len(option.Description) > 2048 || len(option.Pros) > 16 || len(option.Cons) > 16 {
 			return fmt.Errorf("implementation decision option exceeds the storage limit")
 		}
+		if !validImplementationDecisionOptionID(option.ID) || strings.TrimSpace(option.Label) == "" || strings.TrimSpace(option.Description) == "" {
+			return fmt.Errorf("implementation decision options require a valid id, label, and objective description")
+		}
 		if implementationDecisionIdentifierContainsSensitiveText(option.ID) {
 			return fmt.Errorf("implementation decision option id must not contain sensitive material")
+		}
+		labelKey := strings.ToLower(strings.TrimSpace(option.Label))
+		if seenIDs[option.ID] || seenLabels[labelKey] {
+			return fmt.Errorf("implementation decision option ids and labels must be unique")
+		}
+		seenIDs[option.ID] = true
+		seenLabels[labelKey] = true
+		if option.Recommended {
+			if recommended != "" {
+				return fmt.Errorf("implementation decision requires exactly one recommended option")
+			}
+			recommended = option.ID
 		}
 		for _, value := range append(append([]string{}, option.Pros...), option.Cons...) {
 			if len(value) > 1024 {
 				return fmt.Errorf("implementation decision option detail exceeds the storage limit")
 			}
 		}
+	}
+	if recommended == "" || record.RecommendedOptionID != recommended {
+		return fmt.Errorf("implementation decision requires exactly one consistent recommended option")
 	}
 	return nil
 }
@@ -483,11 +552,97 @@ func redactPendingImplementationDecision(pending *PendingImplementationDecision)
 		return
 	}
 	record := pending.Record
+	identifierReport := ReviewRedactionReport{Status: "clean"}
+	var currentReport ReviewRedactionReport
+	pending.DecisionID, currentReport = redactImplementationDecisionStableIdentifier(pending.DecisionID, "decision-redacted")
+	identifierReport = mergeReviewRedactionReports(identifierReport, currentReport)
+	if !validImplementationDecisionID(pending.DecisionID) {
+		seed := strings.Join([]string{
+			pending.DecisionID,
+			pending.Record.ID,
+			pending.Record.Problem,
+			pending.Record.TaskFingerprint,
+			pending.Record.EvidenceFingerprint,
+		}, "\x00")
+		digest := sha256.Sum256([]byte(seed))
+		pending.DecisionID = "decision-recovered-" + hex.EncodeToString(digest[:8])
+	}
+	record.ID = pending.DecisionID
+	for _, field := range []*string{
+		&record.SessionID,
+		&record.FeatureID,
+		&record.GoalID,
+		&record.EditLoopID,
+		&record.ProjectID,
+		&record.WorkspaceHash,
+		&record.TaskFingerprint,
+		&record.EvidenceFingerprint,
+		&record.DecisionKind,
+	} {
+		*field, currentReport = redactSensitiveText(*field)
+		identifierReport = mergeReviewRedactionReports(identifierReport, currentReport)
+	}
+	if _, report := redactSensitiveText(record.RiskLevel); report.Redacted {
+		identifierReport = mergeReviewRedactionReports(identifierReport, report)
+		record.RiskLevel = ""
+	}
+	if math.IsNaN(record.DetectorConfidence) || math.IsInf(record.DetectorConfidence, 0) {
+		record.DetectorConfidence = 0
+	}
+	optionIDMap := make(map[string]string, len(record.Options))
+	for index := range record.Options {
+		originalID := record.Options[index].ID
+		redactedID, report := redactImplementationDecisionStableIdentifier(originalID, fmt.Sprintf("option-redacted-%d", index+1))
+		identifierReport = mergeReviewRedactionReports(identifierReport, report)
+		record.Options[index].ID = redactedID
+		if !validImplementationDecisionSource(record.Options[index].Source, true) {
+			record.Options[index].Source = "model"
+		}
+		optionIDMap[originalID] = redactedID
+	}
+	if redactedID, ok := optionIDMap[record.RecommendedOptionID]; ok {
+		record.RecommendedOptionID = redactedID
+	} else {
+		record.RecommendedOptionID, currentReport = redactImplementationDecisionStableIdentifier(record.RecommendedOptionID, "option-redacted-recommended")
+		identifierReport = mergeReviewRedactionReports(identifierReport, currentReport)
+	}
+	if redactedID, ok := optionIDMap[pending.SelectedOptionID]; ok {
+		pending.SelectedOptionID = redactedID
+	}
 	record.CustomSelection = pending.CustomSelection
 	record = redactImplementationDecisionRecord(record)
+	record.Redaction.Redacted = record.Redaction.Redacted || identifierReport.Redacted
+	record.Redaction.Patterns = uniqueStrings(append(record.Redaction.Patterns, identifierReport.Patterns...))
 	pending.CustomSelection = record.CustomSelection
+	record.SelectedOptionID = ""
 	record.CustomSelection = ""
+	record.SelectionReasonRaw = ""
+	record.RejectedReasons = nil
+	record.SummarySentence = ""
+	record.Status = implementationDecisionStatusCompleted
+	record.DeletedAt = nil
+	record.Provenance.Options = "model"
+	record.Provenance.Selection = ""
+	record.Provenance.Rationale = ""
+	record.Provenance.Summary = ""
 	pending.Record = record
+}
+
+func redactImplementationDecisionStableIdentifier(value string, prefix string) (string, ReviewRedactionReport) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", ReviewRedactionReport{Status: "clean"}
+	}
+	_, report := redactSensitiveText(value)
+	if !report.Redacted {
+		return value, report
+	}
+	prefix = strings.Trim(strings.TrimSpace(prefix), "-_.")
+	if prefix == "" {
+		prefix = "redacted"
+	}
+	digest := sha256.Sum256([]byte(value))
+	return prefix + "-" + hex.EncodeToString(digest[:8]), report
 }
 
 func (t ImplementationDecisionTool) clearPending(decisionID string) error {
@@ -616,8 +771,16 @@ func implementationDecisionUserQuestion(record ImplementationDecisionRecord, hea
 
 func implementationDecisionSelection(options []ImplementationDecisionOption, result UserQuestionResult) (string, string, error) {
 	if custom := strings.TrimSpace(result.Custom); custom != "" {
+		if len(result.Selected) > 0 {
+			return "", "", fmt.Errorf("implementation decision cannot contain both a listed and custom selection")
+		}
 		if len(custom) > 1024 {
 			return "", "", fmt.Errorf("custom implementation decision exceeds 1024 bytes")
+		}
+		for _, option := range options {
+			if strings.EqualFold(custom, strings.TrimSpace(option.Label)) {
+				return option.ID, "", nil
+			}
 		}
 		return "", custom, nil
 	}
@@ -710,7 +873,14 @@ func implementationDecisionOptionsFingerprint(options []ImplementationDecisionOp
 		parts = append(parts, strings.ToLower(strings.TrimSpace(option.ID))+"="+strings.ToLower(strings.TrimSpace(option.Label)))
 	}
 	sort.Strings(parts)
-	parts = append(parts, refs...)
+	normalizedRefs := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			normalizedRefs = append(normalizedRefs, ref)
+		}
+	}
+	sort.Strings(normalizedRefs)
+	parts = append(parts, normalizedRefs...)
 	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return "evidence-" + hex.EncodeToString(digest[:16])
 }
@@ -827,23 +997,101 @@ func renderPendingImplementationDecisionPrompt(pending *PendingImplementationDec
 }
 
 func sanitizeImplementationDecisionMessageForPersistence(message Message) Message {
-	if len(message.ToolCalls) == 0 {
-		return message
-	}
-	calls := append([]ToolCall(nil), message.ToolCalls...)
-	changed := false
-	for index := range calls {
-		redacted := sanitizeImplementationDecisionToolCallForPersistence(calls[index])
-		if redacted.Arguments == calls[index].Arguments {
-			continue
+	if len(message.ToolCalls) > 0 {
+		calls := append([]ToolCall(nil), message.ToolCalls...)
+		changed := false
+		for index := range calls {
+			redacted := sanitizeImplementationDecisionToolCallForPersistence(calls[index])
+			if redacted.Arguments == calls[index].Arguments {
+				continue
+			}
+			calls[index] = redacted
+			changed = true
 		}
-		calls[index] = redacted
-		changed = true
+		if changed {
+			message.ToolCalls = calls
+		}
 	}
-	if changed {
-		message.ToolCalls = calls
+	if strings.TrimSpace(message.ToolName) == "present_implementation_decision" {
+		message.Text, _ = redactSensitiveText(message.Text)
+		message.SourceText, _ = redactSensitiveText(message.SourceText)
+		message.ReasoningContent, _ = redactSensitiveText(message.ReasoningContent)
+		if len(message.ToolContentItems) > 0 {
+			items := append([]ToolContentItem(nil), message.ToolContentItems...)
+			for index := range items {
+				items[index].Text, _ = redactSensitiveText(items[index].Text)
+			}
+			message.ToolContentItems = items
+		}
+		if len(message.ToolMeta) > 0 {
+			if redacted, ok := redactImplementationDecisionArgumentValue(message.ToolMeta).(map[string]any); ok {
+				message.ToolMeta = redacted
+			}
+		}
 	}
 	return message
+}
+
+func sanitizeImplementationDecisionSessionForPersistence(session *Session) {
+	if session == nil {
+		return
+	}
+	session.normalizePendingImplementationDecision()
+	for index := range session.Messages {
+		session.Messages[index] = sanitizeImplementationDecisionMessageForPersistence(session.Messages[index])
+	}
+	if session.LastTurnRuntimeState != nil {
+		for index := range session.LastTurnRuntimeState.Interventions {
+			intervention := &session.LastTurnRuntimeState.Interventions[index]
+			hasDecisionCall := false
+			for callIndex := range intervention.ToolCalls {
+				if strings.TrimSpace(intervention.ToolCalls[callIndex].Name) == "present_implementation_decision" {
+					hasDecisionCall = true
+				}
+				intervention.ToolCalls[callIndex] = sanitizeImplementationDecisionToolCallForPersistence(intervention.ToolCalls[callIndex])
+			}
+			if hasDecisionCall {
+				intervention.Reason, _ = redactSensitiveText(intervention.Reason)
+				intervention.Guidance, _ = redactSensitiveText(intervention.Guidance)
+				intervention.StopReason, _ = redactSensitiveText(intervention.StopReason)
+			}
+		}
+	}
+	for index := range session.ConversationEvents {
+		event := &session.ConversationEvents[index]
+		if !strings.EqualFold(strings.TrimSpace(event.Entities["tool"]), "present_implementation_decision") {
+			continue
+		}
+		event.Summary, _ = redactSensitiveText(event.Summary)
+		event.Raw, _ = redactSensitiveText(event.Raw)
+		for key, value := range event.Entities {
+			event.Entities[key], _ = redactSensitiveText(value)
+		}
+		if len(event.Metadata) > 0 {
+			if redacted, ok := redactImplementationDecisionArgumentValue(event.Metadata).(map[string]any); ok {
+				event.Metadata = redacted
+			}
+		}
+	}
+}
+
+func sanitizeImplementationDecisionSessionBytesForPersistence(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+	raw := string(data)
+	if !strings.Contains(raw, "present_implementation_decision") && !strings.Contains(raw, "pending_implementation_decision") {
+		return data
+	}
+	redacted, report := redactSensitiveText(raw)
+	if !report.Redacted {
+		return data
+	}
+	candidate := []byte(redacted)
+	if !json.Valid(candidate) {
+		return data
+	}
+	return candidate
 }
 
 func sanitizeImplementationDecisionToolCallForPersistence(call ToolCall) ToolCall {

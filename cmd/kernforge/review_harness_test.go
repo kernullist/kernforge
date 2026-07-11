@@ -9896,6 +9896,17 @@ func TestReviewHarnessRedactsSensitiveEvidence(t *testing.T) {
 	}
 }
 
+func TestReviewHarnessRedactsFineGrainedGitHubToken(t *testing.T) {
+	token := "github_" + "pat_11ABCDEFG0_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	redacted, report := redactSensitiveText("Authorization: Bearer " + token)
+	if !report.Redacted || !strings.Contains(redacted, "[REDACTED:github_token]") {
+		t.Fatalf("fine-grained GitHub token was not classified: redacted=%q report=%#v", redacted, report)
+	}
+	if strings.Contains(redacted, token) {
+		t.Fatalf("fine-grained GitHub token remained after redaction: %q", redacted)
+	}
+}
+
 func TestReviewModelParserKeepsMultipleStructuredFindings(t *testing.T) {
 	raw := strings.Join([]string{
 		"REVIEW_RESULT",

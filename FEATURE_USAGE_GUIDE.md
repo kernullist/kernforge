@@ -105,6 +105,27 @@ Current behavior:
 12. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
 13. `/hooks` prints the same compact runtime gate summary as `/status`, so hook/policy checks do not invent a second interpretation of review freshness.
 
+### Decision Journal And Cross-Project Preference Evidence
+
+Purpose:
+1. Capture why the user chose one material implementation approach and rejected the alternatives.
+2. Aggregate explicit judgment evidence across repositories without adding personal journal files to each worktree.
+3. Derive conservative project, domain, and global preference rules without automatically forcing later choices.
+
+Command:
+- `/decision`
+
+Current behavior:
+1. On a file-mutation request, the model may propose a checkpoint after inspecting the relevant code and before the first edit. The runtime requires two to four viable options, exactly one advisory recommendation, and material-fork confidence of at least `0.65`; style choices and decisions already fixed by the user are excluded.
+2. The user must explicitly select one option or `Other`, explain the selection, and explain why every listed alternative was rejected. Enter does not accept the recommendation.
+3. A canceled or non-interactive checkpoint remains pending in the session. Until it is completed, only the decision tool and tools explicitly declared read-only are allowed; other custom and MCP tools also fail closed.
+4. Completed records, immutable prior revisions, and a rebuildable preference profile live under `~/.kernforge/decision-rationales/`. Project identity groups temporary worktrees with their base repository while keeping moved or separately cloned paths distinct.
+5. `/decision` opens one authenticated loopback dashboard for current/all-project browsing, correction, revision history, soft delete/restore, profile-rule overrides, rebuild, and filtered JSON export. It has no subcommands and requires a long-lived interactive KernForge process.
+6. Preference promotion requires repeated explicit user evidence and `detector_confidence >= 0.80`. Derived rules are currently visible evidence for a future consumer; the active agent does not automatically apply them.
+7. The default export removes selected local runtime metadata but retains project hashes, fingerprints, timestamps, and rationales, so it is privacy-reduced rather than anonymous. Secret redaction is best-effort and the plaintext local files are access-controlled, not encrypted.
+
+Detailed contract: [Decision Journal](./docs/decision-journal.md) or [Decision Journal (한국어)](./docs/decision-journal_kor.md).
+
 ### Prompt Intent Routing
 
 Purpose:

@@ -1,19 +1,29 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 )
 
-const implementationPreferenceProfileSchemaVersion = 1
+const (
+	implementationPreferenceProfileSchemaVersion = 1
+	implementationPreferenceProfileMaxBytes      = 64 << 20
+	implementationPreferenceEvidenceMaxItems     = 2048
+	implementationPreferenceRulesMaxItems        = 4096
+	implementationPreferenceOverridesMaxItems    = 4096
+)
 
 var ErrImplementationPreferenceConflict = errors.New("implementation preference profile revision conflict")
 
@@ -83,22 +93,7 @@ func (s *ImplementationPreferenceProfileStore) Load() (ImplementationPreferenceP
 	if s == nil || strings.TrimSpace(s.Path) == "" {
 		return ImplementationPreferenceProfile{}, nil
 	}
-	data, err := os.ReadFile(s.Path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return ImplementationPreferenceProfile{}, nil
-		}
-		return ImplementationPreferenceProfile{}, err
-	}
-	var profile ImplementationPreferenceProfile
-	if err := json.Unmarshal(data, &profile); err != nil {
-		return ImplementationPreferenceProfile{}, fmt.Errorf("parse implementation preference profile: %w", err)
-	}
-	profile = normalizeImplementationPreferenceProfile(profile)
-	if err := validateImplementationPreferenceProfile(profile); err != nil {
-		return ImplementationPreferenceProfile{}, err
-	}
-	return profile, nil
+	return loadImplementationPreferenceProfileFile(s.Path)
 }
 
 func (s *ImplementationPreferenceProfileStore) Save(profile ImplementationPreferenceProfile) error {
@@ -124,6 +119,9 @@ func (s *ImplementationPreferenceProfileStore) Save(profile ImplementationPrefer
 		if profile.Revision != current.Revision {
 			return fmt.Errorf("%w: profile is revision %d, expected %d", ErrImplementationPreferenceConflict, current.Revision, profile.Revision)
 		}
+		if !implementationPreferenceProfileSourceEquivalent(current, profile) {
+			return fmt.Errorf("implementation preference profile source-derived fields cannot be changed by Save")
+		}
 		profile.Revision = current.Revision + 1
 	} else {
 		profile.Revision = 1
@@ -133,22 +131,38 @@ func (s *ImplementationPreferenceProfileStore) Save(profile ImplementationPrefer
 }
 
 func (s *ImplementationPreferenceProfileStore) Rebuild(decisions *ImplementationDecisionStore) (ImplementationPreferenceProfile, error) {
+	return s.RebuildContext(context.Background(), decisions)
+}
+
+func (s *ImplementationPreferenceProfileStore) RebuildContext(ctx context.Context, decisions *ImplementationDecisionStore) (ImplementationPreferenceProfile, error) {
 	if s == nil || strings.TrimSpace(s.Path) == "" {
 		return ImplementationPreferenceProfile{}, fmt.Errorf("implementation preference profile store is not configured")
 	}
 	if decisions == nil {
 		return ImplementationPreferenceProfile{}, fmt.Errorf("implementation decision store is required")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return ImplementationPreferenceProfile{}, err
+	}
 	if err := ensureImplementationDecisionPrivateDir(filepath.Dir(s.Path)); err != nil {
 		return ImplementationPreferenceProfile{}, err
 	}
-	unlock := lockFilePath(s.Path)
+	unlock, err := lockFilePathContext(ctx, s.Path)
+	if err != nil {
+		return ImplementationPreferenceProfile{}, err
+	}
 	defer unlock()
-	unlockProcess, err := lockImplementationDecisionFile(s.Path + ".lock")
+	unlockProcess, err := lockImplementationDecisionFileContext(ctx, s.Path+".lock")
 	if err != nil {
 		return ImplementationPreferenceProfile{}, err
 	}
 	defer unlockProcess()
+	if err := ctx.Err(); err != nil {
+		return ImplementationPreferenceProfile{}, err
+	}
 	records, err := decisions.List(ImplementationDecisionFilter{})
 	if err != nil {
 		return ImplementationPreferenceProfile{}, err
@@ -174,6 +188,10 @@ func (s *ImplementationPreferenceProfileStore) Rebuild(decisions *Implementation
 		if override, ok := overrides[profile.Rules[index].ID]; ok {
 			applyImplementationPreferenceOverride(&profile.Rules[index], override)
 		}
+	}
+	profile.Overrides = implementationPreferenceBoundedOverrides(profile.Rules, profile.Overrides, implementationPreferenceOverridesMaxItems)
+	if err := ctx.Err(); err != nil {
+		return ImplementationPreferenceProfile{}, err
 	}
 	if err := saveImplementationPreferenceProfileFile(s.Path, profile); err != nil {
 		return ImplementationPreferenceProfile{}, err
@@ -215,8 +233,15 @@ func (s *ImplementationPreferenceProfileStore) UpdateRule(ruleID string, expecte
 	if index < 0 {
 		return ImplementationPreferenceProfile{}, os.ErrNotExist
 	}
+	originalRule := profile.Rules[index]
+	originalRule.SupportDecisionIDs = append([]string(nil), originalRule.SupportDecisionIDs...)
+	originalRule.ContradictionDecisionIDs = append([]string(nil), originalRule.ContradictionDecisionIDs...)
+	originalRule.SupportProjectIDs = append([]string(nil), originalRule.SupportProjectIDs...)
 	if err := mutate(&profile.Rules[index]); err != nil {
 		return ImplementationPreferenceProfile{}, err
+	}
+	if !implementationPreferenceRuleSourceEquivalent(originalRule, profile.Rules[index]) {
+		return ImplementationPreferenceProfile{}, fmt.Errorf("implementation preference source-derived rule fields cannot be changed")
 	}
 	profile.Rules[index].UpdatedAt = time.Now().UTC()
 	if profile.Overrides == nil {
@@ -227,6 +252,7 @@ func (s *ImplementationPreferenceProfileStore) UpdateRule(ruleID string, expecte
 	} else {
 		delete(profile.Overrides, profile.Rules[index].ID)
 	}
+	profile.Overrides = implementationPreferenceBoundedOverrides(profile.Rules, profile.Overrides, implementationPreferenceOverridesMaxItems)
 	profile.Revision++
 	profile.GeneratedAt = time.Now().UTC()
 	if err := saveImplementationPreferenceProfileFile(s.Path, profile); err != nil {
@@ -236,7 +262,7 @@ func (s *ImplementationPreferenceProfileStore) UpdateRule(ruleID string, expecte
 }
 
 func loadImplementationPreferenceProfileFile(path string) (ImplementationPreferenceProfile, error) {
-	data, err := os.ReadFile(path)
+	data, err := readImplementationDecisionFile(path, implementationPreferenceProfileMaxBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return ImplementationPreferenceProfile{}, nil
@@ -244,8 +270,17 @@ func loadImplementationPreferenceProfileFile(path string) (ImplementationPrefere
 		return ImplementationPreferenceProfile{}, err
 	}
 	var profile ImplementationPreferenceProfile
-	if err := json.Unmarshal(data, &profile); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&profile); err != nil {
 		return ImplementationPreferenceProfile{}, fmt.Errorf("parse implementation preference profile: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return ImplementationPreferenceProfile{}, fmt.Errorf("parse implementation preference profile: trailing data")
+	}
+	if err := validateStoredImplementationPreferenceProfile(profile); err != nil {
+		return ImplementationPreferenceProfile{}, err
 	}
 	profile = normalizeImplementationPreferenceProfile(profile)
 	if err := validateImplementationPreferenceProfile(profile); err != nil {
@@ -263,7 +298,14 @@ func saveImplementationPreferenceProfileFile(path string, profile Implementation
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(path, append(data, '\n'), 0o600)
+	data = append(data, '\n')
+	if len(data) > implementationPreferenceProfileMaxBytes {
+		return fmt.Errorf("implementation preference profile exceeds the storage limit")
+	}
+	if err := ensureImplementationDecisionPathNoLinks(path); err != nil {
+		return err
+	}
+	return atomicWriteFile(path, data, 0o600)
 }
 
 func BuildImplementationPreferenceProfile(records []ImplementationDecisionRecord) ImplementationPreferenceProfile {
@@ -358,9 +400,9 @@ func BuildImplementationPreferenceProfile(records []ImplementationDecisionRecord
 			Criterion:                candidate.Criterion,
 			Preference:               candidate.Preference,
 			PreferenceLabel:          candidate.Label,
-			SupportDecisionIDs:       candidate.DecisionIDs,
-			ContradictionDecisionIDs: contradictions,
-			SupportProjectIDs:        candidate.ProjectIDs,
+			SupportDecisionIDs:       implementationPreferenceBoundedStrings(candidate.DecisionIDs, implementationPreferenceEvidenceMaxItems),
+			ContradictionDecisionIDs: implementationPreferenceBoundedStrings(contradictions, implementationPreferenceEvidenceMaxItems),
+			SupportProjectIDs:        implementationPreferenceBoundedStrings(candidate.ProjectIDs, implementationPreferenceEvidenceMaxItems),
 			Confidence:               implementationPreferenceConfidence(*candidate, len(contradictions)),
 			Enabled:                  true,
 			UpdatedAt:                now,
@@ -390,12 +432,12 @@ func implementationPreferenceSourceHash(records []ImplementationDecisionRecord) 
 		if record.Status == implementationDecisionStatusDeleted {
 			continue
 		}
-		entries = append(entries, strings.Join([]string{
-			record.ID,
-			fmt.Sprintf("%d", record.Revision),
-			record.UpdatedAt.UTC().Format(time.RFC3339Nano),
-			record.Status,
-		}, "\x00"))
+		data, err := json.Marshal(record)
+		if err != nil {
+			data = []byte(fmt.Sprintf("%#v", record))
+		}
+		recordDigest := sha256.Sum256(data)
+		entries = append(entries, record.ID+"\x00"+hex.EncodeToString(recordDigest[:]))
 	}
 	sort.Strings(entries)
 	digest := sha256.Sum256([]byte(strings.Join(entries, "\x01")))
@@ -501,6 +543,9 @@ func normalizeImplementationPreferenceProfile(profile ImplementationPreferencePr
 		rule.Criterion = strings.ToLower(strings.TrimSpace(rule.Criterion))
 		rule.Preference = strings.ToLower(strings.TrimSpace(rule.Preference))
 		rule.PreferenceLabel = strings.TrimSpace(rule.PreferenceLabel)
+		if redacted, report := redactSensitiveText(rule.PreferenceLabel); report.Redacted {
+			rule.PreferenceLabel = redacted
+		}
 		rule.SupportDecisionIDs = sortedUniqueStrings(rule.SupportDecisionIDs)
 		rule.ContradictionDecisionIDs = sortedUniqueStrings(rule.ContradictionDecisionIDs)
 		rule.SupportProjectIDs = sortedUniqueStrings(rule.SupportProjectIDs)
@@ -526,6 +571,9 @@ func validateImplementationPreferenceProfile(profile ImplementationPreferencePro
 	if profile.Revision <= 0 {
 		return fmt.Errorf("implementation preference profile revision must be positive")
 	}
+	if profile.RecordCount < 0 || len(profile.Rules) > implementationPreferenceRulesMaxItems || len(profile.Overrides) > implementationPreferenceOverridesMaxItems {
+		return fmt.Errorf("implementation preference profile exceeds the storage limit")
+	}
 	if profile.SourceHash != "" {
 		encoded := strings.TrimPrefix(profile.SourceHash, "journal-")
 		if len(profile.SourceHash) != len("journal-")+32 || encoded == profile.SourceHash {
@@ -543,6 +591,14 @@ func validateImplementationPreferenceProfile(profile ImplementationPreferencePro
 		if seen[rule.ID] {
 			return fmt.Errorf("duplicate implementation preference rule id %q", rule.ID)
 		}
+		if len(rule.ID) > 200 || len(rule.ScopeKey) > 1024 || len(rule.Criterion) > 256 || len(rule.Preference) > 256 || len(rule.PreferenceLabel) > 4096 {
+			return fmt.Errorf("implementation preference rule %s exceeds the storage limit", rule.ID)
+		}
+		for _, value := range []string{rule.ID, rule.ScopeKey, rule.Criterion, rule.Preference} {
+			if _, report := redactSensitiveText(value); report.Redacted {
+				return fmt.Errorf("implementation preference rule %s contains sensitive-looking identifier text", rule.ID)
+			}
+		}
 		seen[rule.ID] = true
 		switch rule.Scope {
 		case implementationPreferenceScopeProject, implementationPreferenceScopeDomain:
@@ -559,13 +615,32 @@ func validateImplementationPreferenceProfile(profile ImplementationPreferencePro
 		if len(rule.SupportDecisionIDs) == 0 {
 			return fmt.Errorf("implementation preference rule %s has no support decisions", rule.ID)
 		}
-		if len(rule.UserNote) > 4096 || len(rule.SupportDecisionIDs) > 2048 || len(rule.ContradictionDecisionIDs) > 2048 {
+		if len(rule.UserNote) > 4096 || len(rule.SupportDecisionIDs) > implementationPreferenceEvidenceMaxItems || len(rule.ContradictionDecisionIDs) > implementationPreferenceEvidenceMaxItems || len(rule.SupportProjectIDs) > implementationPreferenceEvidenceMaxItems {
 			return fmt.Errorf("implementation preference rule %s exceeds the storage limit", rule.ID)
+		}
+		for _, decisionID := range append(append([]string{}, rule.SupportDecisionIDs...), rule.ContradictionDecisionIDs...) {
+			if !validImplementationDecisionID(decisionID) {
+				return fmt.Errorf("implementation preference rule %s has an invalid decision id", rule.ID)
+			}
+			if _, report := redactSensitiveText(decisionID); report.Redacted {
+				return fmt.Errorf("implementation preference rule %s contains sensitive-looking decision id", rule.ID)
+			}
+		}
+		for _, projectID := range rule.SupportProjectIDs {
+			if len(projectID) > 1024 {
+				return fmt.Errorf("implementation preference rule %s exceeds the storage limit", rule.ID)
+			}
+			if _, report := redactSensitiveText(projectID); report.Redacted {
+				return fmt.Errorf("implementation preference rule %s contains sensitive-looking project id", rule.ID)
+			}
 		}
 	}
 	for id, override := range profile.Overrides {
 		if strings.TrimSpace(id) == "" || len(id) > 200 {
 			return fmt.Errorf("implementation preference override has an invalid rule id")
+		}
+		if _, report := redactSensitiveText(id); report.Redacted {
+			return fmt.Errorf("implementation preference override has a sensitive-looking rule id")
 		}
 		if len(override.UserNote) > 4096 {
 			return fmt.Errorf("implementation preference override %s exceeds the storage limit", id)
@@ -577,6 +652,62 @@ func validateImplementationPreferenceProfile(profile ImplementationPreferencePro
 	return nil
 }
 
+func validateStoredImplementationPreferenceProfile(profile ImplementationPreferenceProfile) error {
+	if profile.SchemaVersion != implementationPreferenceProfileSchemaVersion {
+		return fmt.Errorf("unsupported implementation preference profile schema version %d", profile.SchemaVersion)
+	}
+	if profile.Revision <= 0 || profile.GeneratedAt.IsZero() {
+		return fmt.Errorf("stored implementation preference profile is missing required lifecycle metadata")
+	}
+	for _, rule := range profile.Rules {
+		if rule.UpdatedAt.IsZero() {
+			return fmt.Errorf("stored implementation preference rule is missing updated_at")
+		}
+	}
+	seenOverrides := map[string]bool{}
+	for rawID, override := range profile.Overrides {
+		id := strings.TrimSpace(rawID)
+		if id == "" || id != rawID || seenOverrides[id] || override.UpdatedAt.IsZero() {
+			return fmt.Errorf("stored implementation preference override has invalid lifecycle metadata")
+		}
+		seenOverrides[id] = true
+	}
+	return nil
+}
+
+func implementationPreferenceBoundedStrings(items []string, limit int) []string {
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return append([]string(nil), items...)
+}
+
+func implementationPreferenceRuleSourceEquivalent(left ImplementationPreferenceRule, right ImplementationPreferenceRule) bool {
+	left.Enabled = false
+	left.Pinned = false
+	left.UserNote = ""
+	left.UserNoteRedacted = false
+	left.UpdatedAt = time.Time{}
+	right.Enabled = false
+	right.Pinned = false
+	right.UserNote = ""
+	right.UserNoteRedacted = false
+	right.UpdatedAt = time.Time{}
+	return reflect.DeepEqual(left, right)
+}
+
+func implementationPreferenceProfileSourceEquivalent(left ImplementationPreferenceProfile, right ImplementationPreferenceProfile) bool {
+	if left.SchemaVersion != right.SchemaVersion || left.RecordCount != right.RecordCount || left.SourceHash != right.SourceHash || len(left.Rules) != len(right.Rules) {
+		return false
+	}
+	for index := range left.Rules {
+		if !implementationPreferenceRuleSourceEquivalent(left.Rules[index], right.Rules[index]) {
+			return false
+		}
+	}
+	return true
+}
+
 func synchronizeImplementationPreferenceOverrides(profile ImplementationPreferenceProfile) ImplementationPreferenceProfile {
 	profile.Overrides = cloneImplementationPreferenceOverrides(profile.Overrides)
 	for _, rule := range profile.Rules {
@@ -586,10 +717,58 @@ func synchronizeImplementationPreferenceOverrides(profile ImplementationPreferen
 			delete(profile.Overrides, rule.ID)
 		}
 	}
-	if len(profile.Overrides) == 0 {
-		profile.Overrides = nil
-	}
+	profile.Overrides = implementationPreferenceBoundedOverrides(profile.Rules, profile.Overrides, implementationPreferenceOverridesMaxItems)
 	return profile
+}
+
+func implementationPreferenceBoundedOverrides(rules []ImplementationPreferenceRule, source map[string]ImplementationPreferenceRuleOverride, limit int) map[string]ImplementationPreferenceRuleOverride {
+	if limit <= 0 || len(source) == 0 {
+		return nil
+	}
+	result := make(map[string]ImplementationPreferenceRuleOverride, min(limit, len(source)))
+	active := map[string]bool{}
+	for _, rule := range rules {
+		if len(result) >= limit {
+			break
+		}
+		override, ok := source[rule.ID]
+		if !ok || !implementationPreferenceRuleHasOverride(rule) {
+			continue
+		}
+		result[rule.ID] = override
+		active[rule.ID] = true
+	}
+	type overrideEntry struct {
+		id       string
+		override ImplementationPreferenceRuleOverride
+	}
+	orphans := make([]overrideEntry, 0, len(source))
+	for id, override := range source {
+		if active[id] || !implementationPreferenceOverrideHasEffect(override) {
+			continue
+		}
+		orphans = append(orphans, overrideEntry{id: id, override: override})
+	}
+	sort.SliceStable(orphans, func(i, j int) bool {
+		if !orphans[i].override.UpdatedAt.Equal(orphans[j].override.UpdatedAt) {
+			return orphans[i].override.UpdatedAt.After(orphans[j].override.UpdatedAt)
+		}
+		return orphans[i].id < orphans[j].id
+	})
+	for _, entry := range orphans {
+		if len(result) >= limit {
+			break
+		}
+		result[entry.id] = entry.override
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func implementationPreferenceOverrideHasEffect(override ImplementationPreferenceRuleOverride) bool {
+	return !override.Enabled || override.Pinned || strings.TrimSpace(override.UserNote) != "" || override.UserNoteRedacted
 }
 
 func cloneImplementationPreferenceOverrides(source map[string]ImplementationPreferenceRuleOverride) map[string]ImplementationPreferenceRuleOverride {

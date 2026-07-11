@@ -1213,6 +1213,7 @@ New-NetFirewallRule -DisplayName "mcp-<port>" -Direction Inbound -Protocol TCP -
 ```text
 /config
 /context
+/decision
 /provider status
 /model
 /effort
@@ -1233,6 +1234,7 @@ New-NetFirewallRule -DisplayName "mcp-<port>" -Direction Inbound -Protocol TCP -
 - `/provider status`는 active provider, 정규화된 `base_url`, API key 설정 여부, provider별 budget visibility를 보여준다. OpenRouter와 DeepSeek는 live lookup을 수행하고, OpenAI/Anthropic은 공식 문서 기준의 제약과 billing 안내를 노출한다.
 - `/model`은 main 모델, analysis worker/reviewer, 선택적 task-owner 모델 override를 보여주고, 바꾸고 싶은 대상을 골라 해당 설정 흐름으로 들어가는 모델 라우팅 허브다. primary review route는 main model을 따르고, optional cross review route만 `/model cross-review`에서 설정한다.
 - `/effort`는 `/model`과 별개로 configured model target별 `openai-codex`와 DeepSeek reasoning effort를 보여주거나 설정한다.
+- `/decision`은 인증된 로컬 Decision Journal 대시보드를 연다. 코드 조사 후 2~4개의 의미 있는 구현 방안이 남으면 KernForge가 첫 수정 전에 일시 중지할 수 있으며, 사용자의 명시적 선택과 선택·비선택 이유를 `~/.kernforge/decision-rationales/`의 저장소 외부 사용자별 비공개 저널에 기록한다. 조회, 수정, 변경 이력, soft delete/restore, 취향 규칙, 프로필 재생성, JSON 내보내기는 모두 대시보드 안에서 제공하며 `/decision` 하위 명령은 없다. 자세한 내용은 [한국어 가이드](./docs/decision-journal_kor.md) 또는 [영문 가이드](./docs/decision-journal.md)를 참고한다.
 - `/suggest dashboard --html`은 현재 상황의 recommendation, analysis stale marker, verification gap, evidence gap, changed path를 한 HTML dashboard에 모으고 관련 dashboard 명령 chip을 함께 보여준다.
 - `/suggest accept <id>`는 `confirm` 모드에서 허용된 safe command만 실행하고, suggestion 상태를 TaskGraph 및 persistent memory와 동기화한다.
 - `/automation`과 `/review pr`는 interval schedule due 판단, automation digest/monitor/watch, process-detached daemon, `.kernforge/automation/latest_digest.md` notify artifact, webhook transport, recurring verification slot, 로컬 및 `gh` 기반 PR review report, safe comment draft, 명시적 `--post-comments` 게시, `--resolve-thread`, label/assignee/milestone을 포함한 `--create-issue` MVP를 제공한다.

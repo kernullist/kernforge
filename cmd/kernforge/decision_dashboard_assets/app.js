@@ -20,7 +20,11 @@ const state = {
   decisionRequestGeneration: 0,
   decisionAbortController: null,
   selectionRequestGeneration: 0,
+  selectionAbortController: null,
+  inspectorEditing: false,
+  inspectorEditDirty: false,
   profileRequestGeneration: 0,
+  profilePollGeneration: 0,
   profileMutation: Promise.resolve(),
 };
 
@@ -127,7 +131,7 @@ async function initialize() {
 async function loadBootstrap() {
   const generation = ++state.bootstrapRequestGeneration;
   const payload = await api("/api/bootstrap");
-  if (generation !== state.bootstrapRequestGeneration) return;
+  if (generation !== state.bootstrapRequestGeneration) return null;
   state.bootstrap = payload;
   state.csrf = payload.csrf_token || state.csrf;
   state.profileStatus = payload.profile || null;
@@ -143,6 +147,31 @@ async function loadBootstrap() {
   populateSelect($("domain-filter"), "All domains", payload.domains || []);
   populateSelect($("kind-filter"), "All decision kinds", payload.kinds || []);
   renderIssues(payload.issues || [], payload.profile || {});
+  return payload;
+}
+
+function waitMilliseconds(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function pollProfileRebuild() {
+  const generation = ++state.profilePollGeneration;
+  const delays = [100, 200, 400, 800, 1600, 2000, 2000, 2000];
+  for (const delay of delays) {
+    await waitMilliseconds(delay);
+    if (generation !== state.profilePollGeneration) return;
+    try {
+      const payload = await loadBootstrap();
+      if (generation !== state.profilePollGeneration) return;
+      const status = (payload && payload.profile) || state.profileStatus || {};
+      if (!status.rebuilding) {
+        if (state.view === "preferences") await loadProfile();
+        return;
+      }
+    } catch (_) {
+      // A later poll or the manual Refresh action can recover transient errors.
+    }
+  }
 }
 
 function populateSelect(select, emptyLabel, values) {
@@ -179,6 +208,7 @@ function renderProjects(projects) {
       node("span", "project-id", String(project.id || "").slice(-6)),
     );
     button.addEventListener("click", async () => {
+      invalidatePendingDecisionSelection();
       state.scopeMode = "project";
       state.projectID = project.id;
       renderProjects(projects);
@@ -216,7 +246,8 @@ function renderProjectSelector(projects) {
 
 function renderIssues(issues, profileStatus = {}) {
   const banner = $("issue-banner");
-  const profileDirty = Boolean(profileStatus.dirty || profileStatus.error);
+  const profileRebuilding = Boolean(profileStatus.rebuilding);
+  const profileDirty = Boolean(profileStatus.dirty || profileStatus.error || profileRebuilding);
   if (!issues.length && !profileDirty) {
     banner.hidden = true;
     return;
@@ -229,13 +260,19 @@ function renderIssues(issues, profileStatus = {}) {
     $("issue-copy").textContent = `${first.file}: ${first.error}. Healthy records remain available; repair or remove the damaged file before profile rebuild or export.${profileCopy}`;
     return;
   }
+  if (profileRebuilding) {
+    $("issue-title").textContent = "Preference profile is rebuilding";
+    $("issue-copy").textContent = "The decision was saved. This status and the preference rules will update automatically when the background rebuild finishes.";
+    return;
+  }
   $("issue-title").textContent = "Preference profile needs attention";
   $("issue-copy").textContent = `${profileStatus.error || "The last automatic profile rebuild did not complete."} Source decisions remain intact; use Rebuild profile to retry.`;
 }
 
-async function loadDecisions(appendPage = false) {
-  if (appendPage && !state.nextCursor) return;
+async function loadDecisions(appendPage = false, preserveSelection = false) {
+  if (appendPage && !state.nextCursor) return true;
   const generation = ++state.decisionRequestGeneration;
+  const selectionGeneration = state.selectionRequestGeneration;
   if (state.decisionAbortController) {
     state.decisionAbortController.abort();
   }
@@ -257,14 +294,19 @@ async function loadDecisions(appendPage = false) {
   try {
     payload = await api(`/api/decisions?${params.toString()}`, { signal: controller.signal });
   } catch (error) {
-    if (error && error.name === "AbortError") return;
-    throw error;
+    if (error && error.name === "AbortError") return false;
+    if (appendPage && (error.status === 400 || error.status === 409)) {
+      showToast("The saved page snapshot expired or changed. Reloading the current scope.");
+      return loadDecisions(false, preserveSelection);
+    }
+    showToast(error.message, true);
+    return false;
   } finally {
     if (state.decisionAbortController === controller) {
       state.decisionAbortController = null;
     }
   }
-  if (generation !== state.decisionRequestGeneration) return;
+  if (generation !== state.decisionRequestGeneration) return false;
   const records = payload.records || [];
   if (appendPage) {
     const existing = new Set(state.decisions.map((record) => record.id));
@@ -276,13 +318,24 @@ async function loadDecisions(appendPage = false) {
   state.nextCursor = payload.next_cursor || "";
   renderDecisionList();
   if (state.selectedID) {
-    const stillVisible = state.decisions.some((record) => record.id === state.selectedID);
-    if (!stillVisible) {
+    const listedSelection = state.decisions.find((record) => record.id === state.selectedID);
+    const stillVisible = Boolean(listedSelection);
+    const selectionChangedWhileLoading = selectionGeneration !== state.selectionRequestGeneration;
+    if (!stillVisible && !preserveSelection && !selectionChangedWhileLoading) {
       state.selectedID = "";
       state.selectedRecord = null;
       renderInspectorEmpty();
+    } else if (stillVisible && !selectionChangedWhileLoading && state.selectedRecord
+      && Number(listedSelection.revision) > Number(state.selectedRecord.revision)) {
+      if (state.inspectorEditing && state.inspectorEditDirty) {
+        showToast("This decision changed elsewhere. Your unsaved edit remains open; cancel it or save to resolve the revision conflict.", true);
+      } else {
+        state.selectedRecord = listedSelection;
+        renderInspector(listedSelection);
+      }
     }
   }
+  return true;
 }
 
 function renderDecisionList() {
@@ -334,9 +387,12 @@ function formatTime(value) {
 
 async function selectDecision(id, sourceElement = null, moveFocus = true) {
   const generation = ++state.selectionRequestGeneration;
+  if (state.selectionAbortController) state.selectionAbortController.abort();
+  const controller = new AbortController();
+  state.selectionAbortController = controller;
   if (sourceElement) state.lastFocusedDecisionID = id;
   try {
-    const record = await api(`/api/decisions/${encodeURIComponent(id)}`);
+    const record = await api(`/api/decisions/${encodeURIComponent(id)}`, { signal: controller.signal });
     if (generation !== state.selectionRequestGeneration) return;
     state.selectedID = id;
     state.selectedRecord = record;
@@ -349,13 +405,26 @@ async function selectDecision(id, sourceElement = null, moveFocus = true) {
       if (close) close.focus();
     }
   } catch (error) {
+    if (error && error.name === "AbortError") return;
     showToast(error.message, true);
+  } finally {
+    if (state.selectionAbortController === controller) state.selectionAbortController = null;
+  }
+}
+
+function invalidatePendingDecisionSelection() {
+  state.selectionRequestGeneration++;
+  if (state.selectionAbortController) {
+    state.selectionAbortController.abort();
+    state.selectionAbortController = null;
   }
 }
 
 function renderInspectorEmpty(clearSelection = false, returnFocus = false) {
+  state.inspectorEditing = false;
+  state.inspectorEditDirty = false;
   if (clearSelection) {
-    state.selectionRequestGeneration++;
+    invalidatePendingDecisionSelection();
     state.selectedID = "";
     state.selectedRecord = null;
     renderDecisionList();
@@ -389,6 +458,8 @@ function syncInspectorSemantics() {
 }
 
 function renderInspector(record) {
+  state.inspectorEditing = false;
+  state.inspectorEditDirty = false;
   const container = $("inspector-content");
   clear(container);
   $("inspector-empty").hidden = true;
@@ -479,6 +550,48 @@ function renderUpdatedDecision(record) {
   syncInspectorSemantics();
 }
 
+function selectionStillTargets(recordID, generation) {
+  return state.selectionRequestGeneration === generation && state.selectedID === recordID;
+}
+
+async function refreshAfterDecisionMutation(updated, selectionGeneration) {
+  if (selectionStillTargets(updated.id, selectionGeneration)) {
+    state.selectedRecord = updated;
+    renderUpdatedDecision(updated);
+  }
+  // Bootstrap can remove a filter value that disappeared in this revision.
+  // Refresh it first so the list request uses the controls currently shown.
+  const bootstrap = await loadBootstrap();
+  const preserveSelection = state.selectedID !== updated.id;
+  const loaded = await loadDecisions(false, preserveSelection);
+  if (!loaded) {
+    throw new Error("the decision list refresh did not complete");
+  }
+  if (selectionStillTargets(updated.id, selectionGeneration)) {
+    const listed = loaded ? state.decisions.find((record) => record.id === updated.id) : null;
+    const latest = listed && Number(listed.revision) >= Number(updated.revision) ? listed : updated;
+    renderUpdatedDecision(latest);
+  }
+  if (bootstrap && bootstrap.profile && bootstrap.profile.rebuilding) {
+    void pollProfileRebuild();
+  }
+}
+
+async function refreshCommittedDecisionMutation(updated, selectionGeneration, successMessage) {
+  try {
+    await refreshAfterDecisionMutation(updated, selectionGeneration);
+    showToast(successMessage);
+  } catch (error) {
+    showToast(`${successMessage} The change was committed, but the dashboard refresh failed: ${error.message}`, true);
+  }
+}
+
+async function refreshConflictedDecision(recordID, selectionGeneration) {
+  if (selectionStillTargets(recordID, selectionGeneration)) {
+    await selectDecision(recordID, null, false);
+  }
+}
+
 function renderForkOption(record, option) {
   const selected = record.selected_option_id === option.id;
   const card = node("article", `fork-option${selected ? " selected" : ""}${option.recommended ? " recommended" : ""}`);
@@ -513,6 +626,8 @@ function actionButton(label, className, handler) {
 }
 
 function renderDecisionEdit(record) {
+  state.inspectorEditing = true;
+  state.inspectorEditDirty = false;
   const container = $("inspector-content");
   clear(container);
   const header = node("header", "inspector-header");
@@ -520,6 +635,8 @@ function renderDecisionEdit(record) {
   container.appendChild(header);
   const section = inspectorSection("Editable rationale and scope");
   const form = node("form", "edit-form");
+  form.addEventListener("input", () => { state.inspectorEditDirty = true; });
+  form.addEventListener("change", () => { state.inspectorEditDirty = true; });
 
   const selection = labeledSelect("Selected approach", "edit-selection");
   for (const option of record.options || []) {
@@ -565,6 +682,8 @@ function renderDecisionEdit(record) {
 
   const grid = node("div", "form-grid");
   const kind = labeledInput("Decision kind", "edit-kind", record.decision_kind || "");
+  kind.control.required = true;
+  kind.control.maxLength = 128;
   const risk = labeledSelect("Risk", "edit-risk");
   for (const value of ["", "low", "medium", "high", "critical"]) {
     const item = node("option", "", value || "Unspecified");
@@ -583,36 +702,46 @@ function renderDecisionEdit(record) {
   append(actions, actionButton("Cancel", "secondary-button", () => renderInspector(record)));
   const save = actionButton("Save revision", "primary-button", async () => {
     if (!form.reportValidity()) return;
+    const selectionGeneration = state.selectionRequestGeneration;
     const selectedID = selection.control.value;
     const rejected = [];
     for (const control of rejectionControls) {
       const optionID = control.label.dataset.optionId;
       if (selectedID !== optionID) rejected.push({ option_id: optionID, reason: control.control.value.trim(), source: "user" });
     }
-    const patch = {
-      expected_revision: record.revision,
-      selected_option_id: selectedID === "__custom__" ? "" : selectedID,
-      custom_selection: selectedID === "__custom__" ? custom.control.value.trim() : "",
-      selection_reason_raw: reason.control.value.trim(),
-      rejected_reasons: rejected,
-      decision_kind: kind.control.value.trim(),
-      risk_level: risk.control.value,
-      domains: splitList(domains.control.value),
-      tags: splitList(tags.control.value),
-      project_alias: alias.control.value.trim(),
-    };
+    const patch = { expected_revision: record.revision };
+    const selectedOptionID = selectedID === "__custom__" ? "" : selectedID;
+    const customSelection = selectedID === "__custom__" ? custom.control.value.trim() : "";
+    const selectionReason = reason.control.value.trim();
+    const decisionKind = kind.control.value.trim().toLowerCase();
+    const riskLevel = risk.control.value;
+    const domainValues = splitList(domains.control.value);
+    const tagValues = splitList(tags.control.value);
+    const projectAlias = alias.control.value.trim();
+    if (selectedOptionID !== (record.selected_option_id || "")) patch.selected_option_id = selectedOptionID;
+    if (customSelection !== (record.custom_selection || "")) patch.custom_selection = customSelection;
+    if (selectionReason !== (record.selection_reason_raw || "")) patch.selection_reason_raw = selectionReason;
+    if (!rejectionListsEqual(rejected, record.rejected_reasons || [])) patch.rejected_reasons = rejected;
+    if (decisionKind !== (record.decision_kind || "")) patch.decision_kind = decisionKind;
+    if (riskLevel !== (record.risk_level || "")) patch.risk_level = riskLevel;
+    if (!stringListsEqual(domainValues, record.domains || [])) patch.domains = domainValues;
+    if (!stringListsEqual(tagValues, record.tags || [])) patch.tags = tagValues;
+    if (projectAlias !== (record.project_alias || "")) patch.project_alias = projectAlias;
+    if (Object.keys(patch).length === 1) {
+      showToast("No changes to save");
+      return;
+    }
+    let updated;
     try {
-      const updated = await api(`/api/decisions/${encodeURIComponent(record.id)}`, { method: "PATCH", body: JSON.stringify(patch) });
-      state.selectedRecord = updated;
-      showToast(`Saved revision ${updated.revision}`);
-      await Promise.all([loadBootstrap(), loadDecisions()]);
-      renderUpdatedDecision(updated);
+      updated = await api(`/api/decisions/${encodeURIComponent(record.id)}`, { method: "PATCH", body: JSON.stringify(patch) });
     } catch (error) {
       showToast(error.status === 409 ? "This decision changed in another dashboard. Refresh and retry." : error.message, true);
       if (error.status === 409) {
-        await selectDecision(record.id, null, false);
+        await refreshConflictedDecision(record.id, selectionGeneration);
       }
+      return;
     }
+    await refreshCommittedDecisionMutation(updated, selectionGeneration, `Saved revision ${updated.revision}.`);
   });
   actions.appendChild(save);
   form.appendChild(actions);
@@ -653,6 +782,17 @@ function splitList(value) {
   return [...new Set(String(value || "").split(",").map((item) => item.trim()).filter(Boolean))];
 }
 
+function stringListsEqual(left, right) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === String(right[index] || "").trim());
+}
+
+function rejectionListsEqual(left, right) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value.option_id === String(right[index].option_id || "").trim()
+    && value.reason === String(right[index].reason || "").trim());
+}
+
 async function loadHistory(record) {
   const generation = state.selectionRequestGeneration;
   try {
@@ -678,39 +818,61 @@ async function loadHistory(record) {
 
 async function deleteDecision(record) {
   if (!window.confirm("Soft-delete this decision? Its revision history will remain available.")) return;
+  const selectionGeneration = state.selectionRequestGeneration;
+  let updated;
   try {
-    const updated = await api(`/api/decisions/${encodeURIComponent(record.id)}`, {
+    updated = await api(`/api/decisions/${encodeURIComponent(record.id)}`, {
       method: "DELETE",
       body: JSON.stringify({ expected_revision: record.revision }),
     });
-    showToast("Decision moved to deleted records");
-    state.selectedRecord = updated;
-    await Promise.all([loadBootstrap(), loadDecisions()]);
-    renderUpdatedDecision(updated);
   } catch (error) {
     showToast(error.message, true);
     if (error.status === 409) {
-      await selectDecision(record.id, null, false);
+      await refreshConflictedDecision(record.id, selectionGeneration);
     }
+    return;
   }
+  await refreshCommittedDecisionMutation(updated, selectionGeneration, "Decision moved to deleted records.");
 }
 
 async function restoreDecision(record) {
+  const selectionGeneration = state.selectionRequestGeneration;
+  let updated;
   try {
-    const updated = await api(`/api/decisions/${encodeURIComponent(record.id)}/restore`, {
+    updated = await api(`/api/decisions/${encodeURIComponent(record.id)}/restore`, {
       method: "POST",
       body: JSON.stringify({ expected_revision: record.revision }),
     });
-    showToast("Decision restored");
-    state.selectedRecord = updated;
-    await Promise.all([loadBootstrap(), loadDecisions()]);
-    renderUpdatedDecision(updated);
   } catch (error) {
     showToast(error.message, true);
     if (error.status === 409) {
-      await selectDecision(record.id, null, false);
+      await refreshConflictedDecision(record.id, selectionGeneration);
     }
+    return;
   }
+  await refreshCommittedDecisionMutation(updated, selectionGeneration, "Decision restored.");
+}
+
+function profileRevision(profile) {
+  const revision = Number(profile && profile.revision);
+  return Number.isFinite(revision) && revision > 0 ? revision : 0;
+}
+
+function profileGeneratedAt(profile) {
+  const generatedAt = Date.parse((profile && profile.generated_at) || "");
+  return Number.isFinite(generatedAt) ? generatedAt : 0;
+}
+
+function applyProfileIfCurrent(profile, allowRevisionReset = false) {
+  const incomingRevision = profileRevision(profile);
+  const currentRevision = profileRevision(state.profile);
+  const incomingGeneratedAt = profileGeneratedAt(profile);
+  const currentGeneratedAt = profileGeneratedAt(state.profile);
+  if (incomingRevision < currentRevision && (!allowRevisionReset || incomingGeneratedAt <= currentGeneratedAt)) return false;
+  if (incomingRevision === currentRevision && incomingGeneratedAt < currentGeneratedAt) return false;
+  state.profile = profile;
+  renderProfile();
+  return true;
 }
 
 async function loadProfile() {
@@ -718,13 +880,14 @@ async function loadProfile() {
   try {
     const profile = await api("/api/profiles");
     if (generation !== state.profileRequestGeneration) return;
-    state.profile = profile;
-    renderProfile();
+    applyProfileIfCurrent(profile, generation === state.profileRequestGeneration);
   } catch (error) {
     if (generation !== state.profileRequestGeneration) return;
     showToast(error.message, true);
-    state.profile = { revision: 0, rules: [] };
-    renderProfile();
+    if (!state.profile) {
+      state.profile = { revision: 0, rules: [] };
+      renderProfile();
+    }
   }
 }
 
@@ -788,10 +951,8 @@ async function performProfileRuleUpdate(ruleID, patch) {
       method: "PATCH",
       body: JSON.stringify({ expected_revision: state.profile.revision, ...patch }),
     });
-    if (generation !== state.profileRequestGeneration) return;
-    state.profile = profile;
+    applyProfileIfCurrent(profile, generation === state.profileRequestGeneration);
     showToast("Preference rule updated");
-    renderProfile();
   } catch (error) {
     showToast(error.status === 409 ? "The profile changed in another dashboard. Refresh and retry." : error.message, true);
     await loadProfile();
@@ -807,15 +968,19 @@ function rebuildProfile() {
 
 async function performProfileRebuild() {
   const generation = ++state.profileRequestGeneration;
+  let profile;
   try {
-    const profile = await api("/api/profiles/rebuild", { method: "POST", body: JSON.stringify({}) });
-    if (generation !== state.profileRequestGeneration) return;
-    state.profile = profile;
-    showToast("Preference profile rebuilt from decision evidence");
-    await loadBootstrap();
-    renderProfile();
+    profile = await api("/api/profiles/rebuild", { method: "POST", body: JSON.stringify({}) });
   } catch (error) {
     showToast(error.message, true);
+    return;
+  }
+  applyProfileIfCurrent(profile, generation === state.profileRequestGeneration);
+  try {
+    await loadBootstrap();
+    showToast("Preference profile rebuilt from decision evidence");
+  } catch (error) {
+    showToast(`Preference profile was rebuilt, but the dashboard status refresh failed: ${error.message}`, true);
   }
 }
 
@@ -890,6 +1055,7 @@ function bindEvents() {
     button.addEventListener("click", () => switchView(button.dataset.view));
   }
   $("scope-all").addEventListener("click", async () => {
+    invalidatePendingDecisionSelection();
     state.scopeMode = "all";
     state.projectID = "";
     renderProjects((state.bootstrap && state.bootstrap.projects) || []);
@@ -897,6 +1063,7 @@ function bindEvents() {
     await loadDecisions();
   });
   $("project-filter").addEventListener("change", async () => {
+    invalidatePendingDecisionSelection();
     const value = $("project-filter").value;
     if (value === "all") {
       state.scopeMode = "all";
@@ -911,24 +1078,39 @@ function bindEvents() {
     renderProjects((state.bootstrap && state.bootstrap.projects) || []);
     await loadDecisions();
   });
-  $("domain-filter").addEventListener("change", () => loadDecisions());
-  $("kind-filter").addEventListener("change", () => loadDecisions());
-  $("deleted-filter").addEventListener("change", () => loadDecisions());
+  $("domain-filter").addEventListener("change", () => {
+    invalidatePendingDecisionSelection();
+    loadDecisions();
+  });
+  $("kind-filter").addEventListener("change", () => {
+    invalidatePendingDecisionSelection();
+    loadDecisions();
+  });
+  $("deleted-filter").addEventListener("change", () => {
+    invalidatePendingDecisionSelection();
+    loadDecisions();
+  });
   $("decision-search").addEventListener("input", () => {
+    invalidatePendingDecisionSelection();
     window.clearTimeout(state.searchTimer);
     state.searchTimer = window.setTimeout(() => loadDecisions(), 180);
   });
   $("refresh-button").addEventListener("click", async () => {
-    const selectedID = state.selectedID;
-    await loadBootstrap();
-    if (state.view === "preferences") await loadProfile();
-    else {
-      await loadDecisions();
-      if (selectedID && state.decisions.some((record) => record.id === selectedID)) {
-        await selectDecision(selectedID, null, false);
+    try {
+      const selectedID = state.selectedID;
+      await loadBootstrap();
+      if (state.view === "preferences") await loadProfile();
+      else {
+        const loaded = await loadDecisions();
+        if (!loaded) return;
+        if (selectedID && state.decisions.some((record) => record.id === selectedID)) {
+          await selectDecision(selectedID, null, false);
+        }
       }
+      showToast("Dashboard refreshed");
+    } catch (error) {
+      showToast(error.message, true);
     }
-    showToast("Dashboard refreshed");
   });
   $("load-more").addEventListener("click", () => loadDecisions(true));
   $("inspector-backdrop").addEventListener("click", () => renderInspectorEmpty(true, true));

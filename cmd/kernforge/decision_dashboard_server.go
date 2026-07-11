@@ -38,32 +38,44 @@ const (
 
 var decisionDashboardOpenURL = OpenExternalURL
 
-var errDecisionDashboardSnapshotTooLarge = errors.New("decision dashboard snapshot exceeds the cache budget")
+var (
+	errDecisionDashboardSnapshotTooLarge = errors.New("decision dashboard snapshot exceeds the cache budget")
+	errDecisionDashboardNoChanges        = errors.New("decision dashboard patch does not change the record")
+)
 
 type DecisionDashboardServer struct {
-	mu              sync.Mutex
-	decisions       *ImplementationDecisionStore
-	profiles        *ImplementationPreferenceProfileStore
-	workspace       string
-	listener        net.Listener
-	server          *http.Server
-	host            string
-	origin          string
-	cookieName      string
-	sessionToken    string
-	requestToken    string
-	csrfToken       string
-	bootstrapToken  string
-	profileDirty    bool
-	profileError    string
-	snapshots       map[string]decisionDashboardSnapshot
-	snapshotRecords int
-	snapshotBytes   int64
-	snapshotLimits  decisionDashboardSnapshotLimits
-	janitorCancel   context.CancelFunc
-	janitorDone     chan struct{}
-	done            chan struct{}
-	closeOnce       sync.Once
+	mu                         sync.Mutex
+	profileRebuildMu           sync.Mutex
+	profileRebuildRun          bool
+	profileRebuildReq          bool
+	profileStatusGen           uint64
+	profileRebuildCtx          context.Context
+	profileRebuildCancel       context.CancelFunc
+	profileRebuildWG           sync.WaitGroup
+	closing                    bool
+	decisions                  *ImplementationDecisionStore
+	profiles                   *ImplementationPreferenceProfileStore
+	workspace                  string
+	listener                   net.Listener
+	server                     *http.Server
+	host                       string
+	origin                     string
+	cookieName                 string
+	sessionToken               string
+	requestToken               string
+	csrfToken                  string
+	bootstrapToken             string
+	profileDirty               bool
+	profileError               string
+	snapshots                  map[string]decisionDashboardSnapshot
+	snapshotRecords            int
+	snapshotBytes              int64
+	snapshotLimits             decisionDashboardSnapshotLimits
+	janitorCancel              context.CancelFunc
+	janitorDone                chan struct{}
+	done                       chan struct{}
+	closeOnce                  sync.Once
+	bootstrapAfterDecisionRead func()
 }
 
 type decisionDashboardDecisionPatch struct {
@@ -145,6 +157,9 @@ func (s *DecisionDashboardServer) Start() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closing {
+		return fmt.Errorf("decision dashboard server is closed")
+	}
 	if s.server != nil {
 		return nil
 	}
@@ -196,9 +211,12 @@ func (s *DecisionDashboardServer) Start() error {
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 	janitorContext, janitorCancel := context.WithCancel(context.Background())
+	profileRebuildContext, profileRebuildCancel := context.WithCancel(context.Background())
 	janitorDone := make(chan struct{})
 	s.janitorCancel = janitorCancel
 	s.janitorDone = janitorDone
+	s.profileRebuildCtx = profileRebuildContext
+	s.profileRebuildCancel = profileRebuildCancel
 	janitorInterval := s.snapshotLimits.JanitorInterval
 	if janitorInterval <= 0 {
 		janitorInterval = decisionDashboardSnapshotJanitorInterval
@@ -212,6 +230,7 @@ func (s *DecisionDashboardServer) Start() error {
 			// serve failures are observed through Done and a failed browser request.
 		}
 		janitorCancel()
+		profileRebuildCancel()
 		close(s.done)
 	}()
 	return nil
@@ -257,15 +276,23 @@ func (s *DecisionDashboardServer) Close(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var closeErr error
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
+		s.closing = true
 		server := s.server
 		janitorCancel := s.janitorCancel
 		janitorDone := s.janitorDone
+		profileRebuildCancel := s.profileRebuildCancel
 		s.mu.Unlock()
 		if janitorCancel != nil {
 			janitorCancel()
+		}
+		if profileRebuildCancel != nil {
+			profileRebuildCancel()
 		}
 		if server != nil {
 			closeErr = server.Shutdown(ctx)
@@ -277,6 +304,18 @@ func (s *DecisionDashboardServer) Close(ctx context.Context) error {
 				if closeErr == nil {
 					closeErr = ctx.Err()
 				}
+			}
+		}
+		profileRebuildDone := make(chan struct{})
+		go func() {
+			s.profileRebuildWG.Wait()
+			close(profileRebuildDone)
+		}()
+		select {
+		case <-profileRebuildDone:
+		case <-ctx.Done():
+			if closeErr == nil {
+				closeErr = ctx.Err()
 			}
 		}
 	})
@@ -461,10 +500,17 @@ func (s *DecisionDashboardServer) handleBootstrap(w http.ResponseWriter, r *http
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	s.mu.Lock()
+	profileStatusGeneration := s.profileStatusGen
+	afterDecisionRead := s.bootstrapAfterDecisionRead
+	s.mu.Unlock()
 	records, issues, err := s.decisions.ListWithIssues(ImplementationDecisionFilter{IncludeDeleted: true})
 	if err != nil {
 		decisionDashboardWriteStoreError(w, err)
 		return
+	}
+	if afterDecisionRead != nil {
+		afterDecisionRead()
 	}
 	profile, profileErr := s.profiles.Load()
 	projects := map[string]string{}
@@ -474,7 +520,11 @@ func (s *DecisionDashboardServer) handleBootstrap(w http.ResponseWriter, r *http
 	activeRecords := make([]ImplementationDecisionRecord, 0, len(records))
 	for _, record := range records {
 		if record.ProjectID != "" {
-			projects[record.ProjectID] = valueOrDefault(record.ProjectAlias, record.ProjectID)
+			if _, exists := projects[record.ProjectID]; !exists {
+				// ListWithIssues returns newest records first. Keep the first alias
+				// so an older decision cannot overwrite a recently edited alias.
+				projects[record.ProjectID] = valueOrDefault(record.ProjectAlias, record.ProjectID)
+			}
 		}
 		for _, domain := range record.Domains {
 			domainSet[domain] = true
@@ -496,7 +546,12 @@ func (s *DecisionDashboardServer) handleBootstrap(w http.ResponseWriter, r *http
 		projectItems = append(projectItems, projectItem{ID: id, Alias: alias})
 	}
 	sort.Slice(projectItems, func(i, j int) bool {
-		return strings.ToLower(projectItems[i].Alias) < strings.ToLower(projectItems[j].Alias)
+		leftAlias := strings.ToLower(projectItems[i].Alias)
+		rightAlias := strings.ToLower(projectItems[j].Alias)
+		if leftAlias != rightAlias {
+			return leftAlias < rightAlias
+		}
+		return projectItems[i].ID < projectItems[j].ID
 	})
 	issueItems := make([]map[string]string, 0, len(issues))
 	for _, issue := range issues {
@@ -507,16 +562,27 @@ func (s *DecisionDashboardServer) handleBootstrap(w http.ResponseWriter, r *http
 	csrfToken := s.csrfToken
 	profileDirty := s.profileDirty
 	profileStatusError := s.profileError
+	profileRebuilding := s.profileRebuildRun
+	profileStatusStable := profileStatusGeneration == s.profileStatusGen
 	s.mu.Unlock()
 	if profileErr != nil {
 		profileDirty = true
 		profileStatusError = profileErr.Error()
 	}
 	currentSourceHash := implementationPreferenceSourceHash(activeRecords)
-	if profileErr == nil && (profile.Revision > 0 || len(activeRecords) > 0) && profile.SourceHash != currentSourceHash {
-		profileDirty = true
-		if profileStatusError == "" {
-			profileStatusError = "The decision journal changed after the preference profile was generated."
+	if profileErr == nil {
+		profileMatchesJournal := (profile.Revision == 0 && len(activeRecords) == 0) ||
+			(profile.Revision > 0 && profile.SourceHash == currentSourceHash)
+		if profileMatchesJournal && len(issues) == 0 && profileStatusStable {
+			// Canonical persisted state wins over an earlier in-memory rebuild error.
+			// Another dashboard or process may have repaired the profile since then.
+			profileDirty = false
+			profileStatusError = ""
+		} else if (profile.Revision > 0 || len(activeRecords) > 0) && profile.SourceHash != currentSourceHash {
+			profileDirty = true
+			if profileStatusError == "" {
+				profileStatusError = "The decision journal changed after the preference profile was generated."
+			}
 		}
 	}
 	projectID, projectAlias, _ := implementationDecisionProjectIdentity(workspace)
@@ -538,9 +604,10 @@ func (s *DecisionDashboardServer) handleBootstrap(w http.ResponseWriter, r *http
 		"kinds":    decisionDashboardSortedKeys(kindSet),
 		"issues":   issueItems,
 		"profile": map[string]any{
-			"revision": profile.Revision,
-			"dirty":    profileDirty,
-			"error":    profileStatusError,
+			"revision":   profile.Revision,
+			"dirty":      profileDirty,
+			"error":      profileStatusError,
+			"rebuilding": profileRebuilding,
 		},
 	}
 	decisionDashboardWriteJSON(w, http.StatusOK, payload)
@@ -695,6 +762,10 @@ func (s *DecisionDashboardServer) handleDecision(w http.ResponseWriter, r *http.
 			decisionDashboardWriteError(w, err, http.StatusBadRequest)
 			return
 		}
+		if err := validateDecisionDashboardPatch(request); err != nil {
+			decisionDashboardWriteError(w, err, http.StatusBadRequest)
+			return
+		}
 		updated, err := s.decisions.Revise(id, request.ExpectedRevision, func(record *ImplementationDecisionRecord) error {
 			return applyDecisionDashboardPatch(record, request)
 		})
@@ -702,7 +773,7 @@ func (s *DecisionDashboardServer) handleDecision(w http.ResponseWriter, r *http.
 			decisionDashboardWriteStoreError(w, err)
 			return
 		}
-		s.rebuildProfileBestEffort()
+		s.scheduleProfileRebuild()
 		decisionDashboardWriteJSON(w, http.StatusOK, updated)
 	case http.MethodDelete:
 		var request decisionDashboardRevisionRequest
@@ -715,7 +786,7 @@ func (s *DecisionDashboardServer) handleDecision(w http.ResponseWriter, r *http.
 			decisionDashboardWriteStoreError(w, err)
 			return
 		}
-		s.rebuildProfileBestEffort()
+		s.scheduleProfileRebuild()
 		decisionDashboardWriteJSON(w, http.StatusOK, updated)
 	default:
 		w.Header().Set("Allow", "GET, PATCH, DELETE")
@@ -768,77 +839,292 @@ func (s *DecisionDashboardServer) handleDecisionRestore(w http.ResponseWriter, r
 		decisionDashboardWriteStoreError(w, err)
 		return
 	}
-	s.rebuildProfileBestEffort()
+	s.scheduleProfileRebuild()
 	decisionDashboardWriteJSON(w, http.StatusOK, updated)
 }
 
-func (s *DecisionDashboardServer) rebuildProfileBestEffort() {
+func (s *DecisionDashboardServer) scheduleProfileRebuild() {
 	if s == nil || s.profiles == nil || s.decisions == nil {
 		return
 	}
-	_, err := s.profiles.Rebuild(s.decisions)
 	s.mu.Lock()
-	s.profileDirty = err != nil
-	s.profileError = decisionDashboardErrorText(err)
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	s.profileDirty = true
+	s.profileStatusGen++
+	if s.profileRebuildRun {
+		s.profileRebuildReq = true
+		s.mu.Unlock()
+		return
+	}
+	s.profileRebuildRun = true
+	s.profileRebuildReq = false
+	rebuildContext := s.profileRebuildCtx
+	if rebuildContext == nil {
+		rebuildContext = context.Background()
+	}
+	s.profileRebuildWG.Add(1)
 	s.mu.Unlock()
+	go func() {
+		defer s.profileRebuildWG.Done()
+		s.runScheduledProfileRebuilds(rebuildContext)
+	}()
+}
+
+func (s *DecisionDashboardServer) runScheduledProfileRebuilds(ctx context.Context) {
+	for {
+		_, _ = s.rebuildProfileContext(ctx)
+		s.mu.Lock()
+		if s.closing || ctx.Err() != nil {
+			s.profileRebuildRun = false
+			s.profileRebuildReq = false
+			s.mu.Unlock()
+			return
+		}
+		if s.profileRebuildReq {
+			s.profileRebuildReq = false
+			s.mu.Unlock()
+			continue
+		}
+		s.profileRebuildRun = false
+		s.mu.Unlock()
+		return
+	}
+}
+
+func (s *DecisionDashboardServer) rebuildProfile() (ImplementationPreferenceProfile, error) {
+	return s.rebuildProfileContext(context.Background())
+}
+
+func (s *DecisionDashboardServer) rebuildProfileContext(ctx context.Context) (ImplementationPreferenceProfile, error) {
+	if s == nil || s.profiles == nil || s.decisions == nil {
+		return ImplementationPreferenceProfile{}, fmt.Errorf("decision dashboard profile stores are not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// The profile store serializes file writes, but the dashboard status update
+	// happens after that file lock is released. Keep the rebuild and its status
+	// publication in one order so an older failure cannot overwrite a newer
+	// successful rebuild (or vice versa).
+	unlock, err := lockDecisionDashboardMutexContext(ctx, &s.profileRebuildMu)
+	if err != nil {
+		return ImplementationPreferenceProfile{}, err
+	}
+	defer unlock()
+	profile, err := s.profiles.RebuildContext(ctx, s.decisions)
+	s.mu.Lock()
+	if !s.closing {
+		s.profileDirty = err != nil
+		s.profileError = decisionDashboardErrorText(err)
+		s.profileStatusGen++
+	}
+	s.mu.Unlock()
+	return profile, err
+}
+
+func lockDecisionDashboardMutexContext(ctx context.Context, mutex *sync.Mutex) (func(), error) {
+	if mutex == nil {
+		return func() {}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if mutex.TryLock() {
+			return mutex.Unlock, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func validateDecisionDashboardPatch(request decisionDashboardDecisionPatch) error {
+	if request.ExpectedRevision <= 0 {
+		return fmt.Errorf("expected_revision must be positive")
+	}
+	if request.SelectedOptionID == nil &&
+		request.CustomSelection == nil &&
+		request.SelectionReasonRaw == nil &&
+		request.RejectedReasons == nil &&
+		request.Tags == nil &&
+		request.Domains == nil &&
+		request.DecisionKind == nil &&
+		request.RiskLevel == nil &&
+		request.ProjectAlias == nil {
+		return fmt.Errorf("decision patch requires at least one changed field")
+	}
+	if request.SelectedOptionID != nil && request.CustomSelection != nil &&
+		strings.TrimSpace(*request.SelectedOptionID) != "" && strings.TrimSpace(*request.CustomSelection) != "" {
+		return fmt.Errorf("decision patch cannot select a listed and custom option together")
+	}
+	if request.DecisionKind != nil {
+		kind := strings.TrimSpace(*request.DecisionKind)
+		if kind == "" || len(kind) > 128 {
+			return fmt.Errorf("decision_kind must contain 1 to 128 bytes")
+		}
+	}
+	if request.RiskLevel != nil {
+		switch strings.ToLower(strings.TrimSpace(*request.RiskLevel)) {
+		case "", "low", "medium", "high", "critical":
+		default:
+			return fmt.Errorf("risk_level must be empty, low, medium, high, or critical")
+		}
+	}
+	return nil
 }
 
 func applyDecisionDashboardPatch(record *ImplementationDecisionRecord, request decisionDashboardDecisionPatch) error {
 	if record == nil {
 		return fmt.Errorf("decision record is required")
 	}
+	changed := false
+	summaryInputsChanged := false
 	if request.SelectedOptionID != nil {
-		record.SelectedOptionID = strings.TrimSpace(*request.SelectedOptionID)
-		if record.SelectedOptionID != "" {
-			record.CustomSelection = ""
+		selected := strings.TrimSpace(*request.SelectedOptionID)
+		if selected != record.SelectedOptionID {
+			record.SelectedOptionID = selected
+			if selected != "" {
+				record.CustomSelection = ""
+			}
+			record.Provenance.Selection = "user"
+			changed = true
+			summaryInputsChanged = true
 		}
-		record.Provenance.Selection = "user"
 	}
 	if request.CustomSelection != nil {
-		record.CustomSelection = strings.TrimSpace(*request.CustomSelection)
-		if record.CustomSelection != "" {
-			record.SelectedOptionID = ""
+		custom := strings.TrimSpace(*request.CustomSelection)
+		if custom != record.CustomSelection {
+			record.CustomSelection = custom
+			if custom != "" {
+				record.SelectedOptionID = ""
+			}
+			record.Provenance.Selection = "user"
+			changed = true
+			summaryInputsChanged = true
 		}
-		record.Provenance.Selection = "user"
 	}
 	if request.SelectionReasonRaw != nil {
-		record.SelectionReasonRaw = strings.TrimSpace(*request.SelectionReasonRaw)
-		record.Provenance.Rationale = "user"
+		reason := strings.TrimSpace(*request.SelectionReasonRaw)
+		if reason != record.SelectionReasonRaw {
+			record.SelectionReasonRaw = reason
+			record.Provenance.Rationale = "user"
+			changed = true
+			summaryInputsChanged = true
+		}
 	}
 	if request.RejectedReasons != nil {
-		record.RejectedReasons = append([]ImplementationDecisionRejection(nil), (*request.RejectedReasons)...)
-		for index := range record.RejectedReasons {
-			record.RejectedReasons[index].Source = "user"
+		if !decisionDashboardRejectionsEqual(record.RejectedReasons, *request.RejectedReasons) {
+			record.RejectedReasons = append([]ImplementationDecisionRejection(nil), (*request.RejectedReasons)...)
+			for index := range record.RejectedReasons {
+				record.RejectedReasons[index].OptionID = strings.TrimSpace(record.RejectedReasons[index].OptionID)
+				record.RejectedReasons[index].Reason = strings.TrimSpace(record.RejectedReasons[index].Reason)
+				record.RejectedReasons[index].Source = "user"
+			}
+			record.Provenance.Rationale = "user"
+			changed = true
+			summaryInputsChanged = true
 		}
-		record.Provenance.Rationale = "user"
 	}
 	if request.Tags != nil {
-		record.Tags = append([]string(nil), (*request.Tags)...)
+		tags := decisionDashboardNormalizedList(*request.Tags)
+		if !decisionDashboardStringListsEqual(record.Tags, tags) {
+			record.Tags = tags
+			changed = true
+		}
 	}
 	if request.Domains != nil {
-		record.Domains = append([]string(nil), (*request.Domains)...)
+		domains := decisionDashboardNormalizedList(*request.Domains)
+		if !decisionDashboardStringListsEqual(record.Domains, domains) {
+			record.Domains = domains
+			changed = true
+		}
 	}
 	if request.DecisionKind != nil {
-		record.DecisionKind = strings.TrimSpace(*request.DecisionKind)
+		kind := strings.ToLower(strings.TrimSpace(*request.DecisionKind))
+		if kind != record.DecisionKind {
+			record.DecisionKind = kind
+			changed = true
+		}
 	}
 	if request.RiskLevel != nil {
-		record.RiskLevel = strings.TrimSpace(*request.RiskLevel)
+		risk := strings.ToLower(strings.TrimSpace(*request.RiskLevel))
+		if risk != record.RiskLevel {
+			record.RiskLevel = risk
+			changed = true
+		}
 	}
 	if request.ProjectAlias != nil {
-		record.ProjectAlias = strings.TrimSpace(*request.ProjectAlias)
+		alias := strings.TrimSpace(*request.ProjectAlias)
+		if alias != record.ProjectAlias {
+			record.ProjectAlias = alias
+			changed = true
+		}
 	}
-	record.Provenance.Summary = "runtime"
+	if !changed {
+		return errDecisionDashboardNoChanges
+	}
+	if summaryInputsChanged {
+		// A curated summary survives metadata-only edits. Selection or rationale
+		// edits invalidate it and let store normalization rebuild the sentence.
+		record.SummarySentence = ""
+		record.Provenance.Summary = "runtime"
+	}
 	return nil
+}
+
+func decisionDashboardRejectionsEqual(left []ImplementationDecisionRejection, right []ImplementationDecisionRejection) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if strings.TrimSpace(left[index].OptionID) != strings.TrimSpace(right[index].OptionID) ||
+			strings.TrimSpace(left[index].Reason) != strings.TrimSpace(right[index].Reason) {
+			return false
+		}
+	}
+	return true
+}
+
+func decisionDashboardNormalizedList(items []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		key := strings.ToLower(item)
+		if item == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, item)
+	}
+	return out
+}
+
+func decisionDashboardStringListsEqual(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if strings.TrimSpace(left[index]) != strings.TrimSpace(right[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *DecisionDashboardServer) handleProfiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && strings.TrimSpace(r.URL.Query().Get("action")) == "rebuild" {
-		profile, err := s.profiles.Rebuild(s.decisions)
+		profile, err := s.rebuildProfile()
 		if err != nil {
 			decisionDashboardWriteStoreError(w, err)
 			return
 		}
-		s.clearProfileError()
 		decisionDashboardWriteJSON(w, http.StatusOK, profile)
 		return
 	}
@@ -866,23 +1152,12 @@ func (s *DecisionDashboardServer) handleProfileRebuild(w http.ResponseWriter, r 
 		decisionDashboardWriteError(w, err, http.StatusBadRequest)
 		return
 	}
-	profile, err := s.profiles.Rebuild(s.decisions)
+	profile, err := s.rebuildProfile()
 	if err != nil {
 		decisionDashboardWriteStoreError(w, err)
 		return
 	}
-	s.clearProfileError()
 	decisionDashboardWriteJSON(w, http.StatusOK, profile)
-}
-
-func (s *DecisionDashboardServer) clearProfileError() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.profileDirty = false
-	s.profileError = ""
-	s.mu.Unlock()
 }
 
 func (s *DecisionDashboardServer) handleProfile(w http.ResponseWriter, r *http.Request, ruleID string) {
@@ -899,6 +1174,10 @@ func (s *DecisionDashboardServer) handleProfile(w http.ResponseWriter, r *http.R
 	var request decisionDashboardProfilePatch
 	if err := decisionDashboardDecodeJSON(w, r, 16<<10, &request); err != nil {
 		decisionDashboardWriteError(w, err, http.StatusBadRequest)
+		return
+	}
+	if request.ExpectedRevision <= 0 || (request.Enabled == nil && request.Pinned == nil && request.UserNote == nil) {
+		decisionDashboardWriteError(w, fmt.Errorf("profile patch requires a positive expected_revision and at least one changed field"), http.StatusBadRequest)
 		return
 	}
 	profile, err := s.profiles.UpdateRule(ruleID, request.ExpectedRevision, func(rule *ImplementationPreferenceRule) error {
@@ -992,6 +1271,8 @@ func decisionDashboardWriteStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errDecisionDashboardSnapshotTooLarge):
 		status = http.StatusRequestEntityTooLarge
+	case errors.Is(err, errDecisionDashboardNoChanges), errors.Is(err, ErrImplementationDecisionInvalid):
+		status = http.StatusBadRequest
 	case errors.Is(err, ErrImplementationDecisionConflict), errors.Is(err, ErrImplementationPreferenceConflict):
 		status = http.StatusConflict
 	case errors.Is(err, os.ErrNotExist):

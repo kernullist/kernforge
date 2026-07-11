@@ -1,15 +1,32 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+type implementationDecisionPromptProbeReader struct {
+	runtime  *runtimeState
+	observed bool
+	done     bool
+}
+
+func (reader *implementationDecisionPromptProbeReader) Read(buffer []byte) (int, error) {
+	reader.observed = reader.runtime != nil && reader.runtime.requestCancelPauses > 0
+	if reader.done {
+		return 0, io.EOF
+	}
+	reader.done = true
+	return copy(buffer, "rationale answer\n"), nil
+}
 
 func testImplementationDecisionToolInput() map[string]any {
 	return map[string]any{
@@ -204,6 +221,121 @@ func TestImplementationDecisionToolPersistsAndResumesPendingChoice(t *testing.T)
 	}
 }
 
+func TestImplementationDecisionToolCanceledRationaleResumesWithoutRepeatingChoice(t *testing.T) {
+	ws, session, decisions := testImplementationDecisionToolWorkspace(t)
+	choiceCalls := 0
+	ws.PromptUserChoice = func(question UserQuestion) (UserQuestionResult, error) {
+		choiceCalls++
+		return UserQuestionResult{Selected: []string{question.Options[0].Label}}, nil
+	}
+	ws.PromptUserText = func(UserTextQuestion) (UserTextResult, error) {
+		return UserTextResult{Canceled: true}, nil
+	}
+	tool := NewImplementationDecisionTool(ws)
+	result, err := tool.ExecuteDetailed(context.Background(), testImplementationDecisionToolInput())
+	if err != nil {
+		t.Fatalf("initial canceled rationale: %v", err)
+	}
+	if pending, _ := result.Meta["pending"].(bool); !pending || session.PendingImplementationDecision == nil || session.PendingImplementationDecision.Stage != implementationDecisionPendingRationale {
+		t.Fatalf("canceled rationale did not retain its stage: result=%#v pending=%#v", result, session.PendingImplementationDecision)
+	}
+	decisionID := session.PendingImplementationDecision.DecisionID
+	ws.PromptUserText = func(UserTextQuestion) (UserTextResult, error) {
+		return UserTextResult{Text: "The selected option best matches the required tradeoff."}, nil
+	}
+	result, err = NewImplementationDecisionTool(ws).ExecuteDetailed(context.Background(), map[string]any{"decision_id": decisionID})
+	if err != nil {
+		t.Fatalf("resume canceled rationale: %v", err)
+	}
+	if success, _ := result.Meta["success"].(bool); !success || choiceCalls != 1 || session.PendingImplementationDecision != nil {
+		t.Fatalf("rationale resume repeated choice or stayed pending: result=%#v choice_calls=%d pending=%#v", result, choiceCalls, session.PendingImplementationDecision)
+	}
+	records, err := decisions.List(ImplementationDecisionFilter{})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("resumed rationale was not recorded exactly once: records=%#v err=%v", records, err)
+	}
+}
+
+func TestClearCommandPreservesPendingImplementationDecision(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "test", "test", "", "default")
+	session.Messages = []Message{{Role: "user", Text: "clear this history"}}
+	session.Summary = "old summary"
+	session.PendingImplementationDecision = &PendingImplementationDecision{
+		DecisionID: "decision-clear-preserve",
+		Stage:      implementationDecisionPendingChoice,
+		Record: ImplementationDecisionRecord{
+			ID:      "decision-clear-preserve",
+			Problem: "Choose the implementation strategy",
+		},
+	}
+	runtime := &runtimeState{session: session, store: store, writer: io.Discard, ui: NewUI()}
+	if _, err := runtime.handleCommand(Command{Name: "clear"}); err != nil {
+		t.Fatalf("handle clear: %v", err)
+	}
+	if len(session.Messages) != 0 || session.Summary != "" || session.PendingImplementationDecision == nil {
+		t.Fatalf("clear removed pending state or retained history: %#v", session)
+	}
+	loaded, err := store.Load(session.ID)
+	if err != nil || loaded.PendingImplementationDecision == nil || loaded.PendingImplementationDecision.DecisionID != "decision-clear-preserve" {
+		t.Fatalf("clear did not persist pending state: loaded=%#v err=%v", loaded, err)
+	}
+}
+
+func TestImplementationDecisionToolAcceptsNilContextWithoutPanicking(t *testing.T) {
+	ws, session, _ := testImplementationDecisionToolWorkspace(t)
+	//lint:ignore SA1012 This regression test verifies the documented nil-context fallback.
+	result, err := NewImplementationDecisionTool(ws).ExecuteDetailed(nil, testImplementationDecisionToolInput())
+	if err != nil {
+		t.Fatalf("ExecuteDetailed nil context: %v", err)
+	}
+	if pending, _ := result.Meta["pending"].(bool); !pending || session.PendingImplementationDecision == nil {
+		t.Fatalf("nil context did not produce the normal headless pending result: result=%#v pending=%#v", result, session.PendingImplementationDecision)
+	}
+}
+
+func TestPromptUserTextUsesCancelablePendingSemantics(t *testing.T) {
+	t.Run("suspends outer request cancel watcher", func(t *testing.T) {
+		runtime := &runtimeState{interactive: true, writer: io.Discard, ui: NewUI()}
+		probe := &implementationDecisionPromptProbeReader{runtime: runtime}
+		runtime.reader = bufio.NewReader(probe)
+		result, err := runtime.promptUserText(UserTextQuestion{Question: "Why?", Required: true, MaxLength: 4096})
+		if err != nil || result.Canceled || result.Text != "rationale answer" {
+			t.Fatalf("promptUserText result=%#v err=%v", result, err)
+		}
+		if !probe.observed {
+			t.Fatal("rationale prompt did not suspend the outer request cancel watcher")
+		}
+	})
+
+	t.Run("treats detached stdin as a canceled prompt", func(t *testing.T) {
+		runtime := &runtimeState{
+			interactive: true,
+			reader:      bufio.NewReader(strings.NewReader("")),
+			writer:      io.Discard,
+			ui:          NewUI(),
+		}
+		result, err := runtime.promptUserText(UserTextQuestion{Question: "Why?", Required: true, MaxLength: 4096})
+		if err != nil || !result.Canceled {
+			t.Fatalf("detached rationale prompt result=%#v err=%v", result, err)
+		}
+	})
+
+	t.Run("accepts a final piped answer without newline", func(t *testing.T) {
+		runtime := &runtimeState{
+			interactive: true,
+			reader:      bufio.NewReader(strings.NewReader("final rationale")),
+			writer:      io.Discard,
+			ui:          NewUI(),
+		}
+		result, err := runtime.promptUserText(UserTextQuestion{Question: "Why?", Required: true, MaxLength: 4096})
+		if err != nil || result.Canceled || result.Text != "final rationale" {
+			t.Fatalf("final piped rationale result=%#v err=%v", result, err)
+		}
+	})
+}
+
 func TestImplementationDecisionToolResumesByDecisionIDAfterHistoryIsClearedAndReloaded(t *testing.T) {
 	ws, session, decisions := testImplementationDecisionToolWorkspace(t)
 	result, err := NewImplementationDecisionTool(ws).ExecuteDetailed(context.Background(), testImplementationDecisionToolInput())
@@ -263,6 +395,141 @@ func TestImplementationDecisionToolResumesByDecisionIDAfterHistoryIsClearedAndRe
 	records, err := decisions.List(ImplementationDecisionFilter{})
 	if err != nil || len(records) != 1 || records[0].ID != decisionID {
 		t.Fatalf("explicit resume did not store exactly the canonical decision: records=%#v err=%v", records, err)
+	}
+}
+
+func TestImplementationDecisionToolReloadRepairsRationaleStageWithoutSelection(t *testing.T) {
+	ws, session, decisions := testImplementationDecisionToolWorkspace(t)
+	tool := NewImplementationDecisionTool(ws)
+	record, _, err := tool.parseRecord(testImplementationDecisionToolInput())
+	if err != nil {
+		t.Fatalf("parseRecord: %v", err)
+	}
+	decisionID, err := implementationDecisionIDForRecord(record)
+	if err != nil {
+		t.Fatalf("implementationDecisionIDForRecord: %v", err)
+	}
+	record.ID = decisionID
+	session.PendingImplementationDecision = &PendingImplementationDecision{
+		DecisionID: decisionID,
+		Stage:      implementationDecisionPendingRationale,
+		Record:     record,
+	}
+	if err := ws.DecisionSessionStore.Save(session); err != nil {
+		t.Fatalf("Save malformed pending state: %v", err)
+	}
+	loaded, err := ws.DecisionSessionStore.Load(session.ID)
+	if err != nil {
+		t.Fatalf("Load malformed pending state: %v", err)
+	}
+
+	choiceCalls := 0
+	resumedWS := ws
+	resumedWS.DecisionSession = loaded
+	resumedWS.PromptUserChoice = func(question UserQuestion) (UserQuestionResult, error) {
+		choiceCalls++
+		return UserQuestionResult{Selected: []string{question.Options[0].Label}}, nil
+	}
+	resumedWS.PromptUserText = func(UserTextQuestion) (UserTextResult, error) {
+		return UserTextResult{Text: "The selected tradeoff is the best fit for this task."}, nil
+	}
+	result, err := NewImplementationDecisionTool(resumedWS).ExecuteDetailed(context.Background(), map[string]any{
+		"decision_id": decisionID,
+	})
+	if err != nil {
+		t.Fatalf("resume repaired pending state: %v", err)
+	}
+	if success, _ := result.Meta["success"].(bool); !success || choiceCalls != 1 || loaded.PendingImplementationDecision != nil {
+		t.Fatalf("invalid rationale stage did not recover through choice: result=%#v choice_calls=%d pending=%#v", result, choiceCalls, loaded.PendingImplementationDecision)
+	}
+	records, err := decisions.List(ImplementationDecisionFilter{})
+	if err != nil || len(records) != 1 || records[0].SelectedOptionID != "per-record-json" {
+		t.Fatalf("repaired decision was not stored correctly: records=%#v err=%v", records, err)
+	}
+}
+
+func TestImplementationDecisionToolDoesNotBypassDifferentPendingWithRecordedProposal(t *testing.T) {
+	ws, session, _ := testImplementationDecisionToolWorkspace(t)
+	ws.PromptUserChoice = func(question UserQuestion) (UserQuestionResult, error) {
+		return UserQuestionResult{Selected: []string{question.Options[0].Label}}, nil
+	}
+	ws.PromptUserText = func(UserTextQuestion) (UserTextResult, error) {
+		return UserTextResult{Text: "This is the appropriate tradeoff for the current task."}, nil
+	}
+	tool := NewImplementationDecisionTool(ws)
+	if _, err := tool.ExecuteDetailed(context.Background(), testImplementationDecisionToolInput()); err != nil {
+		t.Fatalf("record initial decision: %v", err)
+	}
+
+	session.PendingImplementationDecision = &PendingImplementationDecision{
+		DecisionID: "decision-other-pending",
+		Stage:      implementationDecisionPendingChoice,
+		Record: ImplementationDecisionRecord{
+			ID:      "decision-other-pending",
+			Problem: "Choose a different implementation strategy",
+		},
+	}
+	result, err := tool.ExecuteDetailed(context.Background(), testImplementationDecisionToolInput())
+	if err == nil {
+		t.Fatalf("recorded proposal bypassed a different pending decision: %#v", result)
+	}
+	if session.PendingImplementationDecision == nil || session.PendingImplementationDecision.DecisionID != "decision-other-pending" {
+		t.Fatalf("different pending decision was cleared or replaced: %#v", session.PendingImplementationDecision)
+	}
+}
+
+func TestImplementationDecisionToolRejectsTamperedPendingProposalBeforePrompt(t *testing.T) {
+	ws, session, _ := testImplementationDecisionToolWorkspace(t)
+	tool := NewImplementationDecisionTool(ws)
+	record, _, err := tool.parseRecord(testImplementationDecisionToolInput())
+	if err != nil {
+		t.Fatalf("parseRecord: %v", err)
+	}
+	decisionID, err := implementationDecisionIDForRecord(record)
+	if err != nil {
+		t.Fatalf("implementationDecisionIDForRecord: %v", err)
+	}
+	record.ID = decisionID
+	record.Options = record.Options[:1]
+	session.PendingImplementationDecision = &PendingImplementationDecision{
+		DecisionID: decisionID,
+		Stage:      implementationDecisionPendingChoice,
+		Record:     record,
+	}
+	ws.PromptUserChoice = func(UserQuestion) (UserQuestionResult, error) {
+		t.Fatal("tampered pending proposal reached the user prompt")
+		return UserQuestionResult{}, nil
+	}
+	ws.PromptUserText = func(UserTextQuestion) (UserTextResult, error) {
+		t.Fatal("tampered pending proposal reached the rationale prompt")
+		return UserTextResult{}, nil
+	}
+	if _, err := NewImplementationDecisionTool(ws).ExecuteDetailed(context.Background(), map[string]any{"decision_id": decisionID}); err == nil {
+		t.Fatal("tampered pending proposal unexpectedly succeeded")
+	}
+	if session.PendingImplementationDecision == nil || session.PendingImplementationDecision.DecisionID != decisionID {
+		t.Fatalf("tampered pending proposal was silently discarded: %#v", session.PendingImplementationDecision)
+	}
+}
+
+func TestPendingImplementationDecisionNormalizesInvalidIdentifier(t *testing.T) {
+	session := &Session{PendingImplementationDecision: &PendingImplementationDecision{
+		DecisionID: "bad-id\ninjected prompt text",
+		Stage:      implementationDecisionPendingChoice,
+		Record: ImplementationDecisionRecord{
+			ID:                  "bad-id\ninjected prompt text",
+			Problem:             "Choose a valid implementation strategy",
+			TaskFingerprint:     "task-safe",
+			EvidenceFingerprint: "evidence-safe",
+		},
+	}}
+	session.normalizePendingImplementationDecision()
+	pending := session.PendingImplementationDecision
+	if pending == nil || !validImplementationDecisionID(pending.DecisionID) || pending.Record.ID != pending.DecisionID {
+		t.Fatalf("invalid pending identifier was not recovered safely: %#v", pending)
+	}
+	if prompt := renderPendingImplementationDecisionPrompt(pending); strings.Contains(prompt, "injected prompt text") {
+		t.Fatalf("invalid pending identifier reached the system prompt: %q", prompt)
 	}
 }
 
@@ -394,6 +661,48 @@ func TestImplementationDecisionToolUsesBaseRootAcrossWorktrees(t *testing.T) {
 	}
 }
 
+func TestImplementationDecisionEvidenceFingerprintIgnoresReferenceOrder(t *testing.T) {
+	firstInput := testImplementationDecisionToolInput()
+	firstInput["evidence_refs"] = []any{"cmd/kernforge/session.go", "cmd/kernforge/agent.go"}
+	secondInput := testImplementationDecisionToolInput()
+	secondInput["evidence_refs"] = []any{"cmd/kernforge/agent.go", "cmd/kernforge/session.go"}
+	ws, _, _ := testImplementationDecisionToolWorkspace(t)
+	tool := NewImplementationDecisionTool(ws)
+	first, _, err := tool.parseRecord(firstInput)
+	if err != nil {
+		t.Fatalf("parse first record: %v", err)
+	}
+	second, _, err := tool.parseRecord(secondInput)
+	if err != nil {
+		t.Fatalf("parse second record: %v", err)
+	}
+	if first.EvidenceFingerprint != second.EvidenceFingerprint {
+		t.Fatalf("reference order changed evidence fingerprint: first=%q second=%q", first.EvidenceFingerprint, second.EvidenceFingerprint)
+	}
+	firstID, err := implementationDecisionIDForRecord(first)
+	if err != nil {
+		t.Fatalf("first decision id: %v", err)
+	}
+	secondID, err := implementationDecisionIDForRecord(second)
+	if err != nil {
+		t.Fatalf("second decision id: %v", err)
+	}
+	if firstID != secondID {
+		t.Fatalf("reference order changed decision id: first=%q second=%q", firstID, secondID)
+	}
+}
+
+func TestImplementationDecisionSelectionRejectsAmbiguousCallbackResult(t *testing.T) {
+	options := []ImplementationDecisionOption{{ID: "one", Label: "One"}, {ID: "two", Label: "Two"}}
+	if _, _, err := implementationDecisionSelection(options, UserQuestionResult{Selected: []string{"One"}, Custom: "custom"}); err == nil {
+		t.Fatal("listed and custom selection unexpectedly succeeded together")
+	}
+	selectedID, custom, err := implementationDecisionSelection(options, UserQuestionResult{Custom: "one"})
+	if err != nil || selectedID != "one" || custom != "" {
+		t.Fatalf("custom text matching a listed label was not canonicalized: id=%q custom=%q err=%v", selectedID, custom, err)
+	}
+}
+
 func TestImplementationDecisionToolRedactsPendingBeforeSessionSave(t *testing.T) {
 	ws, session, _ := testImplementationDecisionToolWorkspace(t)
 	secret := "sk-abcdefghijklmnopqrstuvwxyz123456"
@@ -460,6 +769,12 @@ func TestImplementationDecisionToolRejectsInvalidProposalBeforePendingSave(t *te
 				input["options"].([]any)[0].(map[string]any)["id"] = secret
 			},
 		},
+		{
+			name: "non finite confidence",
+			mutate: func(input map[string]any) {
+				input["detector_confidence"] = math.NaN()
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -523,6 +838,27 @@ func TestPendingImplementationDecisionFailsClosedForUnclassifiedMutation(t *test
 	}
 	if pendingImplementationDecisionBlocksToolCall(session, ToolCall{Name: "present_implementation_decision"}, registry) {
 		t.Fatal("pending decision blocked its own resume tool")
+	}
+}
+
+func TestPendingImplementationDecisionBlocksDirectRegistryMutation(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "test", "test", "", "default")
+	session.PendingImplementationDecision = &PendingImplementationDecision{
+		DecisionID: "decision-direct-registry",
+		Stage:      implementationDecisionPendingChoice,
+	}
+	probe := &implementationDecisionMutationProbeTool{}
+	registry := NewToolRegistryWithDefaultHookWorkspace(Workspace{Root: root, DecisionSession: session}, probe)
+	if _, err := registry.ExecuteDetailed(context.Background(), "write_file", `{}`); err == nil {
+		t.Fatal("direct registry mutation unexpectedly executed while a decision was pending")
+	}
+	if probe.calls != 0 {
+		t.Fatalf("direct registry mutation reached the tool: calls=%d", probe.calls)
+	}
+	readOnlyRegistry := NewToolRegistryWithDefaultHookWorkspace(Workspace{Root: root, DecisionSession: session}, NewListFilesTool(Workspace{Root: root}))
+	if _, err := readOnlyRegistry.ExecuteDetailed(context.Background(), "list_files", `{"path":"."}`); err != nil {
+		t.Fatalf("pending decision blocked an explicitly read-only registry tool: %v", err)
 	}
 }
 
@@ -654,6 +990,122 @@ func TestImplementationDecisionIncompleteInterventionRedactsPrimaryAndBackupSess
 		if !strings.Contains(string(data), "[REDACTED:openai_api_key]") {
 			t.Fatalf("session persistence did not retain an intervention redaction marker in %s: %s", path, data)
 		}
+	}
+}
+
+func TestSessionStoreSanitizesDecisionStateAtPersistenceBoundary(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "test", "test", "", "default")
+	secret := "sk-abcdefghijklmnopqrstuvwxyz123456"
+	input := testImplementationDecisionToolInput()
+	input["problem"] = "Choose storage for token " + secret
+	payload, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	call := ToolCall{
+		ID:        "decision-persistence-boundary",
+		Name:      "present_implementation_decision",
+		Arguments: string(payload),
+	}
+	session.Messages = []Message{
+		{Role: "assistant", ToolCalls: []ToolCall{call}},
+		{Role: "tool", ToolCallID: call.ID, ToolName: call.Name, Text: "invalid decision id " + secret, IsError: true},
+	}
+	session.LastTurnRuntimeState = &TurnRuntimeState{
+		Interventions: []RuntimeIntervention{{
+			Kind:      RuntimeInterventionLengthStop,
+			Reason:    "incomplete decision " + secret,
+			ToolCalls: []ToolCall{call},
+		}},
+	}
+	session.ConversationEvents = []ConversationEvent{{
+		Kind:     conversationEventKindToolError,
+		Summary:  "decision tool failed for " + secret,
+		Raw:      "invalid decision id " + secret,
+		Entities: map[string]string{"tool": call.Name},
+	}}
+	session.PendingImplementationDecision = &PendingImplementationDecision{
+		DecisionID: "decision-" + secret,
+		Stage:      implementationDecisionPendingChoice,
+		Record: ImplementationDecisionRecord{
+			ID:                 "decision-" + secret,
+			SessionID:          secret,
+			GoalID:             secret,
+			TaskFingerprint:    secret,
+			DecisionKind:       secret,
+			Problem:            "Choose storage for token " + secret,
+			DetectorConfidence: math.NaN(),
+		},
+	}
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	primaryPath := filepath.Join(store.Root(), session.ID+".json")
+	for _, path := range []string{primaryPath, sessionBackupPath(primaryPath)} {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("ReadFile %s: %v", path, readErr)
+		}
+		if strings.Contains(string(data), secret) {
+			t.Fatalf("session persistence boundary leaked decision data in %s: %s", path, data)
+		}
+		if !strings.Contains(string(data), "[REDACTED:openai_api_key]") {
+			t.Fatalf("session persistence boundary omitted redaction evidence in %s: %s", path, data)
+		}
+	}
+	if strings.Contains(session.PendingImplementationDecision.DecisionID, secret) || strings.Contains(session.PendingImplementationDecision.Record.SessionID, secret) {
+		t.Fatalf("session save left sensitive pending identifiers in live state: %#v", session.PendingImplementationDecision)
+	}
+	if math.IsNaN(session.PendingImplementationDecision.Record.DetectorConfidence) {
+		t.Fatalf("session save retained a non-JSON pending confidence: %#v", session.PendingImplementationDecision)
+	}
+}
+
+func TestDecisionSessionBackupSanitizerPreservesUnknownJSONFields(t *testing.T) {
+	secret := "sk-abcdefghijklmnopqrstuvwxyz123456"
+	raw := []byte(`{"messages":[{"role":"assistant","tool_calls":[{"name":"present_implementation_decision","arguments":"` + secret + `"}]}],"future_session_field":{"keep":true}}`)
+	sanitized := sanitizeImplementationDecisionSessionBytesForPersistence(raw)
+	if !json.Valid(sanitized) {
+		t.Fatalf("backup sanitizer produced invalid JSON: %s", sanitized)
+	}
+	if strings.Contains(string(sanitized), secret) || !strings.Contains(string(sanitized), "[REDACTED:openai_api_key]") {
+		t.Fatalf("backup sanitizer did not remove the secret: %s", sanitized)
+	}
+	if !strings.Contains(string(sanitized), `"future_session_field":{"keep":true}`) {
+		t.Fatalf("backup sanitizer dropped an unknown session field: %s", sanitized)
+	}
+}
+
+func TestSessionStoreReportsDecisionBackupWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "test", "test", "", "default")
+	secret := "sk-abcdefghijklmnopqrstuvwxyz123456"
+	payload := `{"problem":"choose storage for ` + secret + `"}`
+	session.Messages = []Message{{Role: "assistant", ToolCalls: []ToolCall{{
+		ID:        "decision-backup-failure",
+		Name:      "present_implementation_decision",
+		Arguments: payload,
+	}}}}
+	if err := os.MkdirAll(store.Root(), 0o755); err != nil {
+		t.Fatalf("MkdirAll store: %v", err)
+	}
+	primaryPath := filepath.Join(store.Root(), session.ID+".json")
+	if err := os.MkdirAll(sessionBackupPath(primaryPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll backup blocker: %v", err)
+	}
+	if err := store.Save(session); err == nil {
+		t.Fatal("session save silently ignored a backup write failure")
+	}
+	data, err := os.ReadFile(primaryPath)
+	if err != nil {
+		t.Fatalf("ReadFile primary after backup failure: %v", err)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatalf("primary session leaked decision data before reporting backup failure: %s", data)
 	}
 }
 

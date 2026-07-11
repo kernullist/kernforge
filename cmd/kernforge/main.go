@@ -1034,39 +1034,46 @@ func (rt *runtimeState) promptUserText(q UserTextQuestion) (UserTextResult, erro
 		prompt = localizedText(rt.cfg, "Enter your answer", "답변을 입력하세요")
 	}
 	var result UserTextResult
-	err := rt.withPinnedPrompt(func() error {
-		for {
-			answer, usedInteractive, lineErr := rt.readInteractiveLine(prompt+": ", "", nil, true)
-			if !usedInteractive {
-				fmt.Fprint(rt.writer, prompt+": ")
-				if rt.reader == nil {
-					return ErrPromptCanceled
+	var err error
+	rt.withRequestCancelSuspended(func() {
+		err = rt.withPinnedPrompt(func() error {
+			for {
+				answer, usedInteractive, lineErr := rt.readInteractiveLine(prompt+": ", "", nil, true)
+				if !usedInteractive {
+					fmt.Fprint(rt.writer, prompt+": ")
+					if rt.reader == nil {
+						return ErrPromptCanceled
+					}
+					var readErr error
+					answer, readErr = rt.reader.ReadString('\n')
+					if readErr != nil && !(errors.Is(readErr, io.EOF) && strings.TrimSpace(answer) != "") {
+						return readErr
+					}
+				} else if lineErr != nil {
+					if errors.Is(lineErr, ErrPromptCanceled) {
+						result.Canceled = true
+						return nil
+					}
+					return lineErr
 				}
-				var readErr error
-				answer, readErr = rt.reader.ReadString('\n')
-				if readErr != nil {
-					return readErr
+				answer = strings.TrimSpace(answer)
+				if q.Required && answer == "" {
+					fmt.Fprintln(rt.writer, rt.ui.warnLine(localizedText(rt.cfg, "A non-empty answer is required.", "빈 답변은 사용할 수 없습니다.")))
+					continue
 				}
-			} else if lineErr != nil {
-				if errors.Is(lineErr, ErrPromptCanceled) {
-					result.Canceled = true
-					return nil
+				if q.MaxLength > 0 && len(answer) > q.MaxLength {
+					fmt.Fprintln(rt.writer, rt.ui.warnLine(fmt.Sprintf(localizedText(rt.cfg, "The answer must be at most %d bytes.", "답변은 최대 %d바이트여야 합니다."), q.MaxLength)))
+					continue
 				}
-				return lineErr
+				result.Text = answer
+				return nil
 			}
-			answer = strings.TrimSpace(answer)
-			if q.Required && answer == "" {
-				fmt.Fprintln(rt.writer, rt.ui.warnLine(localizedText(rt.cfg, "A non-empty answer is required.", "빈 답변은 사용할 수 없습니다.")))
-				continue
-			}
-			if q.MaxLength > 0 && len(answer) > q.MaxLength {
-				fmt.Fprintln(rt.writer, rt.ui.warnLine(fmt.Sprintf(localizedText(rt.cfg, "The answer must be at most %d bytes.", "답변은 최대 %d바이트여야 합니다."), q.MaxLength)))
-				continue
-			}
-			result.Text = answer
-			return nil
-		}
+		})
 	})
+	if errors.Is(err, ErrPromptCanceled) || errors.Is(err, io.EOF) {
+		result.Canceled = true
+		return result, nil
+	}
 	return result, err
 }
 

@@ -55,6 +55,23 @@ func startDecisionDashboardTestServer(t *testing.T) (*DecisionDashboardServer, *
 	}
 }
 
+func waitDecisionDashboardProfileRebuild(t *testing.T, server *DecisionDashboardServer) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		server.mu.Lock()
+		running := server.profileRebuildRun
+		server.mu.Unlock()
+		if !running {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("automatic profile rebuild did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (c *decisionDashboardTestClient) exchange(t *testing.T) {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"token": c.token})
@@ -222,6 +239,203 @@ func TestDecisionDashboardRevisionConflictAndStrictJSON(t *testing.T) {
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown JSON field status=%d", response.StatusCode)
 	}
+}
+
+func TestDecisionDashboardPatchRebuildsSummaryAndRejectsAmbiguousOrEmptyUpdates(t *testing.T) {
+	_, decisions, _, client := startDecisionDashboardTestServer(t)
+	client.exchange(t)
+	record, err := decisions.Put(testImplementationDecisionRecord())
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	response := client.request(t, http.MethodPatch, "/api/decisions/"+record.ID, map[string]any{
+		"expected_revision": record.Revision,
+	}, true, client.origin)
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty decision patch status=%d", response.StatusCode)
+	}
+	response = client.request(t, http.MethodPatch, "/api/decisions/"+record.ID, map[string]any{
+		"expected_revision":  record.Revision,
+		"selected_option_id": "single-json",
+		"custom_selection":   "SQLite",
+	}, true, client.origin)
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("ambiguous decision patch status=%d", response.StatusCode)
+	}
+	for name, patch := range map[string]map[string]any{
+		"empty decision kind": {
+			"expected_revision": record.Revision,
+			"decision_kind":     "",
+		},
+		"oversized decision kind": {
+			"expected_revision": record.Revision,
+			"decision_kind":     strings.Repeat("x", 129),
+		},
+		"invalid risk level": {
+			"expected_revision": record.Revision,
+			"risk_level":        "urgent",
+		},
+		"unknown selected option": {
+			"expected_revision":  record.Revision,
+			"selected_option_id": "not-present",
+		},
+		"selected option rejected": {
+			"expected_revision": record.Revision,
+			"rejected_reasons": []map[string]any{
+				{"option_id": "per-record-json", "reason": "cannot reject the selected option"},
+				{"option_id": "single-json", "reason": "still rejected"},
+			},
+		},
+		"duplicate rejection": {
+			"expected_revision": record.Revision,
+			"rejected_reasons": []map[string]any{
+				{"option_id": "single-json", "reason": "first"},
+				{"option_id": "single-json", "reason": "second"},
+			},
+		},
+	} {
+		response = client.request(t, http.MethodPatch, "/api/decisions/"+record.ID, patch, true, client.origin)
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s status=%d", name, response.StatusCode)
+		}
+	}
+	current, ok, err := decisions.Get(record.ID)
+	if err != nil || !ok || current.Revision != record.Revision {
+		t.Fatalf("rejected patches changed the decision: ok=%v err=%v current=%#v", ok, err, current)
+	}
+
+	response = client.request(t, http.MethodPatch, "/api/decisions/"+record.ID, map[string]any{
+		"expected_revision":    record.Revision,
+		"selected_option_id":   "single-json",
+		"custom_selection":     "",
+		"selection_reason_raw": "one portable document is easier to hand off",
+		"rejected_reasons":     []map[string]any{{"option_id": "per-record-json", "reason": "separate records add packaging work"}},
+	}, true, client.origin)
+	var updated ImplementationDecisionRecord
+	if err := json.NewDecoder(response.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode updated decision: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || updated.SelectedOptionID != "single-json" {
+		t.Fatalf("valid decision patch status=%d updated=%#v", response.StatusCode, updated)
+	}
+	if !strings.Contains(updated.SummarySentence, "Single JSON") || !strings.Contains(updated.SummarySentence, "one portable document") || strings.Contains(updated.SummarySentence, "avoids cross-process lost updates") {
+		t.Fatalf("decision summary was not rebuilt from the new revision: %q", updated.SummarySentence)
+	}
+}
+
+func TestDecisionDashboardPatchPreservesCuratedEvidenceAndRejectsMaterialNoop(t *testing.T) {
+	server, decisions, profiles, client := startDecisionDashboardTestServer(t)
+	client.exchange(t)
+	record := testImplementationDecisionRecord()
+	record.ID = "decision-curated-dashboard-edit"
+	record.SummarySentence = "Curated user summary"
+	record.Provenance.Selection = "model"
+	record.Provenance.Rationale = "model"
+	record.Provenance.Summary = "user"
+	stored, err := decisions.Put(record)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	initialProfile, err := profiles.Rebuild(decisions)
+	if err != nil {
+		t.Fatalf("initial profile Rebuild: %v", err)
+	}
+
+	response := client.request(t, http.MethodPatch, "/api/decisions/"+stored.ID, map[string]any{
+		"expected_revision": stored.Revision,
+		"project_alias":     stored.ProjectAlias,
+	}, true, client.origin)
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("material no-op status=%d", response.StatusCode)
+	}
+	current, ok, err := decisions.Get(stored.ID)
+	if err != nil || !ok || current.Revision != stored.Revision {
+		t.Fatalf("material no-op changed the decision: ok=%v record=%#v err=%v", ok, current, err)
+	}
+	profileAfterNoop, err := profiles.Load()
+	if err != nil || profileAfterNoop.Revision != initialProfile.Revision {
+		t.Fatalf("material no-op changed the profile: profile=%#v err=%v", profileAfterNoop, err)
+	}
+
+	response = client.request(t, http.MethodPatch, "/api/decisions/"+stored.ID, map[string]any{
+		"expected_revision": stored.Revision,
+		"tags":              []string{"curated"},
+	}, true, client.origin)
+	var metadataUpdated ImplementationDecisionRecord
+	if err := json.NewDecoder(response.Body).Decode(&metadataUpdated); err != nil {
+		t.Fatalf("decode metadata update: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || metadataUpdated.SummarySentence != stored.SummarySentence || metadataUpdated.Provenance != stored.Provenance {
+		t.Fatalf("metadata edit changed curated evidence: status=%d record=%#v", response.StatusCode, metadataUpdated)
+	}
+
+	response = client.request(t, http.MethodPatch, "/api/decisions/"+stored.ID, map[string]any{
+		"expected_revision":    metadataUpdated.Revision,
+		"selection_reason_raw": "the rationale was explicitly corrected by the user",
+	}, true, client.origin)
+	var rationaleUpdated ImplementationDecisionRecord
+	if err := json.NewDecoder(response.Body).Decode(&rationaleUpdated); err != nil {
+		t.Fatalf("decode rationale update: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || rationaleUpdated.SummarySentence == stored.SummarySentence || rationaleUpdated.Provenance.Rationale != "user" || rationaleUpdated.Provenance.Summary != "runtime" || rationaleUpdated.Provenance.Selection != "model" {
+		t.Fatalf("rationale edit did not update evidence provenance correctly: status=%d record=%#v", response.StatusCode, rationaleUpdated)
+	}
+	waitDecisionDashboardProfileRebuild(t, server)
+}
+
+func TestDecisionDashboardBootstrapUsesNewestProjectAlias(t *testing.T) {
+	_, decisions, _, client := startDecisionDashboardTestServer(t)
+	client.exchange(t)
+	baseTime := time.Now().UTC().Add(-time.Hour)
+	oldRecord := testImplementationDecisionRecord()
+	oldRecord.ID = "decision-project-alias-old"
+	oldRecord.ProjectID = "project-alias-order"
+	oldRecord.ProjectAlias = "Old alias"
+	oldRecord.CreatedAt = baseTime
+	oldRecord.UpdatedAt = baseTime
+	if _, err := decisions.Put(oldRecord); err != nil {
+		t.Fatalf("Put old alias: %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	newRecord := testImplementationDecisionRecord()
+	newRecord.ID = "decision-project-alias-new"
+	newRecord.ProjectID = oldRecord.ProjectID
+	newRecord.ProjectAlias = "New alias"
+	newRecord.CreatedAt = baseTime.Add(time.Minute)
+	newRecord.UpdatedAt = baseTime.Add(time.Minute)
+	if _, err := decisions.Put(newRecord); err != nil {
+		t.Fatalf("Put new alias: %v", err)
+	}
+	response := client.request(t, http.MethodGet, "/api/bootstrap", nil, false, "")
+	var payload struct {
+		Projects []struct {
+			ID    string `json:"id"`
+			Alias string `json:"alias"`
+		} `json:"projects"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap status=%d", response.StatusCode)
+	}
+	for _, project := range payload.Projects {
+		if project.ID == oldRecord.ProjectID {
+			if project.Alias != newRecord.ProjectAlias {
+				t.Fatalf("project alias=%q, want newest %q", project.Alias, newRecord.ProjectAlias)
+			}
+			return
+		}
+	}
+	t.Fatalf("project %s missing from bootstrap: %#v", oldRecord.ProjectID, payload.Projects)
 }
 
 func TestDecisionDashboardPaginatesWithoutHidingRecords(t *testing.T) {
@@ -639,6 +853,266 @@ func TestDecisionDashboardReportsDurablyStaleProfile(t *testing.T) {
 	}
 }
 
+func TestDecisionDashboardBootstrapAcceptsProfileRepairedByAnotherProcess(t *testing.T) {
+	server, decisions, profiles, client := startDecisionDashboardTestServer(t)
+	client.exchange(t)
+	if _, err := decisions.Put(testImplementationDecisionRecord()); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := profiles.Rebuild(decisions); err != nil {
+		t.Fatalf("external Rebuild: %v", err)
+	}
+	server.mu.Lock()
+	server.profileDirty = true
+	server.profileError = "earlier rebuild failed"
+	server.mu.Unlock()
+
+	response := client.request(t, http.MethodGet, "/api/bootstrap", nil, false, "")
+	defer response.Body.Close()
+	var payload struct {
+		Profile struct {
+			Dirty bool   `json:"dirty"`
+			Error string `json:"error"`
+		} `json:"profile"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if response.StatusCode != http.StatusOK || payload.Profile.Dirty || payload.Profile.Error != "" {
+		t.Fatalf("repaired canonical profile remained dirty: status=%d profile=%#v", response.StatusCode, payload.Profile)
+	}
+}
+
+func TestDecisionDashboardBootstrapDoesNotHideConcurrentProfileInvalidation(t *testing.T) {
+	server, decisions, profiles, client := startDecisionDashboardTestServer(t)
+	client.exchange(t)
+	record, err := decisions.Put(testImplementationDecisionRecord())
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := profiles.Rebuild(decisions); err != nil {
+		t.Fatalf("initial Rebuild: %v", err)
+	}
+	unlockProfile, err := lockImplementationDecisionFile(profiles.Path + ".lock")
+	if err != nil {
+		t.Fatalf("lock profile: %v", err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			unlockProfile()
+		}
+	}()
+
+	afterRead := make(chan struct{})
+	releaseRead := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseRead)
+		}
+	}()
+	server.mu.Lock()
+	server.bootstrapAfterDecisionRead = func() {
+		close(afterRead)
+		<-releaseRead
+	}
+	server.mu.Unlock()
+	type bootstrapResult struct {
+		response *http.Response
+		err      error
+	}
+	resultChannel := make(chan bootstrapResult, 1)
+	go func() {
+		request, requestErr := http.NewRequest(http.MethodGet, client.origin+"/api/bootstrap", nil)
+		if requestErr == nil {
+			request.Header.Set("X-KernForge-Session", client.proof)
+		}
+		if requestErr != nil {
+			resultChannel <- bootstrapResult{err: requestErr}
+			return
+		}
+		response, requestErr := client.client.Do(request)
+		resultChannel <- bootstrapResult{response: response, err: requestErr}
+	}()
+	select {
+	case <-afterRead:
+	case <-time.After(2 * time.Second):
+		t.Fatal("bootstrap did not reach the decision/profile read boundary")
+	}
+	patchResponse := client.request(t, http.MethodPatch, "/api/decisions/"+record.ID, map[string]any{
+		"expected_revision":    record.Revision,
+		"selection_reason_raw": "concurrent profile invalidation",
+	}, true, client.origin)
+	patchResponse.Body.Close()
+	if patchResponse.StatusCode != http.StatusOK {
+		t.Fatalf("concurrent patch status=%d", patchResponse.StatusCode)
+	}
+	close(releaseRead)
+	released = true
+	result := <-resultChannel
+	if result.err != nil {
+		t.Fatalf("bootstrap request: %v", result.err)
+	}
+	defer result.response.Body.Close()
+	var payload struct {
+		Profile struct {
+			Dirty      bool `json:"dirty"`
+			Rebuilding bool `json:"rebuilding"`
+		} `json:"profile"`
+	}
+	if err := json.NewDecoder(result.response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	if result.response.StatusCode != http.StatusOK || !payload.Profile.Dirty || !payload.Profile.Rebuilding {
+		t.Fatalf("concurrent invalidation was hidden: status=%d profile=%#v", result.response.StatusCode, payload.Profile)
+	}
+	server.mu.Lock()
+	server.bootstrapAfterDecisionRead = nil
+	server.mu.Unlock()
+	unlockProfile()
+	locked = false
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		server.mu.Lock()
+		running := server.profileRebuildRun
+		server.mu.Unlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("automatic profile rebuild did not stop after the lock was released")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestDecisionDashboardMutationDoesNotWaitForAutomaticProfileRebuild(t *testing.T) {
+	server, decisions, profiles, client := startDecisionDashboardTestServer(t)
+	client.exchange(t)
+	record, err := decisions.Put(testImplementationDecisionRecord())
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	unlockProfile, err := lockImplementationDecisionFile(profiles.Path + ".lock")
+	if err != nil {
+		t.Fatalf("lock profile: %v", err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			unlockProfile()
+		}
+	}()
+
+	started := time.Now()
+	response := client.request(t, http.MethodPatch, "/api/decisions/"+record.ID, map[string]any{
+		"expected_revision":    record.Revision,
+		"selection_reason_raw": "updated while the profile lock is held",
+	}, true, client.origin)
+	var updated ImplementationDecisionRecord
+	if err := json.NewDecoder(response.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode mutation response: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || updated.Revision != record.Revision+1 {
+		t.Fatalf("mutation response status=%d record=%#v", response.StatusCode, updated)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("mutation waited for the blocked automatic profile rebuild: %s", elapsed)
+	}
+	server.mu.Lock()
+	running := server.profileRebuildRun
+	dirty := server.profileDirty
+	server.mu.Unlock()
+	if !running || !dirty {
+		t.Fatalf("blocked automatic rebuild state running=%v dirty=%v", running, dirty)
+	}
+	bootstrapResponse := client.request(t, http.MethodGet, "/api/bootstrap", nil, false, "")
+	var bootstrapPayload struct {
+		Profile struct {
+			Dirty      bool `json:"dirty"`
+			Rebuilding bool `json:"rebuilding"`
+		} `json:"profile"`
+	}
+	if err := json.NewDecoder(bootstrapResponse.Body).Decode(&bootstrapPayload); err != nil {
+		t.Fatalf("decode rebuilding bootstrap: %v", err)
+	}
+	bootstrapResponse.Body.Close()
+	if bootstrapResponse.StatusCode != http.StatusOK || !bootstrapPayload.Profile.Dirty || !bootstrapPayload.Profile.Rebuilding {
+		t.Fatalf("blocked rebuild was not exposed to the dashboard: status=%d profile=%#v", bootstrapResponse.StatusCode, bootstrapPayload.Profile)
+	}
+
+	unlockProfile()
+	locked = false
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		profile, loadErr := profiles.Load()
+		if loadErr == nil && profile.Revision > 0 && profile.SourceHash == implementationPreferenceSourceHash([]ImplementationDecisionRecord{updated}) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("automatic profile rebuild did not catch up: profile=%#v err=%v", profile, loadErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitDecisionDashboardProfileRebuild(t, server)
+}
+
+func TestDecisionDashboardCloseCancelsBlockedAutomaticProfileRebuild(t *testing.T) {
+	server, decisions, profiles, client := startDecisionDashboardTestServer(t)
+	client.exchange(t)
+	record, err := decisions.Put(testImplementationDecisionRecord())
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	unlockProfile, err := lockImplementationDecisionFile(profiles.Path + ".lock")
+	if err != nil {
+		t.Fatalf("lock profile: %v", err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			unlockProfile()
+		}
+	}()
+	response := client.request(t, http.MethodPatch, "/api/decisions/"+record.ID, map[string]any{
+		"expected_revision":    record.Revision,
+		"selection_reason_raw": "close while automatic rebuild is blocked",
+	}, true, client.origin)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("patch status=%d", response.StatusCode)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	started := time.Now()
+	closeErr := server.Close(ctx)
+	cancel()
+	if closeErr != nil {
+		t.Fatalf("Close: %v", closeErr)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Close waited too long for a canceled rebuild: %s", elapsed)
+	}
+	server.mu.Lock()
+	running := server.profileRebuildRun
+	server.mu.Unlock()
+	if running {
+		t.Fatal("profile rebuild worker remained active after Close")
+	}
+	unlockProfile()
+	locked = false
+	time.Sleep(50 * time.Millisecond)
+	profile, err := profiles.Load()
+	if err != nil {
+		t.Fatalf("Load profile after Close: %v", err)
+	}
+	if profile.Revision != 0 {
+		t.Fatalf("canceled rebuild wrote a profile after Close: %#v", profile)
+	}
+}
+
 func TestDecisionDashboardRejectsOversizedJSON(t *testing.T) {
 	_, decisions, _, client := startDecisionDashboardTestServer(t)
 	client.exchange(t)
@@ -705,6 +1179,11 @@ func TestDecisionDashboardProfileUpdateUsesRevisionCAS(t *testing.T) {
 		t.Fatalf("rebuild status=%d profile=%#v", response.StatusCode, profile)
 	}
 	path := "/api/profiles/" + url.PathEscape(profile.Rules[0].ID)
+	response = client.request(t, http.MethodPatch, path, map[string]any{"expected_revision": profile.Revision}, true, client.origin)
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty profile patch status=%d", response.StatusCode)
+	}
 	response = client.request(t, http.MethodPatch, path, map[string]any{"expected_revision": profile.Revision, "pinned": true}, true, client.origin)
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
@@ -764,7 +1243,7 @@ func TestDecisionDashboardDecisionListCancelsStaleRequests(t *testing.T) {
 		t.Fatalf("ReadFile app.js: %v", err)
 	}
 	text := string(data)
-	start := strings.Index(text, "async function loadDecisions(appendPage = false)")
+	start := strings.Index(text, "async function loadDecisions(appendPage = false, preserveSelection = false)")
 	if start < 0 {
 		t.Fatal("loadDecisions function is missing")
 	}
@@ -777,9 +1256,164 @@ func TestDecisionDashboardDecisionListCancelsStaleRequests(t *testing.T) {
 	controllerIndex := strings.Index(loadFunction, "const controller = new AbortController();")
 	signalIndex := strings.Index(loadFunction, "signal: controller.signal")
 	abortErrorIndex := strings.Index(loadFunction, `error.name === "AbortError"`)
-	throwIndex := strings.Index(loadFunction, "throw error;")
-	if abortIndex < 0 || controllerIndex < 0 || signalIndex < 0 || abortErrorIndex < 0 || throwIndex < 0 || abortIndex > controllerIndex || controllerIndex > signalIndex || signalIndex > abortErrorIndex || abortErrorIndex > throwIndex {
-		t.Fatalf("loadDecisions must abort the previous request and silently ignore AbortError before rethrowing other failures:\n%s", loadFunction)
+	expiredIndex := strings.Index(loadFunction, "error.status === 400 || error.status === 409")
+	reloadIndex := strings.Index(loadFunction, "return loadDecisions(false, preserveSelection);")
+	toastIndex := strings.LastIndex(loadFunction, "showToast(error.message, true);")
+	if abortIndex < 0 || controllerIndex < 0 || signalIndex < 0 || abortErrorIndex < 0 || expiredIndex < 0 || reloadIndex < 0 || toastIndex < 0 || abortIndex > controllerIndex || controllerIndex > signalIndex || signalIndex > abortErrorIndex || abortErrorIndex > expiredIndex || expiredIndex > reloadIndex || reloadIndex > toastIndex {
+		t.Fatalf("loadDecisions must abort stale requests, recover expired cursors, and surface other failures:\n%s", loadFunction)
+	}
+}
+
+func TestDecisionDashboardMutationRefreshGuardsSelectionAndRefreshesFiltersFirst(t *testing.T) {
+	data, err := decisionDashboardAssets.ReadFile("decision_dashboard_assets/app.js")
+	if err != nil {
+		t.Fatalf("ReadFile app.js: %v", err)
+	}
+	text := string(data)
+	start := strings.Index(text, "async function refreshAfterDecisionMutation(updated, selectionGeneration)")
+	if start < 0 {
+		t.Fatal("decision mutation refresh helper is missing")
+	}
+	endOffset := strings.Index(text[start:], "async function refreshConflictedDecision")
+	if endOffset < 0 {
+		t.Fatal("decision mutation refresh helper is missing")
+	}
+	functionText := text[start : start+endOffset]
+	guardIndex := strings.Index(functionText, "if (selectionStillTargets(updated.id, selectionGeneration))")
+	bootstrapIndex := strings.Index(functionText, "await loadBootstrap();")
+	recheckIndex := strings.Index(functionText, "const preserveSelection = state.selectedID !== updated.id;")
+	listIndex := strings.Index(functionText, "await loadDecisions(false, preserveSelection);")
+	renderIndex := strings.Index(functionText, "renderUpdatedDecision(updated);")
+	latestIndex := strings.Index(functionText, "Number(listed.revision) >= Number(updated.revision)")
+	latestRenderIndex := strings.Index(functionText, "renderUpdatedDecision(latest);")
+	pollIndex := strings.Index(functionText, "void pollProfileRebuild();")
+	if guardIndex < 0 || bootstrapIndex < 0 || recheckIndex < 0 || listIndex < 0 || renderIndex < 0 || latestIndex < 0 || latestRenderIndex < 0 || pollIndex < 0 || renderIndex > bootstrapIndex || bootstrapIndex > recheckIndex || recheckIndex > listIndex || listIndex > latestIndex || latestIndex > latestRenderIndex || latestRenderIndex > pollIndex {
+		t.Fatalf("decision mutation refresh must preserve newer selection and refresh filters before the list:\n%s", functionText)
+	}
+	pollStart := strings.Index(text, "async function pollProfileRebuild()")
+	if pollStart < 0 {
+		t.Fatal("profile rebuild polling helper is missing")
+	}
+	pollEndOffset := strings.Index(text[pollStart:], "function populateSelect")
+	if pollEndOffset < 0 {
+		t.Fatal("profile rebuild polling helper boundary is missing")
+	}
+	pollFunction := text[pollStart : pollStart+pollEndOffset]
+	if !strings.Contains(pollFunction, "await loadBootstrap()") || !strings.Contains(pollFunction, `state.view === "preferences"`) || !strings.Contains(pollFunction, "await loadProfile()") {
+		t.Fatalf("profile rebuild polling does not reconcile dashboard and preference state:\n%s", pollFunction)
+	}
+	loadStart := strings.Index(text, "async function loadDecisions(appendPage = false, preserveSelection = false)")
+	loadEndOffset := strings.Index(text[loadStart:], "function renderDecisionList()")
+	if loadStart < 0 || loadEndOffset < 0 {
+		t.Fatal("decision list loader is missing")
+	}
+	loadFunction := text[loadStart : loadStart+loadEndOffset]
+	selectionCapture := strings.Index(loadFunction, "const selectionGeneration = state.selectionRequestGeneration;")
+	selectionGuard := strings.Index(loadFunction, "selectionGeneration !== state.selectionRequestGeneration")
+	selectionClear := strings.Index(loadFunction, `state.selectedID = "";`)
+	inspectorReconcile := strings.Index(loadFunction, "Number(listedSelection.revision) > Number(state.selectedRecord.revision)")
+	dirtyEditGuard := strings.Index(loadFunction, "state.inspectorEditing && state.inspectorEditDirty")
+	if selectionCapture < 0 || selectionGuard < 0 || selectionClear < 0 || inspectorReconcile < 0 || dirtyEditGuard < 0 || selectionCapture > selectionGuard || selectionGuard > selectionClear || selectionClear > inspectorReconcile || inspectorReconcile > dirtyEditGuard {
+		t.Fatalf("decision list responses must not clear a selection changed while the request was in flight:\n%s", loadFunction)
+	}
+	selectionStart := strings.Index(text, "async function selectDecision(id, sourceElement = null, moveFocus = true)")
+	if selectionStart < 0 {
+		t.Fatal("abortable decision selection helper is missing")
+	}
+	selectionEndOffset := strings.Index(text[selectionStart:], "function invalidatePendingDecisionSelection()")
+	if selectionEndOffset < 0 {
+		t.Fatal("abortable decision selection helper is missing")
+	}
+	selectionFunction := text[selectionStart : selectionStart+selectionEndOffset]
+	if !strings.Contains(selectionFunction, "state.selectionAbortController.abort()") || !strings.Contains(selectionFunction, "signal: controller.signal") || !strings.Contains(selectionFunction, `error.name === "AbortError"`) {
+		t.Fatalf("decision selection requests are not abortable:\n%s", selectionFunction)
+	}
+	bindStart := strings.Index(text, "function bindEvents()")
+	if bindStart < 0 {
+		t.Fatal("dashboard event bindings are missing")
+	}
+	bindFunction := text[bindStart:]
+	if strings.Count(bindFunction, "invalidatePendingDecisionSelection();") < 6 {
+		t.Fatalf("scope and filter changes do not invalidate in-flight selections:\n%s", bindFunction)
+	}
+	committedStart := strings.Index(text, "async function refreshCommittedDecisionMutation")
+	if committedStart < 0 {
+		t.Fatal("committed decision refresh helper is missing")
+	}
+	committedEndOffset := strings.Index(text[committedStart:], "async function refreshConflictedDecision")
+	if committedEndOffset < 0 {
+		t.Fatal("committed decision refresh helper is missing")
+	}
+	committedFunction := text[committedStart : committedStart+committedEndOffset]
+	if !strings.Contains(committedFunction, "The change was committed, but the dashboard refresh failed") {
+		t.Fatalf("post-commit refresh failures are not distinguished from mutation failures:\n%s", committedFunction)
+	}
+	for _, functionName := range []string{"renderDecisionEdit(record)", "deleteDecision(record)", "restoreDecision(record)"} {
+		functionStart := strings.Index(text, "function "+functionName)
+		if strings.HasPrefix(functionName, "delete") || strings.HasPrefix(functionName, "restore") {
+			functionStart = strings.Index(text, "async function "+functionName)
+		}
+		if functionStart < 0 {
+			t.Fatalf("%s is missing", functionName)
+		}
+		window := text[functionStart:]
+		if len(window) > 7000 {
+			window = window[:7000]
+		}
+		if !strings.Contains(window, "selectionGeneration") || !strings.Contains(window, "refreshCommittedDecisionMutation") {
+			t.Fatalf("%s does not guard its async mutation result", functionName)
+		}
+		if functionName == "renderDecisionEdit(record)" && (!strings.Contains(window, "Object.keys(patch).length === 1") || !strings.Contains(window, "rejectionListsEqual")) {
+			t.Fatalf("%s does not build a sparse material patch", functionName)
+		}
+	}
+}
+
+func TestDecisionDashboardProfileResponsesDoNotOverwriteNewerRevision(t *testing.T) {
+	data, err := decisionDashboardAssets.ReadFile("decision_dashboard_assets/app.js")
+	if err != nil {
+		t.Fatalf("ReadFile app.js: %v", err)
+	}
+	text := string(data)
+	start := strings.Index(text, "function applyProfileIfCurrent(profile, allowRevisionReset = false)")
+	if start < 0 {
+		t.Fatal("profile revision arbitration helper is missing")
+	}
+	endOffset := strings.Index(text[start:], "async function loadProfile()")
+	if endOffset < 0 {
+		t.Fatal("profile revision arbitration helper is missing")
+	}
+	functionText := text[start : start+endOffset]
+	if !strings.Contains(functionText, "incomingGeneratedAt <= currentGeneratedAt") || !strings.Contains(functionText, "state.profile = profile") {
+		t.Fatalf("profile response arbitration does not reject older revisions:\n%s", functionText)
+	}
+	for _, functionName := range []string{"loadProfile", "performProfileRuleUpdate", "performProfileRebuild"} {
+		start = strings.Index(text, "function "+functionName)
+		if strings.HasPrefix(functionName, "load") || strings.HasPrefix(functionName, "perform") {
+			start = strings.Index(text, "async function "+functionName)
+		}
+		if start < 0 {
+			t.Fatalf("%s is missing", functionName)
+		}
+		window := text[start:]
+		if len(window) > 2500 {
+			window = window[:2500]
+		}
+		if !strings.Contains(window, "applyProfileIfCurrent(profile, generation === state.profileRequestGeneration)") {
+			t.Fatalf("%s bypasses profile revision arbitration", functionName)
+		}
+		if functionName == "loadProfile" && !strings.Contains(window, "if (generation !== state.profileRequestGeneration) return;") {
+			t.Fatalf("%s accepts a stale request generation", functionName)
+		}
+		if functionName == "performProfileRebuild" {
+			postIndex := strings.Index(window, `profile = await api("/api/profiles/rebuild"`)
+			applyIndex := strings.Index(window, "applyProfileIfCurrent(profile, generation === state.profileRequestGeneration);")
+			bootstrapIndex := strings.Index(window, "await loadBootstrap();")
+			committedErrorIndex := strings.Index(window, "Preference profile was rebuilt, but the dashboard status refresh failed")
+			if postIndex < 0 || applyIndex < 0 || bootstrapIndex < 0 || committedErrorIndex < 0 || postIndex > applyIndex || applyIndex > bootstrapIndex || bootstrapIndex > committedErrorIndex {
+				t.Fatalf("profile rebuild must distinguish a committed rebuild from a later refresh failure:\n%s", window)
+			}
+		}
 	}
 }
 

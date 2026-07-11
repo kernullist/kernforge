@@ -1,11 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func preferenceDecision(id string, project string, domain string, selected string) ImplementationDecisionRecord {
@@ -20,6 +24,273 @@ func preferenceDecision(id string, project string, domain string, selected strin
 		record.RejectedReasons = []ImplementationDecisionRejection{{OptionID: "single-json", Reason: "unsafe concurrent update"}}
 	}
 	return normalizeImplementationDecisionRecord(record, record.UpdatedAt)
+}
+
+func TestImplementationPreferenceSourceHashIncludesDecisionContent(t *testing.T) {
+	left := preferenceDecision("decision-same-lifecycle", "project-a", "tooling", "per-record-json")
+	right := left
+	right.SelectedOptionID = "single-json"
+	right.RejectedReasons = []ImplementationDecisionRejection{{OptionID: "per-record-json", Reason: "simpler"}}
+	if implementationPreferenceSourceHash([]ImplementationDecisionRecord{left}) == implementationPreferenceSourceHash([]ImplementationDecisionRecord{right}) {
+		t.Fatal("source hash ignored preference-affecting decision content")
+	}
+}
+
+func TestBuildImplementationPreferenceProfileCapsStoredEvidence(t *testing.T) {
+	records := make([]ImplementationDecisionRecord, 0, 2050)
+	for index := 0; index < 2050; index++ {
+		records = append(records, preferenceDecision(fmt.Sprintf("decision-%04d", index), "project-a", "tooling", "per-record-json"))
+	}
+	profile := BuildImplementationPreferenceProfile(records)
+	profile.Revision = 1
+	if err := validateImplementationPreferenceProfile(profile); err != nil {
+		t.Fatalf("large evidence set produced an unsavable profile: %v", err)
+	}
+	for _, rule := range profile.Rules {
+		if len(rule.SupportDecisionIDs) > 2048 || len(rule.ContradictionDecisionIDs) > 2048 || len(rule.SupportProjectIDs) > 2048 {
+			t.Fatalf("stored evidence exceeded its bound: %#v", rule)
+		}
+	}
+}
+
+func TestImplementationPreferenceProfileLoadRejectsMissingSchema(t *testing.T) {
+	root := t.TempDir()
+	decisions := &ImplementationDecisionStore{Dir: filepath.Join(root, "records")}
+	for _, record := range []ImplementationDecisionRecord{
+		preferenceDecision("decision-1", "project-a", "tooling", "per-record-json"),
+		preferenceDecision("decision-2", "project-a", "tooling", "per-record-json"),
+	} {
+		if _, err := decisions.Put(record); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	profiles := &ImplementationPreferenceProfileStore{Path: filepath.Join(root, "profiles", "profile.json")}
+	if _, err := profiles.Rebuild(decisions); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	data, err := os.ReadFile(profiles.Path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	corrupt := strings.Replace(string(data), `"schema_version": 1`, `"schema_version": 0`, 1)
+	if err := os.WriteFile(profiles.Path, []byte(corrupt), 0o600); err != nil {
+		t.Fatalf("write corrupt profile: %v", err)
+	}
+	if _, err := profiles.Load(); err == nil {
+		t.Fatal("profile load silently repaired missing schema metadata")
+	}
+}
+
+func TestImplementationPreferenceProfileLoadRejectsSymlink(t *testing.T) {
+	root := t.TempDir()
+	profile := BuildImplementationPreferenceProfile(nil)
+	profile.Revision = 1
+	target := filepath.Join(root, "outside-profile.json")
+	if err := saveImplementationPreferenceProfileFile(target, profile); err != nil {
+		t.Fatalf("save target profile: %v", err)
+	}
+	path := filepath.Join(root, "profiles", "profile.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	profiles := &ImplementationPreferenceProfileStore{Path: path}
+	if _, err := profiles.Load(); err == nil {
+		t.Fatal("preference profile store followed a symlink")
+	}
+}
+
+func TestImplementationPreferenceProfileUpdateRuleRejectsDerivedMutation(t *testing.T) {
+	root := t.TempDir()
+	decisions := &ImplementationDecisionStore{Dir: filepath.Join(root, "records")}
+	for _, record := range []ImplementationDecisionRecord{
+		preferenceDecision("decision-1", "project-a", "tooling", "per-record-json"),
+		preferenceDecision("decision-2", "project-a", "tooling", "per-record-json"),
+	} {
+		if _, err := decisions.Put(record); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	profiles := &ImplementationPreferenceProfileStore{Path: filepath.Join(root, "profiles", "profile.json")}
+	profile, err := profiles.Rebuild(decisions)
+	if err != nil || len(profile.Rules) != 1 {
+		t.Fatalf("Rebuild: %#v err=%v", profile, err)
+	}
+	ruleID := profile.Rules[0].ID
+	if _, err := profiles.UpdateRule(ruleID, profile.Revision, func(rule *ImplementationPreferenceRule) error {
+		rule.Preference = "tampered-source-preference"
+		return nil
+	}); err == nil {
+		t.Fatal("UpdateRule accepted mutation of source-derived rule data")
+	}
+	current, err := profiles.Load()
+	if err != nil || current.Revision != profile.Revision || current.Rules[0].Preference != profile.Rules[0].Preference {
+		t.Fatalf("rejected derived mutation changed the profile: %#v err=%v", current, err)
+	}
+}
+
+func TestImplementationPreferenceProfileLoadRejectsOverrideWithoutTimestamp(t *testing.T) {
+	root := t.TempDir()
+	decisions := &ImplementationDecisionStore{Dir: filepath.Join(root, "records")}
+	for _, record := range []ImplementationDecisionRecord{
+		preferenceDecision("decision-1", "project-a", "tooling", "per-record-json"),
+		preferenceDecision("decision-2", "project-a", "tooling", "per-record-json"),
+	} {
+		if _, err := decisions.Put(record); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	profiles := &ImplementationPreferenceProfileStore{Path: filepath.Join(root, "profiles", "profile.json")}
+	profile, err := profiles.Rebuild(decisions)
+	if err != nil || len(profile.Rules) != 1 {
+		t.Fatalf("Rebuild: %#v err=%v", profile, err)
+	}
+	profile, err = profiles.UpdateRule(profile.Rules[0].ID, profile.Revision, func(rule *ImplementationPreferenceRule) error {
+		rule.Enabled = false
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("UpdateRule: %v", err)
+	}
+	data, err := os.ReadFile(profiles.Path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	overrides, ok := raw["overrides"].(map[string]any)
+	if !ok || len(overrides) != 1 {
+		t.Fatalf("missing override fixture: %#v", raw["overrides"])
+	}
+	for _, value := range overrides {
+		override, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("invalid override fixture: %#v", value)
+		}
+		delete(override, "updated_at")
+	}
+	corrupt, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent: %v", err)
+	}
+	if err := os.WriteFile(profiles.Path, append(corrupt, '\n'), 0o600); err != nil {
+		t.Fatalf("write corrupt profile: %v", err)
+	}
+	if _, err := profiles.Load(); err == nil {
+		t.Fatal("profile load silently repaired an override without updated_at")
+	}
+}
+
+func TestImplementationPreferenceProfileSaveRejectsSourceHashMutation(t *testing.T) {
+	root := t.TempDir()
+	decisions := &ImplementationDecisionStore{Dir: filepath.Join(root, "records")}
+	for _, record := range []ImplementationDecisionRecord{
+		preferenceDecision("decision-1", "project-a", "tooling", "per-record-json"),
+		preferenceDecision("decision-2", "project-a", "tooling", "per-record-json"),
+	} {
+		if _, err := decisions.Put(record); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	profiles := &ImplementationPreferenceProfileStore{Path: filepath.Join(root, "profiles", "profile.json")}
+	profile, err := profiles.Rebuild(decisions)
+	if err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	originalHash := profile.SourceHash
+	profile.SourceHash = "journal-00000000000000000000000000000000"
+	if err := profiles.Save(profile); err == nil {
+		t.Fatal("Save accepted mutation of source-derived hash")
+	}
+	current, err := profiles.Load()
+	if err != nil || current.SourceHash != originalHash || current.Revision != profile.Revision {
+		t.Fatalf("rejected source hash mutation changed profile: %#v err=%v", current, err)
+	}
+}
+
+func TestImplementationPreferenceProfileConcurrentRebuildsSerialize(t *testing.T) {
+	root := t.TempDir()
+	decisions := &ImplementationDecisionStore{Dir: filepath.Join(root, "records")}
+	for _, record := range []ImplementationDecisionRecord{
+		preferenceDecision("decision-1", "project-a", "tooling", "per-record-json"),
+		preferenceDecision("decision-2", "project-a", "tooling", "per-record-json"),
+	} {
+		if _, err := decisions.Put(record); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	profiles := &ImplementationPreferenceProfileStore{Path: filepath.Join(root, "profiles", "profile.json")}
+	initial, err := profiles.Rebuild(decisions)
+	if err != nil {
+		t.Fatalf("initial Rebuild: %v", err)
+	}
+	const workers = 4
+	var wait sync.WaitGroup
+	errorsByWorker := make(chan error, workers)
+	for index := 0; index < workers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, rebuildErr := profiles.Rebuild(decisions)
+			errorsByWorker <- rebuildErr
+		}()
+	}
+	wait.Wait()
+	close(errorsByWorker)
+	for rebuildErr := range errorsByWorker {
+		if rebuildErr != nil {
+			t.Fatalf("concurrent Rebuild: %v", rebuildErr)
+		}
+	}
+	current, err := profiles.Load()
+	if err != nil || current.Revision != initial.Revision+workers || current.SourceHash != initial.SourceHash {
+		t.Fatalf("concurrent rebuilds lost a revision: %#v err=%v", current, err)
+	}
+}
+
+func TestImplementationPreferenceOverridesBoundedWithActiveAndRecentPriority(t *testing.T) {
+	now := time.Now().UTC()
+	rules := []ImplementationPreferenceRule{{
+		ID:       "active-old",
+		Enabled:  false,
+		Pinned:   true,
+		UserNote: "active override",
+	}}
+	source := map[string]ImplementationPreferenceRuleOverride{
+		"active-old": {
+			Enabled:   false,
+			Pinned:    true,
+			UserNote:  "active override",
+			UpdatedAt: now.Add(-3 * time.Hour),
+		},
+		"dormant-new": {
+			Enabled:   false,
+			UserNote:  "recent dormant override",
+			UpdatedAt: now,
+		},
+		"dormant-old": {
+			Enabled:   false,
+			UserNote:  "old dormant override",
+			UpdatedAt: now.Add(-2 * time.Hour),
+		},
+	}
+	bounded := implementationPreferenceBoundedOverrides(rules, source, 2)
+	if len(bounded) != 2 {
+		t.Fatalf("unexpected bounded override count: %#v", bounded)
+	}
+	if _, ok := bounded["active-old"]; !ok {
+		t.Fatalf("active override was evicted: %#v", bounded)
+	}
+	if _, ok := bounded["dormant-new"]; !ok {
+		t.Fatalf("most recent dormant override was evicted: %#v", bounded)
+	}
+	if _, ok := bounded["dormant-old"]; ok {
+		t.Fatalf("old dormant override survived the bound: %#v", bounded)
+	}
 }
 
 func TestBuildImplementationPreferenceProfilePromotesConservatively(t *testing.T) {

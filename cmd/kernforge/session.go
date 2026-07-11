@@ -188,6 +188,7 @@ func (s *Session) resetProviderState(reason string, updateUpdatedAt bool) {
 }
 
 func normalizeSessionMessage(msg Message) Message {
+	msg = sanitizeImplementationDecisionMessageForPersistence(msg)
 	if strings.EqualFold(strings.TrimSpace(msg.Role), "user") && !msg.Internal && looksLikeInternalReviewFeedbackUserMessage(msg.Text) {
 		msg.Internal = true
 	}
@@ -741,6 +742,13 @@ func (s *SessionStore) Root() string {
 }
 
 func (s *SessionStore) Save(sess *Session) error {
+	if s == nil {
+		return fmt.Errorf("cannot save a session with a nil store")
+	}
+	if sess == nil {
+		return fmt.Errorf("cannot save a nil session")
+	}
+	sanitizeImplementationDecisionSessionForPersistence(sess)
 	if err := os.MkdirAll(s.root, 0o755); err != nil {
 		return err
 	}
@@ -753,12 +761,17 @@ func (s *SessionStore) Save(sess *Session) error {
 	unlock := lockFilePath(path)
 	defer unlock()
 	if existing, err := os.ReadFile(path); err == nil && json.Valid(existing) {
-		_ = atomicWriteFile(sessionBackupPath(path), existing, 0o644)
+		existing = sanitizeImplementationDecisionSessionBytesForPersistence(existing)
+		if err := atomicWriteFile(sessionBackupPath(path), existing, 0o644); err != nil {
+			return fmt.Errorf("write session backup: %w", err)
+		}
 	}
 	if err := atomicWriteFile(path, data, 0o644); err != nil {
 		return err
 	}
-	_ = atomicWriteFile(sessionBackupPath(path), data, 0o644)
+	if err := atomicWriteFile(sessionBackupPath(path), data, 0o644); err != nil {
+		return fmt.Errorf("write session backup: %w", err)
+	}
 	return nil
 }
 

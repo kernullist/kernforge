@@ -12,20 +12,28 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	implementationDecisionSchemaVersion   = 1
-	implementationDecisionSummaryMaxBytes = 24 << 10
+	implementationDecisionSchemaVersion         = 1
+	implementationDecisionSummaryMaxBytes       = 24 << 10
+	implementationDecisionRecordMaxBytes        = 1 << 20
+	implementationDecisionWorkspaceMaxBytes     = 32 << 10
+	implementationDecisionRedactionMaxItems     = 64
+	implementationDecisionRedactionItemMaxBytes = 128
 
 	implementationDecisionStatusCompleted = "completed"
 	implementationDecisionStatusCorrected = "corrected"
 	implementationDecisionStatusDeleted   = "deleted"
 )
 
-var ErrImplementationDecisionConflict = errors.New("implementation decision revision conflict")
+var (
+	ErrImplementationDecisionConflict = errors.New("implementation decision revision conflict")
+	ErrImplementationDecisionInvalid  = errors.New("invalid implementation decision")
+)
 
 type ImplementationDecisionOption struct {
 	ID          string   `json:"id"`
@@ -106,7 +114,8 @@ type ImplementationDecisionFilter struct {
 }
 
 type ImplementationDecisionStore struct {
-	Dir string
+	Dir                 string
+	historyAfterReadDir func()
 }
 
 type ImplementationDecisionReadIssue struct {
@@ -124,6 +133,11 @@ func (s *ImplementationDecisionStore) Put(record ImplementationDecisionRecord) (
 	if s == nil || strings.TrimSpace(s.Dir) == "" {
 		return ImplementationDecisionRecord{}, fmt.Errorf("implementation decision store is not configured")
 	}
+	cloned, err := cloneImplementationDecisionRecord(record)
+	if err != nil {
+		return ImplementationDecisionRecord{}, err
+	}
+	record = cloned
 	if strings.TrimSpace(record.ID) == "" {
 		id, err := implementationDecisionIDForRecord(record)
 		if err != nil {
@@ -175,7 +189,7 @@ func (s *ImplementationDecisionStore) Put(record ImplementationDecisionRecord) (
 	record = normalizeImplementationDecisionRecord(record, now)
 	record = redactImplementationDecisionRecord(record)
 	if err := validateImplementationDecisionRecord(record); err != nil {
-		return ImplementationDecisionRecord{}, err
+		return ImplementationDecisionRecord{}, fmt.Errorf("%w: %w", ErrImplementationDecisionInvalid, err)
 	}
 	if err := writeImplementationDecisionRecord(path, record); err != nil {
 		return ImplementationDecisionRecord{}, err
@@ -208,6 +222,9 @@ func (s *ImplementationDecisionStore) List(filter ImplementationDecisionFilter) 
 func (s *ImplementationDecisionStore) ListWithIssues(filter ImplementationDecisionFilter) ([]ImplementationDecisionRecord, []ImplementationDecisionReadIssue, error) {
 	if s == nil || strings.TrimSpace(s.Dir) == "" {
 		return nil, nil, nil
+	}
+	if err := ensureImplementationDecisionPathNoLinks(s.Dir); err != nil {
+		return nil, nil, err
 	}
 	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
@@ -283,6 +300,9 @@ func (s *ImplementationDecisionStore) Revise(id string, expectedRevision int, mu
 	if record.Revision != expectedRevision {
 		return ImplementationDecisionRecord{}, fmt.Errorf("%w: decision %s is revision %d, expected %d", ErrImplementationDecisionConflict, record.ID, record.Revision, expectedRevision)
 	}
+	if expectedRevision == int(^uint(0)>>1) {
+		return ImplementationDecisionRecord{}, fmt.Errorf("implementation decision revision cannot advance beyond %d", expectedRevision)
+	}
 	originalRecord, err := cloneImplementationDecisionRecord(record)
 	if err != nil {
 		return ImplementationDecisionRecord{}, err
@@ -308,7 +328,7 @@ func (s *ImplementationDecisionStore) Revise(id string, expectedRevision int, mu
 	record = normalizeImplementationDecisionRecord(record, record.UpdatedAt)
 	record = redactImplementationDecisionRecord(record)
 	if err := validateImplementationDecisionRecord(record); err != nil {
-		return ImplementationDecisionRecord{}, err
+		return ImplementationDecisionRecord{}, fmt.Errorf("%w: %w", ErrImplementationDecisionInvalid, err)
 	}
 	if err := s.writeHistoryRecord(originalRecord); err != nil {
 		return ImplementationDecisionRecord{}, err
@@ -355,20 +375,38 @@ func (s *ImplementationDecisionStore) History(id string) ([]ImplementationDecisi
 	if s == nil || strings.TrimSpace(s.Dir) == "" {
 		return nil, nil
 	}
-	if !validImplementationDecisionID(strings.TrimSpace(id)) {
-		return nil, fmt.Errorf("invalid implementation decision id %q", id)
+	id = strings.TrimSpace(id)
+	path, err := s.recordPath(id)
+	if err != nil {
+		return nil, err
 	}
-	dir := filepath.Join(filepath.Dir(s.Dir), "history", strings.TrimSpace(id))
+	if err := ensureImplementationDecisionPrivateDir(s.Dir); err != nil {
+		return nil, err
+	}
+	unlock := lockFilePath(path)
+	defer unlock()
+	unlockProcess, err := lockImplementationDecisionFile(path + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer unlockProcess()
+	dir := filepath.Join(filepath.Dir(s.Dir), "history", id)
+	if err := ensureImplementationDecisionPathNoLinks(dir); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
+	}
+	if s.historyAfterReadDir != nil {
+		s.historyAfterReadDir()
 	}
 	revisions := map[int]ImplementationDecisionRecord{}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
 			continue
 		}
-		record, ok, readErr := s.readRecord(filepath.Join(dir, entry.Name()))
+		record, ok, readErr := s.readHistoryRecord(filepath.Join(dir, entry.Name()), id)
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -413,11 +451,31 @@ func (s *ImplementationDecisionStore) recordPath(id string) (string, error) {
 	if !validImplementationDecisionID(id) {
 		return "", fmt.Errorf("invalid implementation decision id %q", id)
 	}
+	if _, report := redactSensitiveText(id); report.Redacted {
+		return "", fmt.Errorf("implementation decision id contains sensitive-looking text")
+	}
 	return filepath.Join(s.Dir, id+".json"), nil
 }
 
 func (s *ImplementationDecisionStore) readRecord(path string) (ImplementationDecisionRecord, bool, error) {
-	data, err := os.ReadFile(path)
+	expectedID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return s.readRecordWithContract(path, expectedID, 0, false)
+}
+
+func (s *ImplementationDecisionStore) readHistoryRecord(path string, expectedID string) (ImplementationDecisionRecord, bool, error) {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if !strings.HasPrefix(base, "revision-") {
+		return ImplementationDecisionRecord{}, false, fmt.Errorf("invalid implementation decision history filename %q", base)
+	}
+	filenameRevision, err := strconv.Atoi(strings.TrimPrefix(base, "revision-"))
+	if err != nil || filenameRevision <= 0 || base != fmt.Sprintf("revision-%06d", filenameRevision) {
+		return ImplementationDecisionRecord{}, false, fmt.Errorf("invalid implementation decision history filename %q", base)
+	}
+	return s.readRecordWithContract(path, strings.TrimSpace(expectedID), filenameRevision, true)
+}
+
+func (s *ImplementationDecisionStore) readRecordWithContract(path string, expectedID string, expectedRevision int, history bool) (ImplementationDecisionRecord, bool, error) {
+	data, err := readImplementationDecisionFile(path, implementationDecisionRecordMaxBytes)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return ImplementationDecisionRecord{}, false, nil
@@ -437,28 +495,66 @@ func (s *ImplementationDecisionStore) readRecord(path string) (ImplementationDec
 	if err := validateStoredImplementationDecisionRecord(record); err != nil {
 		return ImplementationDecisionRecord{}, false, fmt.Errorf("validate implementation decision %s: %w", path, err)
 	}
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	if strings.HasPrefix(base, "revision-") {
-		var filenameRevision int
-		if _, err := fmt.Sscanf(base, "revision-%06d", &filenameRevision); err != nil || base != fmt.Sprintf("revision-%06d", filenameRevision) || filenameRevision != record.Revision {
-			return ImplementationDecisionRecord{}, false, fmt.Errorf("implementation decision history filename %q does not match revision %d", base, record.Revision)
+	if !strings.EqualFold(record.ID, expectedID) {
+		return ImplementationDecisionRecord{}, false, fmt.Errorf("implementation decision file id %q does not match expected id %q", record.ID, expectedID)
+	}
+	if history {
+		if record.Revision != expectedRevision {
+			return ImplementationDecisionRecord{}, false, fmt.Errorf("implementation decision history filename revision %d does not match record revision %d", expectedRevision, record.Revision)
 		}
-	} else if !strings.EqualFold(base, record.ID) {
-		return ImplementationDecisionRecord{}, false, fmt.Errorf("implementation decision filename %q does not match id %q", base, record.ID)
+		if !strings.EqualFold(filepath.Base(filepath.Dir(path)), expectedID) {
+			return ImplementationDecisionRecord{}, false, fmt.Errorf("implementation decision history directory does not match id %q", expectedID)
+		}
 	}
 	record = normalizeImplementationDecisionRecord(record, record.UpdatedAt)
-	if err := validateImplementationDecisionRecord(record); err != nil {
+	if err := validateReadableImplementationDecisionRecord(record); err != nil {
 		return ImplementationDecisionRecord{}, false, fmt.Errorf("validate implementation decision %s: %w", path, err)
 	}
 	return record, true, nil
 }
 
 func writeImplementationDecisionRecord(path string, record ImplementationDecisionRecord) error {
+	if err := ensureImplementationDecisionPathNoLinks(path); err != nil {
+		return err
+	}
+	if err := ensureImplementationDecisionRegularOrMissing(path); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(path, append(data, '\n'), 0o600)
+	data = append(data, '\n')
+	if len(data) > implementationDecisionRecordMaxBytes {
+		return fmt.Errorf("implementation decision record exceeds the storage limit")
+	}
+	return atomicWriteFile(path, data, 0o600)
+}
+
+func readImplementationDecisionFile(path string, maxBytes int64) ([]byte, error) {
+	if err := ensureImplementationDecisionPathNoLinks(path); err != nil {
+		return nil, err
+	}
+	file, err := openImplementationDecisionReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("implementation decision path is not a regular file: %s", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("implementation decision file exceeds the storage limit")
+	}
+	return data, nil
 }
 
 func (s *ImplementationDecisionStore) writeHistoryRecord(record ImplementationDecisionRecord) error {
@@ -471,7 +567,7 @@ func (s *ImplementationDecisionStore) writeHistoryRecord(record ImplementationDe
 		return err
 	}
 	historyPath := filepath.Join(historyDir, fmt.Sprintf("revision-%06d.json", record.Revision))
-	if existing, ok, err := s.readRecord(historyPath); err != nil {
+	if existing, ok, err := s.readHistoryRecord(historyPath, record.ID); err != nil {
 		return err
 	} else if ok {
 		if existing.ID != record.ID || existing.Revision != record.Revision || !implementationDecisionEquivalent(existing, record) {
@@ -506,19 +602,38 @@ func implementationDecisionIDForRecord(record ImplementationDecisionRecord) (str
 	if strings.TrimSpace(record.TaskFingerprint) == "" && strings.TrimSpace(record.EvidenceFingerprint) == "" {
 		return newImplementationDecisionID()
 	}
-	optionIDs := make([]string, 0, len(record.Options))
-	for _, option := range record.Options {
-		optionIDs = append(optionIDs, strings.TrimSpace(option.ID)+"="+strings.TrimSpace(option.Label))
+	type identityOption struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
 	}
-	sort.Strings(optionIDs)
-	key := strings.Join([]string{
-		strings.TrimSpace(record.ProjectID),
-		strings.TrimSpace(record.TaskFingerprint),
-		strings.TrimSpace(record.EvidenceFingerprint),
-		strings.TrimSpace(record.Problem),
-		strings.Join(optionIDs, "|"),
-	}, "\x00")
-	digest := sha256.Sum256([]byte(key))
+	type decisionIdentity struct {
+		ProjectID           string           `json:"project_id"`
+		TaskFingerprint     string           `json:"task_fingerprint"`
+		EvidenceFingerprint string           `json:"evidence_fingerprint"`
+		Problem             string           `json:"problem"`
+		Options             []identityOption `json:"options"`
+	}
+	options := make([]identityOption, 0, len(record.Options))
+	for _, option := range record.Options {
+		options = append(options, identityOption{ID: strings.TrimSpace(option.ID), Label: strings.TrimSpace(option.Label)})
+	}
+	sort.SliceStable(options, func(i, j int) bool {
+		if options[i].ID != options[j].ID {
+			return options[i].ID < options[j].ID
+		}
+		return options[i].Label < options[j].Label
+	})
+	encoded, err := json.Marshal(decisionIdentity{
+		ProjectID:           strings.TrimSpace(record.ProjectID),
+		TaskFingerprint:     strings.TrimSpace(record.TaskFingerprint),
+		EvidenceFingerprint: strings.TrimSpace(record.EvidenceFingerprint),
+		Problem:             strings.TrimSpace(record.Problem),
+		Options:             options,
+	})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
 	return "decision-" + hex.EncodeToString(digest[:16]), nil
 }
 
@@ -620,10 +735,27 @@ func validateImplementationDecisionRecord(record ImplementationDecisionRecord) e
 	if !validImplementationDecisionID(record.ID) {
 		return fmt.Errorf("invalid implementation decision id %q", record.ID)
 	}
+	if record.Revision <= 0 {
+		return fmt.Errorf("implementation decision revision must be positive")
+	}
+	if _, report := redactSensitiveText(record.ID); report.Redacted {
+		return fmt.Errorf("implementation decision id contains sensitive-looking text")
+	}
 	if strings.TrimSpace(record.Problem) == "" {
 		return fmt.Errorf("implementation decision problem is required")
 	}
-	if len(record.Problem) > 4096 || len(record.SelectionReasonRaw) > 4096 || len(record.CustomSelection) > 1024 || len(record.SummarySentence) > implementationDecisionSummaryMaxBytes {
+	if strings.TrimSpace(record.DecisionKind) == "" {
+		return fmt.Errorf("implementation decision kind is required")
+	}
+	if len(record.DecisionKind) > 128 {
+		return fmt.Errorf("implementation decision kind exceeds the storage limit")
+	}
+	switch record.RiskLevel {
+	case "", "low", "medium", "high", "critical":
+	default:
+		return fmt.Errorf("unsupported implementation decision risk level %q", record.RiskLevel)
+	}
+	if len(record.Problem) > 4096 || len(record.SelectionReasonRaw) > 4096 || len(record.CustomSelection) > 1024 || len(record.SummarySentence) > implementationDecisionSummaryMaxBytes || len(record.Workspace) > implementationDecisionWorkspaceMaxBytes {
 		return fmt.Errorf("implementation decision text exceeds the storage limit")
 	}
 	if len(record.Domains) > 32 || len(record.Languages) > 32 || len(record.Tags) > 64 || len(record.EvidenceRefs) > 64 {
@@ -637,6 +769,17 @@ func validateImplementationDecisionRecord(record ImplementationDecisionRecord) e
 	for _, value := range record.EvidenceRefs {
 		if len(value) > 2048 {
 			return fmt.Errorf("implementation decision evidence reference exceeds the storage limit")
+		}
+	}
+	if len(record.Redaction.Patterns) > implementationDecisionRedactionMaxItems {
+		return fmt.Errorf("implementation decision redaction metadata exceeds the storage limit")
+	}
+	for _, pattern := range record.Redaction.Patterns {
+		if len(pattern) > implementationDecisionRedactionItemMaxBytes {
+			return fmt.Errorf("implementation decision redaction metadata exceeds the storage limit")
+		}
+		if _, report := redactSensitiveText(pattern); report.Redacted {
+			return fmt.Errorf("implementation decision redaction metadata contains sensitive-looking text")
 		}
 	}
 	identifierValues := []string{record.SessionID, record.FeatureID, record.GoalID, record.EditLoopID, record.ProjectID, record.WorkspaceHash, record.TaskFingerprint, record.EvidenceFingerprint, record.DecisionKind, record.RiskLevel}
@@ -765,6 +908,26 @@ func validateStoredImplementationDecisionRecord(record ImplementationDecisionRec
 		return fmt.Errorf("stored implementation decision is missing required lifecycle metadata")
 	}
 	return nil
+}
+
+func validateReadableImplementationDecisionRecord(record ImplementationDecisionRecord) error {
+	if _, report := redactSensitiveText(record.DecisionKind); report.Redacted {
+		return fmt.Errorf("implementation decision identifier metadata contains sensitive-looking text")
+	}
+	if _, report := redactSensitiveText(record.RiskLevel); report.Redacted {
+		return fmt.Errorf("implementation decision identifier metadata contains sensitive-looking text")
+	}
+	if strings.TrimSpace(record.DecisionKind) == "" || (len(record.DecisionKind) > 128 && len(record.DecisionKind) <= 1024) {
+		record.DecisionKind = "legacy-unclassified"
+	}
+	switch record.RiskLevel {
+	case "", "low", "medium", "high", "critical":
+	default:
+		if len(record.RiskLevel) <= 1024 {
+			record.RiskLevel = ""
+		}
+	}
+	return validateImplementationDecisionRecord(record)
 }
 
 func validImplementationDecisionProvenance(value string) bool {

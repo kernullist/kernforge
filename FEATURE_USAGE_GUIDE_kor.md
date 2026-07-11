@@ -102,6 +102,27 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 12. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
 13. `/hooks`는 `/status`와 같은 compact runtime gate summary를 출력하므로 hook/policy 확인 화면도 review freshness를 별도로 해석하지 않는다.
 
+### Decision Journal과 Cross-Project Preference Evidence
+
+목적:
+1. 중요한 구현 방안 하나를 선택한 이유와 다른 방안을 배제한 이유를 기록한다.
+2. 각 worktree에 개인 저널 파일을 추가하지 않고 여러 저장소의 명시적 판단 evidence를 모은다.
+3. 이후 선택을 자동 강제하지 않으면서 project, domain, global 범위의 보수적인 preference rule을 도출한다.
+
+대표 명령:
+- `/decision`
+
+현재 동작:
+1. 파일 변경 요청에서 모델은 관련 코드를 조사한 뒤 첫 수정 전에 checkpoint를 제안할 수 있다. 런타임은 2~4개의 유효한 방안, 정확히 하나의 참고용 권장안, `0.65` 이상의 material-fork confidence를 요구하며, 스타일 선택이나 사용자가 이미 결정한 사항은 제외한다.
+2. 사용자는 방안 하나 또는 `기타(Other)`를 명시적으로 고르고, 선택 이유와 나열된 다른 방안 각각의 비선택 이유를 답해야 한다. Enter만 눌러 권장안을 자동 선택할 수 없다.
+3. 취소했거나 비대화형으로 도달한 checkpoint는 세션에 pending으로 남는다. 완료 전에는 decision tool과 명시적으로 read-only인 도구만 허용하며, 다른 custom/MCP 도구도 fail-closed로 차단한다.
+4. 완료 record, 변경 전 revision history, 재생성 가능한 preference profile은 `~/.kernforge/decision-rationales/` 아래에 저장된다. Project identity는 임시 worktree를 base repository와 묶고, 옮기거나 별도 clone한 path는 다른 프로젝트로 구분한다.
+5. `/decision`은 current/all-project 조회, 수정, revision history, soft delete/restore, profile-rule override, rebuild, filter 기반 JSON export를 한 인증된 loopback 대시보드에서 제공한다. Subcommand는 없으며 장시간 살아 있는 interactive KernForge process가 필요하다.
+6. Preference 승격에는 반복된 명시적 user evidence와 `detector_confidence >= 0.80`이 필요하다. Derived rule은 미래 consumer를 위한 가시적인 evidence이며 현재 agent가 자동 적용하지 않는다.
+7. 기본 export도 일부 local runtime metadata만 제거하고 project hash, fingerprint, timestamp, rationale을 유지하므로 익명 데이터가 아니라 privacy-reduced data다. Secret redaction은 best-effort이고 local plaintext file은 접근 제어되지만 암호화되지는 않는다.
+
+상세 계약: [Decision Journal 한국어 문서](./docs/decision-journal_kor.md) 또는 [영문 문서](./docs/decision-journal.md).
+
 ### 프롬프트 의도 라우팅
 
 목적:

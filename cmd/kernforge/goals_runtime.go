@@ -559,7 +559,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	if ref, err := rt.createGoalCheckpoint(goal, iteration.Index); err == nil && strings.TrimSpace(ref.ID) != "" {
 		iteration.CheckpointID = ref.ID
 		iteration.CheckpointName = ref.Name
-		goal.CheckpointRefs = append(goal.CheckpointRefs, ref)
+		if !goalCheckpointRefExists(goal.CheckpointRefs, ref.ID) {
+			goal.CheckpointRefs = append(goal.CheckpointRefs, ref)
+		}
 	} else if err != nil {
 		iteration.Commands = append(iteration.Commands, GoalCommandRecord{
 			Iteration:  iteration.Index,
@@ -1018,6 +1020,27 @@ func (rt *runtimeState) createGoalCheckpoint(goal GoalState, iteration int) (Goa
 	if strings.TrimSpace(root) == "" {
 		return GoalCheckpointRef{}, nil
 	}
+	// A user-decision pause does not consume the goal iteration. Reuse that
+	// iteration's original snapshot so a later rollback still covers changes made
+	// before the pause instead of silently moving the baseline forward on resume.
+	for index := len(goal.CheckpointRefs) - 1; index >= 0; index-- {
+		ref := goal.CheckpointRefs[index]
+		ref.Normalize()
+		if ref.Iteration != iteration || ref.ID == "" || (ref.Status != "" && ref.Status != "created") {
+			continue
+		}
+		meta, _, err := rt.checkpoints.Resolve(root, ref.ID)
+		if err != nil {
+			continue
+		}
+		return GoalCheckpointRef{
+			Iteration: iteration,
+			ID:        meta.ID,
+			Name:      meta.Name,
+			CreatedAt: meta.CreatedAt,
+			Status:    "created",
+		}, nil
+	}
 	name := fmt.Sprintf("goal-%s-iteration-%02d", goal.ID, iteration)
 	meta, err := rt.checkpoints.Create(root, name)
 	if err != nil {
@@ -1030,6 +1053,19 @@ func (rt *runtimeState) createGoalCheckpoint(goal GoalState, iteration int) (Goa
 		CreatedAt: meta.CreatedAt,
 		Status:    "created",
 	}, nil
+}
+
+func goalCheckpointRefExists(refs []GoalCheckpointRef, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for _, ref := range refs {
+		if strings.EqualFold(strings.TrimSpace(ref.ID), id) {
+			return true
+		}
+	}
+	return false
 }
 
 func (rt *runtimeState) rollbackGoalIterationCheckpoint(goal GoalState, iteration GoalIteration) string {

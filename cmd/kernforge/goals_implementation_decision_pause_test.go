@@ -59,6 +59,7 @@ func TestGoalPendingImplementationDecisionMaxOneResumesSameIteration(t *testing.
 			}
 		},
 	}
+	rt.checkpoints = &CheckpointManager{Root: filepath.Join(root, "checkpoints")}
 	useFastGoalRuntime(t, rt)
 
 	if err := rt.runGoalBySelector(goal.ID, 0); err != nil {
@@ -78,6 +79,10 @@ func TestGoalPendingImplementationDecisionMaxOneResumesSameIteration(t *testing.
 	if len(pausedGoal.Iterations) != 1 || pausedGoal.Iterations[0].Index != 1 || pausedGoal.Iterations[0].Status != goalStatusPaused {
 		t.Fatalf("paused iteration evidence was not retained: %#v", pausedGoal.Iterations)
 	}
+	if len(pausedGoal.CheckpointRefs) != 1 || pausedGoal.CheckpointRefs[0].Iteration != 1 {
+		t.Fatalf("paused iteration checkpoint was not retained exactly once: %#v", pausedGoal.CheckpointRefs)
+	}
+	pausedCheckpointID := pausedGoal.CheckpointRefs[0].ID
 
 	paused.PendingImplementationDecision = nil
 	if err := store.Save(paused); err != nil {
@@ -97,6 +102,9 @@ func TestGoalPendingImplementationDecisionMaxOneResumesSameIteration(t *testing.
 	}
 	if len(completed.Iterations) != 2 || completed.Iterations[1].Index != 1 || completed.Iterations[1].Status != goalStatusComplete {
 		t.Fatalf("resume did not finish the paused iteration: %#v", completed.Iterations)
+	}
+	if len(completed.CheckpointRefs) != 1 || completed.CheckpointRefs[0].ID != pausedCheckpointID {
+		t.Fatalf("resume replaced the original iteration checkpoint baseline: before=%q refs=%#v", pausedCheckpointID, completed.CheckpointRefs)
 	}
 	if strings.Contains(output.String(), "goal reached max iterations") {
 		t.Fatalf("resume was blocked by max_iterations: %s", output.String())

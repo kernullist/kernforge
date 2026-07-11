@@ -1013,6 +1013,15 @@ func runDefaultPreToolUseHook(ctx context.Context, tool Tool, name string, paylo
 	if !ok {
 		return defaultToolUseHookState{}, nil
 	}
+	if session := ws.DecisionSession; session != nil {
+		session.normalizePendingImplementationDecision()
+		if session.PendingImplementationDecision != nil && strings.TrimSpace(name) != "present_implementation_decision" {
+			readOnly, explicitlyReadOnly := tool.(readOnlyToolCallSupport)
+			if !explicitlyReadOnly || !readOnly.ReadOnlyToolCall() {
+				return defaultToolUseHookState{}, fmt.Errorf("implementation decision %s is still pending; tool %s is not explicitly read-only", session.PendingImplementationDecision.DecisionID, strings.TrimSpace(name))
+			}
+		}
+	}
 	originalInput := cloneStringAnyMap(payload)
 	verdict, err := ws.Hook(ctx, HookPreToolUse, defaultToolUseHookPayload(ctx, ws, name, payload))
 	if err != nil {

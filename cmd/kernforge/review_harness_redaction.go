@@ -13,6 +13,7 @@ type reviewRedactionPattern struct {
 var reviewRedactionPatterns = []reviewRedactionPattern{
 	{Name: "openai_api_key", Re: regexp.MustCompile(`(?i)\bsk-[A-Za-z0-9_\-]{20,}\b`)},
 	{Name: "github_token", Re: regexp.MustCompile(`(?i)\bgh[pousr]_[A-Za-z0-9_]{20,}\b`)},
+	{Name: "github_token", Re: regexp.MustCompile(`(?i)\bgithub_pat_[A-Za-z0-9_]{20,}\b`)},
 	{Name: "private_key", Re: regexp.MustCompile(`(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)},
 	{Name: "bearer_token", Re: regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{20,}`)},
 	// password_assignment matches a credential-like KEY followed by a value that

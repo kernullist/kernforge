@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 var filePathLocks sync.Map
@@ -19,6 +21,29 @@ func lockFilePath(path string) func() {
 	mu := actual.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
+}
+
+func lockFilePathContext(ctx context.Context, path string) (func(), error) {
+	key := strings.TrimSpace(path)
+	if key == "" {
+		return func() {}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	key = filepath.Clean(key)
+	actual, _ := filePathLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := actual.(*sync.Mutex)
+	for {
+		if mu.TryLock() {
+			return mu.Unlock, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
