@@ -152,6 +152,13 @@ func (rt *runtimeState) confirmImplicitModelReview(req ModelReviewConsentRequest
 	if !rt.interactive {
 		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "non_interactive", SkipReason: modelReviewSkipNoInteractiveConsent}
 	}
+	if rt.permissionModeIsFull() {
+		// Full mode never prompts: run the review as if the user had opted in
+		// for the session. Placed after the non-interactive check so headless
+		// runs keep their existing skip behavior, and after the single-model
+		// route skip so full mode still does not force a self-review.
+		return implicitModelReviewFinalizeDecision(session, req, ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: "permission_mode_full"})
+	}
 	trigger := strings.TrimSpace(req.Trigger)
 	if trigger == "" {
 		trigger = "implicit"

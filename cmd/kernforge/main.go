@@ -905,6 +905,11 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 	if rt.alwaysApprovePreview {
 		return true, nil
 	}
+	if rt.permissionModeIsFull() {
+		// Full mode accepts the edit without the diff-preview prompt, exactly
+		// like the session-wide "a" answer.
+		return true, nil
+	}
 	if rt.autoAcceptPreviewOnce {
 		rt.autoAcceptPreviewOnce = false
 		return true, nil
@@ -933,6 +938,17 @@ func (rt *runtimeState) promptContinueReviewRepair(message string) (bool, error)
 	message = strings.TrimSpace(message)
 	if message != "" {
 		rt.printAssistant(message)
+	}
+	if rt.permissionModeIsFull() {
+		// Full mode never prompts. Auto-continuing a repair loop that already
+		// failed to converge would grant it a fresh budget every time it stalls
+		// (an unbounded loop), so the no-prompt resolution is to stop here and
+		// leave the review state in the session, and say so explicitly instead
+		// of implying the user declined.
+		fmt.Fprintln(rt.writer, rt.ui.hintLine(localizedText(rt.cfg,
+			"Permission mode is full; stopping this non-converging review-repair loop automatically instead of prompting.",
+			"권한 모드가 full이라 묻지 않고 진행합니다: 수렴하지 못한 리뷰-수리 루프는 여기서 자동으로 중단합니다.")))
+		return false, nil
 	}
 	if !rt.interactive {
 		return false, nil
@@ -1166,6 +1182,15 @@ func (rt *runtimeState) promptUsePriorReviewArtifacts(paths []string) (bool, err
 		"모델이 이전 세션에서 생성된 리뷰 산출물을 읽으려 합니다 (stale일 수 있음):"))
 	for _, p := range limitStrings(paths, 8) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("- "+filepath.ToSlash(strings.TrimSpace(p))))
+	}
+	if rt.permissionModeIsFull() {
+		// Full mode never prompts: the model chose to read these artifacts, and
+		// full mode does not block reads, so allow them (the staleness warning
+		// above stays visible).
+		fmt.Fprintln(rt.writer, rt.ui.hintLine(localizedText(rt.cfg,
+			"Permission mode is full; using the prior-session review artifacts without prompting.",
+			"권한 모드가 full이라 묻지 않고 이전 세션 리뷰 산출물을 사용합니다.")))
+		return true, nil
 	}
 	var (
 		confirmed bool
@@ -3360,6 +3385,11 @@ func (rt *runtimeState) prepareAnalysisDirectorySelection(root string, cfg Proje
 		fmt.Fprintln(rt.writer, rt.ui.statusKV(candidate.Path, analysisDirectoryCandidateReasonLabel(candidate.Reason)))
 	}
 	fmt.Fprintln(rt.writer)
+	if rt.permissionModeIsFull() {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Permission mode is full; including these directories in the analysis without prompting."))
+		fmt.Fprintln(rt.writer)
+		return cfg, nil
+	}
 	if !rt.interactive {
 		fmt.Fprintln(rt.writer, rt.ui.hintLine("Interactive confirmation unavailable; including these directories in the analysis."))
 		fmt.Fprintln(rt.writer)
@@ -3408,13 +3438,13 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 		return rt.alwaysApproveWrites
 	}
 	if isDiffPreviewQuestion(question) {
-		return rt.alwaysApprovePreview
+		return rt.alwaysApprovePreview || rt.permissionModeIsFull()
 	}
 	if isAutoVerificationQuestion(question) {
-		return rt.alwaysApproveVerification
+		return rt.alwaysApproveVerification || rt.permissionModeIsFull()
 	}
 	if isModelReviewQuestion(question) {
-		return rt.alwaysApproveModelReview
+		return rt.alwaysApproveModelReview || rt.permissionModeIsFull()
 	}
 	if isGitApprovalQuestion(question) {
 		return rt.perms != nil && rt.perms.IsGitAllowed()
@@ -9211,6 +9241,21 @@ func (rt *runtimeState) autoApproveVerificationPrompt() bool {
 	if rt.alwaysApproveVerification {
 		return true
 	}
+	return rt.permissionModeIsFull()
+}
+
+// permissionModeIsFull reports whether the active permission mode is full
+// (ModeBypass) according to any of the three mode sources (live permission
+// manager, config, persisted session). Full mode means "proceed without
+// prompts": confirmation prompts that gate previews, reviews, or plan
+// continuations auto-resolve instead of blocking the run. Prompts that stay
+// even in full mode: hook `ask` verdicts, the explicit ask_user tool, the Esc
+// cancel confirmation, and destructive command confirmations (e.g. checkpoint
+// rollback).
+func (rt *runtimeState) permissionModeIsFull() bool {
+	if rt == nil {
+		return false
+	}
 	if rt.perms != nil && rt.perms.Mode() == ModeBypass {
 		return true
 	}
@@ -10389,7 +10434,10 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("max_total_shards", fmt.Sprintf("%d", analysisCfg.MaxTotalShards)))
 	fmt.Fprintln(rt.writer)
 
-	if rt.interactive {
+	if rt.permissionModeIsFull() {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Permission mode is full; proceeding with the displayed analysis plan without prompting."))
+		fmt.Fprintln(rt.writer)
+	} else if rt.interactive {
 		proceed, err := rt.confirm("Proceed with this analysis plan?")
 		if err != nil {
 			return err

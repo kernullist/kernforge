@@ -4672,3 +4672,67 @@ func TestConfirmLabelLocalizesDiffPreviewHintForKoreanLocale(t *testing.T) {
 		t.Fatalf("expected localized diff preview label, got %q", label)
 	}
 }
+
+// TestRuntimeStateFullModeAutoApprovesInteractivePrompts verifies that the full
+// permission mode (ModeBypass) skips the diff-preview, auto-verification, and
+// model-review confirmation prompts even when no session-wide "a" answer was
+// ever given. Full mode means "proceed without prompts".
+func TestRuntimeStateFullModeAutoApprovesInteractivePrompts(t *testing.T) {
+	rt := &runtimeState{
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: true,
+		perms:       NewPermissionManager(ModeBypass, nil),
+	}
+
+	if !rt.permissionModeIsFull() {
+		t.Fatalf("expected ModeBypass to report full mode")
+	}
+	if !rt.autoApproveConfirmation(diffPreviewQuestionEnglish) {
+		t.Fatalf("expected diff preview to auto-approve in full mode without alwaysApprovePreview")
+	}
+	if !rt.autoApproveConfirmation(autoVerificationQuestionEnglish) {
+		t.Fatalf("expected auto-verification to auto-approve in full mode")
+	}
+	if !rt.autoApproveConfirmation(modelReviewQuestionEnglish) {
+		t.Fatalf("expected model review to auto-approve in full mode")
+	}
+
+	// previewEdit must return true (accept) without touching the reader.
+	accepted, err := rt.previewEdit(EditPreview{})
+	if err != nil {
+		t.Fatalf("previewEdit returned error in full mode: %v", err)
+	}
+	if !accepted {
+		t.Fatalf("expected previewEdit to accept the edit in full mode")
+	}
+
+	// The auto-verify prompt path must resolve to yes.
+	if !rt.autoApproveVerificationPrompt() {
+		t.Fatalf("expected autoApproveVerificationPrompt to be true in full mode")
+	}
+}
+
+// TestRuntimeStateNonFullModeStillPrompts confirms the auto-approval is scoped to
+// full mode: edit and plan modes keep their existing prompt behavior.
+func TestRuntimeStateNonFullModeStillPrompts(t *testing.T) {
+	for _, mode := range []Mode{ModePlan, ModeAcceptEdits, ModeDefault} {
+		rt := &runtimeState{
+			writer:      &bytes.Buffer{},
+			ui:          UI{},
+			cfg:         Config{AutoLocale: boolPtr(false)},
+			interactive: true,
+			perms:       NewPermissionManager(mode, nil),
+		}
+		if rt.permissionModeIsFull() {
+			t.Fatalf("mode %v must not report full mode", mode)
+		}
+		if rt.autoApproveConfirmation(diffPreviewQuestionEnglish) {
+			t.Fatalf("mode %v must still prompt for diff preview", mode)
+		}
+		if rt.autoApproveConfirmation(modelReviewQuestionEnglish) {
+			t.Fatalf("mode %v must still prompt for model review", mode)
+		}
+	}
+}

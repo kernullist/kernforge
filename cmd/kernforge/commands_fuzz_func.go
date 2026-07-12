@@ -11382,6 +11382,12 @@ func (rt *runtimeState) maybeConfirmFunctionFuzzExecution(run *FunctionFuzzRun) 
 	if !functionFuzzExecutionNeedsConfirmation(run.Execution) {
 		return nil
 	}
+	if rt.permissionModeIsFull() {
+		// Full mode never prompts: approve the autonomous fuzz run with the
+		// recovered build settings, the same outcome as answering yes.
+		functionFuzzApproveExecution(rt.cfg, run, true)
+		return nil
+	}
 	if !rt.interactive {
 		run.Execution.ContinueCommand = firstNonBlankString(strings.TrimSpace(run.Execution.ContinueCommand), functionFuzzExecutionContinueCommand(run.ID))
 		run.Execution = normalizeFunctionFuzzExecution(run.Execution)

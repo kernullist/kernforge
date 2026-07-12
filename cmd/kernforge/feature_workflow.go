@@ -764,7 +764,7 @@ func (rt *runtimeState) handleNewFeatureNextCommand() error {
 		}
 		return rt.handleNewFeatureImplementCommand(feature.ID)
 	case featureStatusBlocked:
-		if rt.interactive {
+		if rt.interactive && !rt.permissionModeIsFull() {
 			proceed, confirmErr := rt.confirm("Regenerate the tracked feature plan before continuing?")
 			if confirmErr != nil {
 				return confirmErr
@@ -777,7 +777,7 @@ func (rt *runtimeState) handleNewFeatureNextCommand() error {
 		return rt.handleNewFeaturePlanCommand(feature.ID)
 	case featureStatusImplemented:
 		if latestFeatureVerificationPassed(rt.session, feature) {
-			if rt.interactive {
+			if rt.interactive && !rt.permissionModeIsFull() {
 				proceed, confirmErr := rt.confirm("Latest verification passed. Close this tracked feature?")
 				if confirmErr != nil {
 					return confirmErr
@@ -896,7 +896,7 @@ func (rt *runtimeState) handleNewFeatureImplementCommand(arg string) error {
 		return fmt.Errorf("feature plan is missing; run /new-feature next to regenerate planning artifacts before implementation")
 	}
 
-	if rt.interactive {
+	if rt.interactive && !rt.permissionModeIsFull() {
 		proceed, confirmErr := rt.confirm("Proceed with this tracked feature implementation?")
 		if confirmErr != nil {
 			return confirmErr
