@@ -736,6 +736,24 @@ func selectModelRouteFallbackModels(cfg Config, primaryModel string) []string {
 	return out
 }
 
+// nextUntriedFallbackModel returns the first configured fallback model for the
+// turn's primary that is not yet present in tried (case-insensitive), or "" when
+// the chain is empty or exhausted. Used for loop-level failover on a
+// retryable-but-exhausted provider error, which the terminal-only inner chain
+// does not cover.
+func nextUntriedFallbackModel(cfg Config, primaryModel string, tried map[string]bool) string {
+	for _, candidate := range selectModelRouteFallbackModels(cfg, primaryModel) {
+		key := strings.ToLower(strings.TrimSpace(candidate))
+		if key == "" {
+			continue
+		}
+		if !tried[key] {
+			return candidate
+		}
+	}
+	return ""
+}
+
 // chatResponseIsRefusal reports whether a provider response is a safety/policy
 // refusal (HTTP 200 with stop_reason "refusal"). A refusal is not an error, so
 // it must be detected on the response rather than the error value before the

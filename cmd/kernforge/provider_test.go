@@ -2045,6 +2045,55 @@ func TestShouldRetryProviderErrorUsesStructuredProviderAPIError(t *testing.T) {
 	}
 }
 
+// TestShouldRetryProviderErrorTreatsLocalTransportBlipsAsTransient guards that
+// the flaky-local-model failures (dropped/reset socket, restarting backend,
+// truncated/empty body, empty choices) are retried instead of hard-failing the
+// whole request on the first blip.
+func TestShouldRetryProviderErrorTreatsLocalTransportBlipsAsTransient(t *testing.T) {
+	retryable := []error{
+		errors.New("Post \"http://127.0.0.1:1234/v1/chat/completions\": read tcp 127.0.0.1:5000->127.0.0.1:1234: read: connection reset by peer"),
+		errors.New("dial tcp 127.0.0.1:1234: connect: connection refused"),
+		errors.New("unexpected EOF"),
+		errors.New("EOF"),
+		errors.New("write: broken pipe"),
+		errors.New("unexpected end of JSON input"),
+		// "empty choices" arrives as a structured provider error with no status.
+		&ProviderAPIError{Provider: "openai", Message: "empty choices"},
+	}
+	for _, err := range retryable {
+		if !shouldRetryProviderError(err) {
+			t.Fatalf("expected transient local transport error to be retryable: %v", err)
+		}
+	}
+
+	// Permanent errors must still NOT be retried.
+	nonRetryable := []error{
+		&ProviderAPIError{Provider: "openai", StatusCode: http.StatusUnauthorized, Message: "invalid api key"},
+		&ProviderAPIError{Provider: "openai", Message: "model_not_found: no such model"},
+		errors.New("context_length_exceeded"),
+	}
+	for _, err := range nonRetryable {
+		if shouldRetryProviderError(err) {
+			t.Fatalf("expected permanent error to remain non-retryable: %v", err)
+		}
+	}
+}
+
+// TestTextLooksLikeTransientTransportError pins the classifier used by both
+// shouldRetryProviderError and providerErrorLooksRetryable.
+func TestTextLooksLikeTransientTransportError(t *testing.T) {
+	for _, s := range []string{"connection reset by peer", "connection refused", "unexpected eof", "eof", "empty choices", "unexpected end of json input", "broken pipe"} {
+		if !textLooksLikeTransientTransportError(s) {
+			t.Fatalf("expected %q to be transient", s)
+		}
+	}
+	for _, s := range []string{"", "invalid api key", "model_not_found", "context_length_exceeded", "authentication failed"} {
+		if textLooksLikeTransientTransportError(s) {
+			t.Fatalf("expected %q to NOT be transient", s)
+		}
+	}
+}
+
 func TestOpenAIClientNormalizesAssistantToolCallArguments(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

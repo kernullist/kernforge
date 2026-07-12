@@ -78,9 +78,32 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := os.Chmod(tmpPath, perm); err != nil {
 		return err
 	}
-	if err := replaceFileAtomic(tmpPath, path); err != nil {
+	if err := replaceFileAtomicWithRetry(tmpPath, path); err != nil {
 		return err
 	}
 	cleanup = false
 	return nil
+}
+
+// replaceFileAtomicWithRetry renames the already-written+synced temp file over
+// the destination, retrying a few times with a short backoff. On Windows an
+// antivirus/indexer/editor can briefly hold the destination open, making the
+// rename fail transiently with "Access is denied" / "used by another process";
+// on any platform a transient lock can do the same. Because the payload is
+// already fully durable in the temp file, replaying only the rename is safe and
+// idempotent. Before this, a single such blip surfaced as a session Save error
+// that hard-aborted the whole turn (discarding completed work at any of the
+// ~80 Save checkpoints). Persistent failures (disk full, real permission
+// problems) still surface after the bounded retries.
+func replaceFileAtomicWithRetry(tmpPath, path string) error {
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		if err = replaceFileAtomic(tmpPath, path); err == nil {
+			return nil
+		}
+		if attempt < 3 {
+			time.Sleep(time.Duration(25*(1<<attempt)) * time.Millisecond)
+		}
+	}
+	return err
 }

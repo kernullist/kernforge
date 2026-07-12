@@ -128,7 +128,12 @@ const (
 	// confirmation). Small on purpose: a genuinely non-converging loop must not
 	// burn unbounded wall-clock, but a briefly-stuck one gets real extra chances.
 	maxAutonomousReviewRepairContinuations = 2
-	maxPreWriteReviewRepairInspectTools    = 6
+	// maxInvalidEditPayloadRetries bounds retries after an edit tool rejected a
+	// malformed serialized payload (a blob instead of real file text). Like the
+	// invalid-JSON / invalid-patch retries, the model gets a correction chance
+	// instead of the whole request hard-failing on one bad payload.
+	maxInvalidEditPayloadRetries        = 2
+	maxPreWriteReviewRepairInspectTools = 6
 	maxPreWriteReviewRepairInspectNudges = 1
 	maxPreFixReviewRepairInspectTools    = 6
 	maxPreFixReviewRepairInspectNudges   = 1
@@ -761,6 +766,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	patchFormatRetries := 0
 	lastPatchFormatFailureSignature := ""
 	invalidToolArgsRetries := 0
+	invalidEditPayloadRetries := 0
 	editTargetMismatchRetries := 0
 	editTargetMismatchFailures := 0
 	editTargetMismatchRequiresReanchor := false
@@ -801,6 +807,19 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastToolCallSummary := ""
 	lastReadFilePath := ""
 	lastReadFilePathTurns := 0
+	// Turn-local model failover. currentTurnModel overrides a.Session.Model for
+	// the rest of this turn after a provider error exhausts retries on the
+	// primary; fallbackModelsTried bounds it so each configured fallback is used
+	// at most once per turn. This covers the gap the inner cfg.FallbackModels
+	// chain leaves open: that chain only fires on a TERMINAL error, so a primary
+	// that is persistently transient-failing (retryable, exhausted) never fails
+	// over and would otherwise hard-fail the whole request.
+	turnPrimaryModel := ""
+	if a.Session != nil {
+		turnPrimaryModel = a.Session.Model
+	}
+	currentTurnModel := ""
+	fallbackModelsTried := map[string]bool{}
 	multiPathReadWindow := [][]string{}
 	lastMultiPathReadSignature := ""
 	multiPathReadRepeatTurns := 0
@@ -844,6 +863,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	localCodeToolAvailabilityBlameRetries := 0
 	abruptReplyRetries := 0
 	lengthContinuationRetries := 0
+	// preActionNarrationRetries bounds how many times a text-only "I'll now do X"
+	// narration (the model described its plan for an edit request but called no
+	// tool) is bounced back to actually act, before the narration is accepted as
+	// the answer. Local models that omit end_turn frequently narrate instead of
+	// acting; without this the plan was accepted as the final answer and the work
+	// never happened.
+	preActionNarrationRetries := 0
 	rawReviewResultReplyRetries := 0
 	stopHookRevisions := 0
 	stopHookActive := false
@@ -1063,7 +1089,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			systemPrompt += "\n\n" + generatedDocumentArtifactFinalOnlyPromptGuidance()
 		}
 		turnReq := ChatRequest{
-			Model:        a.Session.Model,
+			Model:        firstNonBlankString(currentTurnModel, a.Session.Model),
 			System:       systemPrompt,
 			Messages:     a.Session.Messages,
 			Tools:        toolExposurePlan.modelToolDefinitions(a.Tools, a.Session.Provider, a.Session.Model),
@@ -1088,6 +1114,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			resp, err = a.completeModelTurn(ctx, turnReq)
 		}
 		if err != nil {
+			canFailover := len(selectModelRouteFallbackModels(a.Config, turnPrimaryModel)) > 0
 			decision := a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
 				ProviderError:   err,
 				Attempt:         configMaxRequestRetries(a.Config),
@@ -1095,7 +1122,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				ApproxChars:     a.Session.ApproxChars(),
 				Threshold:       a.Config.AutoCompactChars,
 				CanCompact:      a.Config.AutoCompactChars > 0 && len(a.Session.Messages) > 12,
-				CanPromoteModel: a.ModelRoutes != nil,
+				CanPromoteModel: canFailover,
 			}))
 			if decision.Kind == RecoveryKindContextOverflow {
 				contextDecision := a.recordContextMaintenanceDecision(DecideContextMaintenance(ContextMaintenanceInput{
@@ -1103,12 +1130,37 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					ApproxChars:     a.Session.ApproxChars(),
 					Threshold:       a.Config.AutoCompactChars,
 					CanCompact:      a.Config.AutoCompactChars > 0 && len(a.Session.Messages) > 12,
-					CanPromoteModel: a.ModelRoutes != nil,
+					CanPromoteModel: canFailover,
 					Reason:          "provider_context_overflow",
 				}))
 				if contextDecision.Action == ContextMaintenanceCompact {
 					if _, compactErr := a.CompactWithTrigger(ctx, "Auto-compacted after the provider reported context overflow.", "auto", "provider_context_overflow"); compactErr != nil {
 						return "", compactErr
+					}
+					continue
+				}
+			}
+			// Model failover for a RETRYABLE-but-exhausted primary. The inner
+			// cfg.FallbackModels chain (completeModelTurnOnceWithModelRoutes) only
+			// fires on a TERMINAL error, so a primary that kept failing transiently
+			// (e.g. a flaky local server: connection reset / empty body, now
+			// retryable) exhausts its retries without ever failing over. Promote to
+			// the next untried fallback model for the rest of this turn and retry,
+			// instead of hard-failing the whole request. Bounded: each fallback is
+			// tried at most once per turn. Context cancellation is the caller giving
+			// up and must not consume the chain.
+			if shouldRetryProviderError(err) && ctx.Err() == nil {
+				if next := nextUntriedFallbackModel(a.Config, turnPrimaryModel, fallbackModelsTried); next != "" {
+					fallbackModelsTried[strings.ToLower(strings.TrimSpace(next))] = true
+					currentTurnModel = next
+					a.emitProgressEvent(ProgressEvent{
+						Kind:    progressKindModelReroute,
+						Model:   firstNonBlankString(currentTurnModel, turnPrimaryModel),
+						Status:  next,
+						Message: fmt.Sprintf("Primary model kept failing transiently (%s). Failing over to fallback model %q for the rest of this turn.", firstNonEmptyLine(err.Error()), next),
+					})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
 					}
 					continue
 				}
@@ -1933,6 +1985,32 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						Iteration: turnCount,
 					})
 					a.Session.AddMessage(internalUserMessage(manualEditGuidance))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+				if explicitEditRequest && !attemptedEditTool && !successfulEditTool &&
+					preActionNarrationRetries < maxPreActionNarrationRetries &&
+					replyLooksLikePreActionNarration(reply) &&
+					!assistantTextLooksLikeCompletionSummary(reply) &&
+					!replySuggestsManualEditHandoff(reply) {
+					// The model described what it is ABOUT to do for an edit request
+					// but called no tool and applied nothing. Accepting this narration
+					// as the final answer is the "claimed/planned but did not do the
+					// work" silent failure. Bounce it back to actually act. Bounded so
+					// a model that simply will not act still terminates.
+					preActionNarrationRetries++
+					a.discardRecentFinalAnswerCandidate(reply)
+					narrationReason := "text-only reply narrated a plan for an edit request without calling any tool"
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionManualEditHandoff,
+						Reason:    narrationReason,
+						Guidance:  preActionNarrationGuidance(a.Config),
+						Count:     preActionNarrationRetries,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(preActionNarrationGuidance(a.Config)))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -2905,6 +2983,36 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return "", saveErr
 				}
 				return "", err
+			}
+			if err != nil && errors.Is(err, ErrInvalidEditPayload) && invalidEditPayloadRetries < maxInvalidEditPayloadRetries {
+				// A malformed serialized payload (a JSON/base64 blob instead of real
+				// file text) is a correctable model mistake, not a dead end. Retry
+				// with guidance -- like ErrInvalidToolArgumentsJSON / ErrInvalidPatch
+				// -- instead of hard-failing the whole request. Bounded so a model
+				// that keeps emitting garbage still stops.
+				toolMsg.IsError = true
+				toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
+				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+					a.emitProgressEvent(ProgressEvent{
+						Kind:             progressKindToolFailed,
+						Message:          summary,
+						ToolName:         call.Name,
+						ToolCallID:       call.ID,
+						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+						Status:           firstNonEmptyLine(err.Error()),
+					})
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.Session.AddMessage(internalUserMessage(invalidEditPayloadGuidance(call.Name)))
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit payload was malformed; retry from the next model turn with real file text.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				invalidEditPayloadRetries++
+				lastToolError = ""
+				lastToolErrorCount = 0
+				toolRetryQueued = true
+				break
 			}
 			if err != nil && errors.Is(err, ErrInvalidEditPayload) {
 				toolMsg.IsError = true
@@ -5189,6 +5297,46 @@ func disableAllTools(disabled map[string]bool, registry *ToolRegistry) {
 	}
 }
 
+// maxPreActionNarrationRetries bounds re-prompts for a text-only plan narration
+// on an edit request. Two firm nudges, then the narration is accepted so a model
+// that simply refuses to call a tool cannot spin the turn forever (the
+// no-progress guard is the ultimate backstop).
+const maxPreActionNarrationRetries = 2
+
+// replyLooksLikePreActionNarration reports whether a reply reads as a statement
+// of intent to act ("I'll now implement...", "...하겠습니다") rather than a report
+// of work done. Only future-intent phrasing paired with an action verb is
+// matched, so a genuine final answer that merely mentions "I'll summarize" is not
+// caught -- and callers additionally require an edit request with no tool called
+// and no completion-summary wording before treating it as narration-without-work.
+func replyLooksLikePreActionNarration(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	// Match only intent-to-act phrasing paired with an EDIT action verb. Bare
+	// future forms like Korean "...하겠습니다" / "계속하겠습니다" (I'll continue) are
+	// deliberately excluded: they appear in legitimate continuations and final
+	// answers and would false-positive.
+	return containsAny(lower,
+		"i'll now", "i will now", "let me now", "let me go ahead", "i'll go ahead", "i will go ahead",
+		"i'm going to", "i am going to", "i'm about to", "i am about to",
+		"next, i'll", "next i will", "i'll proceed to", "i will proceed to", "i'll start by", "i will start by",
+		"i'll implement", "i will implement", "i'll modify", "i will modify", "i'll edit", "i will edit",
+		"i'll update", "i will update", "i'll fix", "i will fix", "i'll apply", "i will apply",
+		"i'll create", "i will create",
+		"수정하겠", "구현하겠", "적용하겠", "작성하겠", "만들겠",
+		"고치겠", "추가하겠", "변경하겠", "반영하겠", "패치하겠",
+	)
+}
+
+func preActionNarrationGuidance(cfg Config) string {
+	if localePrefersKorean(cfg) {
+		return "방금 답변은 무엇을 할지 계획만 서술하고 실제로는 어떤 도구도 호출하지 않았습니다. 계획을 최종 답변으로 제시하지 마세요. 지금 바로 해당 편집 도구(apply_patch / write_file / replace_in_file)를 호출해 변경을 실제로 적용한 뒤, 무엇을 바꿨는지 보고하세요. 도구를 쓸 수 없다면 그 이유를 구체적으로 밝히세요."
+	}
+	return "Your last reply only narrated what you were going to do and did not call any tool. Do not present a plan as the final answer. Call the appropriate edit tool now (apply_patch / write_file / replace_in_file) to actually make the change, then report what changed. If you genuinely cannot use a tool, state the specific reason instead."
+}
+
 func replySuggestsManualEditHandoff(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
@@ -6151,6 +6299,23 @@ func invalidToolArgumentsGuidance(toolName string) string {
 		return "Your last replace_in_file call used malformed or truncated JSON arguments. replace_in_file is now disabled for this request. Re-read the file and retry with one complete valid JSON object. If the change is larger than a tiny exact substitution, use apply_patch instead."
 	default:
 		return "Your last tool call used malformed or truncated JSON arguments. Retry with one complete valid JSON object only. Do not repeat the same broken payload."
+	}
+}
+
+// invalidEditPayloadGuidance steers the model off a malformed serialized payload
+// (a JSON/base64 blob or escaped-string dump) that an edit tool rejected, back to
+// real file text. Mirrors invalidToolArgumentsGuidance but for a payload that
+// parsed as valid JSON yet carried garbage content instead of code.
+func invalidEditPayloadGuidance(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "write_file":
+		return "Your last write_file content was a malformed serialized payload (a JSON/base64 blob or an escaped-string dump), not real file text. Re-read the target file, then send the actual, human-readable final file contents -- or use apply_patch for a targeted change. Do not resend the serialized blob."
+	case "replace_in_file":
+		return "Your last replace_in_file replacement was a malformed serialized payload, not real code. Re-read the file and provide the exact literal replacement text, or use apply_patch. Do not resend the serialized blob."
+	case "apply_patch", "apply_edit_proposal":
+		return "Your last edit proposal carried a malformed serialized payload instead of real replacement text. Re-anchor on the current file contents and resend a patch whose added lines are the actual code/text, not a JSON/base64 dump."
+	default:
+		return "Your last edit carried a malformed serialized payload instead of real file text. Re-read the file and resend the actual literal content, not a serialized blob."
 	}
 }
 

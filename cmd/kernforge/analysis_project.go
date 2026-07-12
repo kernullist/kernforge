@@ -10977,6 +10977,13 @@ func shouldRetryProviderError(err error) bool {
 			return true
 		}
 	}
+	// A flaky local model server most often fails with a dropped/reset socket, a
+	// restarting backend, or a truncated/empty body -- none of which match the
+	// hints above. Treat those transient transport failures as retryable so a
+	// single blip does not hard-fail the whole request.
+	if textLooksLikeTransientTransportError(text) {
+		return true
+	}
 	return false
 }
 

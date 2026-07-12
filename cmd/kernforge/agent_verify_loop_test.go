@@ -5059,7 +5059,12 @@ func TestAgentRetriesCodeSpanTruncationWhileStreaming(t *testing.T) {
 		EmitAssistantDelta: func(text string) { emitted.WriteString(text) },
 	}
 
-	reply, err := agent.Reply(context.Background(), "review and fix this file")
+	// Read-only request: this test verifies code-span (backtick) truncation
+	// merging across streaming chunks, not narration handling. A "fix" request
+	// would (correctly) route the plan-narration reply through the
+	// narration-without-action nudge; keep it read-only so the merge assertion is
+	// what is exercised.
+	reply, err := agent.Reply(context.Background(), "review this file")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}

@@ -929,6 +929,47 @@ func providerErrorLooksRetryable(statusCode int, errorType, message, code, raw s
 			return true
 		}
 	}
+	if textLooksLikeTransientTransportError(text) {
+		return true
+	}
+	return false
+}
+
+// textLooksLikeTransientTransportError reports whether an error string looks like
+// a transient transport / empty-body failure of the kind a flaky LOCAL model
+// server produces intermittently (a dropped or reset socket, a restarting
+// backend, a truncated or empty response body, or an empty choices array). These
+// are NOT permanent configuration errors: a bounded retry with backoff usually
+// succeeds, so they must be retryable. Before this, exactly these failures fell
+// through every retry hint and hard-failed the whole turn on the first blip --
+// the most common cause of a local-model request "just failing". Matched on
+// lowercased text so it works for both plain net errors and provider API errors.
+func textLooksLikeTransientTransportError(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return false
+	}
+	hints := []string{
+		"connection reset",
+		"reset by peer",
+		"connection refused",
+		"broken pipe",
+		"connection aborted",
+		"use of closed network connection",
+		"client connection force closed",
+		"unexpected eof",
+		"unexpected end of json input",
+		"empty choices",
+		"empty response",
+		"no response body",
+		"empty body",
+		"eof", // bare io.EOF from a dropped mid-body read
+	}
+	for _, hint := range hints {
+		if strings.Contains(text, hint) {
+			return true
+		}
+	}
 	return false
 }
 
