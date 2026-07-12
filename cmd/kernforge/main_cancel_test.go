@@ -4736,3 +4736,58 @@ func TestRuntimeStateNonFullModeStillPrompts(t *testing.T) {
 		}
 	}
 }
+
+// TestRuntimeStateEditModeAutoAcceptsPreviewWhenNonInteractive verifies that a
+// non-interactive edit-mode run applies edits instead of EOF-canceling them at
+// the diff-preview prompt (the preview is only a viewer; there is no one to show
+// it to). Interactive edit mode and non-edit modes are unaffected.
+func TestRuntimeStateEditModeAutoAcceptsPreviewWhenNonInteractive(t *testing.T) {
+	// Edit mode, non-interactive, no reader: must auto-accept without prompting.
+	rt := &runtimeState{
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: false,
+		perms:       NewPermissionManager(ModeAcceptEdits, nil),
+	}
+	if !rt.permissionModeIsEdit() {
+		t.Fatalf("ModeAcceptEdits should report edit mode")
+	}
+	ok, err := rt.previewEdit(EditPreview{})
+	if err != nil || !ok {
+		t.Fatalf("non-interactive edit mode must auto-accept the preview, got ok=%v err=%v", ok, err)
+	}
+
+	// A non-edit, non-full mode must NOT auto-accept when non-interactive: with no
+	// reader the preview prompt cancels rather than silently applying.
+	rtDefault := &runtimeState{
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: false,
+		perms:       NewPermissionManager(ModeDefault, nil),
+	}
+	if rtDefault.permissionModeIsEdit() {
+		t.Fatalf("ModeDefault must not report edit mode")
+	}
+	okDefault, errDefault := rtDefault.previewEdit(EditPreview{})
+	if okDefault || errDefault == nil {
+		t.Fatalf("non-edit non-interactive must not auto-accept the preview, got ok=%v err=%v", okDefault, errDefault)
+	}
+
+	// Interactive edit mode must still consult the confirm flow (it does NOT take
+	// the non-interactive auto-accept branch): an "n" answer cancels the edit,
+	// proving the reader was consulted rather than auto-accepted.
+	rtInteractive := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("n\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: true,
+		perms:       NewPermissionManager(ModeAcceptEdits, nil),
+	}
+	okInteractive, errInteractive := rtInteractive.previewEdit(EditPreview{})
+	if okInteractive || !errors.Is(errInteractive, ErrEditCanceled) {
+		t.Fatalf("interactive edit mode must consult the prompt (an 'n' cancels), got ok=%v err=%v", okInteractive, errInteractive)
+	}
+}

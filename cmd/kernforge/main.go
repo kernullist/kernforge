@@ -910,6 +910,14 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 		// like the session-wide "a" answer.
 		return true, nil
 	}
+	if !rt.interactive && rt.permissionModeIsEdit() {
+		// Edit mode auto-applies in-workspace edits, and the diff preview is only
+		// a viewer -- a non-interactive run (headless -prompt / goal) has no one to
+		// show it to. Accept the edit instead of EOF-canceling it at the prompt.
+		// The separate write-permission gate (Perms.Allow(ActionWrite)) still
+		// applies downstream, and an interactive edit-mode session still prompts.
+		return true, nil
+	}
 	if rt.autoAcceptPreviewOnce {
 		rt.autoAcceptPreviewOnce = false
 		return true, nil
@@ -9259,6 +9267,23 @@ func (rt *runtimeState) permissionModeIsFull() bool {
 		return true
 	}
 	return false
+}
+
+// permissionModeIsEdit reports whether the active permission mode is edit
+// (ModeAcceptEdits) according to any of the three mode sources. Edit mode
+// auto-applies in-workspace edits; only the LIVE permission manager is
+// consulted first so a per-session override wins, then config/session.
+func (rt *runtimeState) permissionModeIsEdit() bool {
+	if rt == nil {
+		return false
+	}
+	if rt.perms != nil {
+		return rt.perms.Mode() == ModeAcceptEdits
+	}
+	if rt.session != nil && strings.TrimSpace(rt.session.PermissionMode) != "" {
+		return ParseMode(rt.session.PermissionMode) == ModeAcceptEdits
+	}
+	return ParseMode(rt.cfg.PermissionMode) == ModeAcceptEdits
 }
 
 func renderAutoVerificationPromptSummary(cfg Config, plan VerificationPlan) string {
