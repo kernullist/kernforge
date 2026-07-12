@@ -939,17 +939,10 @@ func (rt *runtimeState) promptContinueReviewRepair(message string) (bool, error)
 	if message != "" {
 		rt.printAssistant(message)
 	}
-	if rt.permissionModeIsFull() {
-		// Full mode never prompts. Auto-continuing a repair loop that already
-		// failed to converge would grant it a fresh budget every time it stalls
-		// (an unbounded loop), so the no-prompt resolution is to stop here and
-		// leave the review state in the session, and say so explicitly instead
-		// of implying the user declined.
-		fmt.Fprintln(rt.writer, rt.ui.hintLine(localizedText(rt.cfg,
-			"Permission mode is full; stopping this non-converging review-repair loop automatically instead of prompting.",
-			"권한 모드가 full이라 묻지 않고 진행합니다: 수렴하지 못한 리뷰-수리 루프는 여기서 자동으로 중단합니다.")))
-		return false, nil
-	}
+	// Full mode never reaches here: the agent loop drives the review-repair
+	// continue/stop decision itself in full mode (bounded auto-continue, then an
+	// honest terminal stop) and only invokes this interactive widget outside full
+	// mode. See agent.go permissionModeIsFull()/interactiveDecision.
 	if !rt.interactive {
 		return false, nil
 	}

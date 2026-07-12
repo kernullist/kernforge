@@ -932,6 +932,17 @@ func preWriteMainOnlyReviewerFallbackApproved(session *Session) bool {
 	if !reviewRunHasUsableMainReviewer(last) {
 		return false
 	}
+	// Full mode is "proceed autonomously": a required reviewer route that failed
+	// (e.g. a flaky local reviewer returning weak/truncated output) must not
+	// permanently hard-block every edit when the main model DID produce a usable
+	// self-review. Auto-approve the same advisory main-only fallback the user
+	// would otherwise opt into by text, scoped identically (pre_write trigger,
+	// required-reviewer failure, usable main reviewer). This does not weaken the
+	// gate when the reviewer works -- it only engages after a failure is
+	// observed, and model findings still surface as advisory warnings.
+	if sessionPermissionModeIsFull(session) {
+		return true
+	}
 	return latestUserMessageSatisfies(session.Messages, looksLikeMainOnlyReviewFallbackApproval)
 }
 

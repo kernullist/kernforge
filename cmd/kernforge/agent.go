@@ -118,7 +118,17 @@ const (
 	// stops and hands the user a y/n decision. The absolute cap above still
 	// bounds the total (and is the backstop for a count that merely oscillates).
 	maxPreWriteReviewNoProgressRounds    = 3
-	maxPreWriteReviewRepairInspectTools  = 6
+	// maxAutonomousReviewRepairContinuations bounds how many times an autonomous
+	// run (no interactive continuation widget) or a full-mode run auto-continues
+	// a pre-write review-repair loop that hit a stop cap. It stands in for the
+	// interactive "y=continue" a user would give: without a user to ask, the loop
+	// used to dead-end on the first cap with an unanswerable y/n prompt. Each
+	// continuation still respects the per-round caps above, and once this ceiling
+	// is reached the turn stops with an honest terminal report (no y/n, no pending
+	// confirmation). Small on purpose: a genuinely non-converging loop must not
+	// burn unbounded wall-clock, but a briefly-stuck one gets real extra chances.
+	maxAutonomousReviewRepairContinuations = 2
+	maxPreWriteReviewRepairInspectTools    = 6
 	maxPreWriteReviewRepairInspectNudges = 1
 	maxPreFixReviewRepairInspectTools    = 6
 	maxPreFixReviewRepairInspectNudges   = 1
@@ -779,6 +789,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	preFixReviewRepairReadPaths := map[string]int{}
 	preWriteReviewRequiresReanchor := false
 	preWriteReviewReanchorBlocks := 0
+	// autonomousReviewRepairContinuations counts how many times this turn has
+	// auto-continued a capped pre-write review-repair loop in place of an
+	// interactive y/n (autonomous or full mode). Bounded by
+	// maxAutonomousReviewRepairContinuations.
+	autonomousReviewRepairContinuations := 0
 	lastToolError := ""
 	lastToolErrorCount := 0
 	lastToolCallSignature := ""
@@ -2936,14 +2951,82 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				nonConvergingPreWriteBlock := preWriteReviewNoProgressBlocks >= maxPreWriteReviewNoProgressRounds
 				if repeatedPreWriteBlock || nonConvergingPreWriteBlock || preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
-					if a.PromptContinueReviewRepair != nil && sessionAllowsReviewRepairContinuation(a.Session) {
-						// Interactive mode: ask the live confirm widget whether to keep
-						// repairing instead of dead-ending in a text-only two-turn
-						// handoff. On yes, grant a fresh repair budget and fall through
-						// to the normal under-cap retry below so the model re-patches in
-						// this same turn; on no, stop with no files changed.
-						scopeChurn := nonConvergingPreWriteBlock && !repeatedPreWriteBlock &&
-							preWriteReviewRepairLooksLikeScopeChurn(preWriteReviewRepairBlockFingerprints, preWriteReviewRepairBlocks)
+					scopeChurn := nonConvergingPreWriteBlock && !repeatedPreWriteBlock &&
+						preWriteReviewRepairLooksLikeScopeChurn(preWriteReviewRepairBlockFingerprints, preWriteReviewRepairBlocks)
+					canContinueRepair := sessionAllowsReviewRepairContinuation(a.Session)
+					resetRepairBudget := func() {
+						preWriteReviewRepairBlocks = 0
+						preWriteReviewNoProgressBlocks = 0
+						preWriteReviewPrevBlockerIDs = nil
+						preWriteReviewMinBlockerCount = -1
+						for fingerprint := range preWriteReviewRepairBlockFingerprints {
+							delete(preWriteReviewRepairBlockFingerprints, fingerprint)
+						}
+					}
+					switch {
+					case a.permissionModeIsFull() && canContinueRepair && autonomousReviewRepairContinuations < maxAutonomousReviewRepairContinuations:
+						// Full mode proceeds without prompts, so instead of a y/n handoff
+						// no one will answer, stand in for the "y=continue" a user would
+						// give: grant a fresh repair budget (bounded by the ceiling) and
+						// fall through to the normal under-cap retry below so the model
+						// re-patches this same turn.
+						autonomousReviewRepairContinuations++
+						if a.EmitProgress != nil {
+							a.EmitProgress(localizedText(a.Config,
+								fmt.Sprintf("Pre-write review has not converged after %d rounds; full mode proceeds without prompts, so auto-continuing the repair loop (%d/%d).", preWriteReviewRepairBlocks, autonomousReviewRepairContinuations, maxAutonomousReviewRepairContinuations),
+								fmt.Sprintf("쓰기 전 리뷰가 %d라운드 후에도 수렴하지 못했습니다. full 모드는 확인 없이 진행하므로 재수리 루프를 자동으로 계속합니다(%d/%d).", preWriteReviewRepairBlocks, autonomousReviewRepairContinuations, maxAutonomousReviewRepairContinuations)))
+						}
+						a.Session.PendingReviewRepairConfirm = nil
+						resetRepairBudget()
+					case a.permissionModeIsFull():
+						// Full mode, auto-continue ceiling reached (or a read-only
+						// boundary): stop honestly. Never ask an absent user y/n and never
+						// record a pending confirmation no follow-up turn will consume.
+						toolMsg.IsError = true
+						toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
+						if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+							a.emitProgressEvent(ProgressEvent{
+								Kind:             progressKindToolFailed,
+								Message:          summary,
+								ToolName:         call.Name,
+								ToolCallID:       call.ID,
+								ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+								Status:           firstNonEmptyLine(err.Error()),
+							})
+						}
+						a.setToolExecutionResult(toolMsgIndex, toolMsg)
+						a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: repeated pre-write review failures stopped this tool-call batch before this tool could run.")
+						if a.EmitProgress != nil {
+							a.EmitProgress(localizedText(a.Config,
+								fmt.Sprintf("Pre-write review did not converge after %d rounds and %d auto-continuation(s); stopping this turn with no files changed.", preWriteReviewRepairBlocks, autonomousReviewRepairContinuations),
+								fmt.Sprintf("쓰기 전 리뷰가 %d라운드와 자동 재개 %d회 후에도 수렴하지 못했습니다. 변경된 파일 없이 이번 턴을 종료합니다.", preWriteReviewRepairBlocks, autonomousReviewRepairContinuations)))
+						}
+						reply := ""
+						if !canContinueRepair {
+							reply = formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
+						} else if scopeChurn {
+							en, ko := preWriteReviewRepairScopeClarificationIntro(preWriteReviewRepairBlocks)
+							reply = formatPreWriteReviewRepairAutonomousStopReply(a.Config, a.Session, en, ko)
+						} else if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
+							reply = formatPreWriteReviewRepairAutonomousStopReply(a.Config, a.Session,
+								fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic repair loop did not converge.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks),
+								fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 수리 루프가 수렴하지 못했습니다.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks))
+						} else {
+							reply = formatPreWriteReviewRepairAutonomousStopReply(a.Config, a.Session,
+								"The revised edit still did not pass the pre-write review.",
+								"수정안이 아직 쓰기 전 리뷰 모델을 통과하지 못했습니다.")
+						}
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						return reply, nil
+					case a.PromptContinueReviewRepair != nil && canContinueRepair:
+						// Interactive (not full): ask the live confirm widget whether to
+						// keep repairing instead of dead-ending in a text-only two-turn
+						// handoff. On yes, grant a fresh repair budget and fall through to
+						// the normal under-cap retry below; on no, stop with no files
+						// changed.
 						promptText := ""
 						if scopeChurn {
 							promptText = formatPreWriteReviewRepairScopeClarificationPrompt(a.Config, a.Session, preWriteReviewRepairBlocks)
@@ -2970,14 +3053,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							}
 							return reply, nil
 						}
-						preWriteReviewRepairBlocks = 0
-						preWriteReviewNoProgressBlocks = 0
-						preWriteReviewPrevBlockerIDs = nil
-						preWriteReviewMinBlockerCount = -1
-						for fingerprint := range preWriteReviewRepairBlockFingerprints {
-							delete(preWriteReviewRepairBlockFingerprints, fingerprint)
-						}
-					} else {
+						resetRepairBudget()
+					default:
+						// Non-full without a live widget (headless/goal/MCP text
+						// handoff), or a read-only boundary: preserve the existing
+						// two-turn y/n text handoff that a follow-up turn consumes.
 						toolMsg.IsError = true
 						toolMsg.Text = a.boundToolModelText(toolExecutionModelTextWithError(result, err), result.Meta)
 						if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
@@ -2997,8 +3077,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 								fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic re-patch loop did not converge. Stopping and asking the user to decide.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks),
 								fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 재패치 루프가 수렴하지 못했습니다. 중단하고 사용자에게 결정을 요청합니다.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)))
 						}
-						scopeChurn := nonConvergingPreWriteBlock && !repeatedPreWriteBlock &&
-							preWriteReviewRepairLooksLikeScopeChurn(preWriteReviewRepairBlockFingerprints, preWriteReviewRepairBlocks)
 						reply := ""
 						if scopeChurn {
 							reply = formatPreWriteReviewRepairScopeClarificationReply(a.Config, a.Session, preWriteReviewRepairBlocks)
@@ -3145,6 +3223,58 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: reviewer gate stopped this tool-call batch before this tool could run.")
+					hasReviewRun := a.Session != nil && a.Session.LastReviewRun != nil
+					if a.permissionModeIsFull() {
+						// Full mode proceeds without prompts. Auto-retry a bounded number
+						// of times so the auto-approved main-only reviewer fallback
+						// (preWriteMainOnlyReviewerFallbackApproved) can engage on the next
+						// attempt -- so a flaky independent reviewer that merely failed to
+						// return usable output does not permanently block every edit -- or
+						// actionable findings can be repaired. Then stop honestly, without
+						// an unanswerable y/n and without a pending confirmation.
+						reviewerGateActionable := hasReviewRun && sessionAllowsReviewRepairContinuation(a.Session) && reviewRunHasActionableNonReviewerFindingsFromSession(a.Session)
+						fullModeFallbackRetry := hasReviewRun && reviewRunHasUsableMainReviewer(*a.Session.LastReviewRun)
+						if (reviewerGateActionable || fullModeFallbackRetry) && autonomousReviewRepairContinuations < maxAutonomousReviewRepairContinuations {
+							autonomousReviewRepairContinuations++
+							if a.Session != nil {
+								a.Session.PendingReviewRepairConfirm = nil
+							}
+							primed := false
+							if reviewerGateActionable {
+								primed = a.primeReviewerGateRepairFromLastReview(latestUser)
+							}
+							if a.EmitProgress != nil {
+								a.EmitProgress(localizedText(a.Config,
+									fmt.Sprintf("The pre-write reviewer route was unavailable; full mode proceeds without prompts, so re-attempting the edit (%d/%d).", autonomousReviewRepairContinuations, maxAutonomousReviewRepairContinuations),
+									fmt.Sprintf("쓰기 전 리뷰어 route를 사용할 수 없었지만 full 모드는 확인 없이 진행하므로 편집을 다시 시도합니다(%d/%d).", autonomousReviewRepairContinuations, maxAutonomousReviewRepairContinuations)))
+							}
+							if fullModeFallbackRetry && !primed {
+								a.Session.AddMessage(internalUserMessage("The independent pre-write reviewer route was unavailable. In full mode the main model's own review now acts as the advisory pre-write gate. Re-issue the same edit against the current workspace state; do not switch to web research and do not abandon the change."))
+							}
+							if saveErr := a.Store.Save(a.Session); saveErr != nil {
+								return "", saveErr
+							}
+							lastToolError = ""
+							lastToolErrorCount = 0
+							toolRetryQueued = true
+							break
+						}
+						if a.Session != nil {
+							a.Session.PendingReviewRepairConfirm = nil
+						}
+						reply := localizedText(a.Config,
+							"The pre-write reviewer gate did not produce reliable evidence, so I stopped the edit. The blocked edit was not applied.",
+							"쓰기 전 리뷰어 게이트가 신뢰 가능한 근거를 만들지 못해서 편집을 중단했습니다. 차단된 편집은 적용되지 않았습니다.",
+						)
+						if hasReviewRun {
+							reply = formatReviewerGateUnavailableUserDecisionPrompt(a.Config, a.Session)
+						}
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						return reply, nil
+					}
 					reply := localizedText(a.Config,
 						"The pre-write reviewer gate did not produce reliable evidence, so I stopped the edit. The blocked edit was not applied.",
 						"쓰기 전 리뷰어 게이트가 신뢰 가능한 근거를 만들지 못해서 편집을 중단했습니다. 차단된 편집은 적용되지 않았습니다.",
@@ -6311,8 +6441,30 @@ func formatPreWriteReviewRepairInspectionLoopLimitReply(cfg Config, session *Ses
 	)
 }
 
+// preWriteRepairDecisionRender selects how the shared review-repair decision body
+// renders its trailing "[3]" section and whether it records a pending two-turn
+// confirmation.
+type preWriteRepairDecisionRender int
+
+const (
+	// preWriteRepairRenderInlineReply is the interactive text handoff: it records
+	// a pending two-turn confirmation and appends the "[y=continue, n=stop] reply
+	// with exactly y or n" tail. Only valid when a NEXT user turn can consume the
+	// answer (interactive REPL).
+	preWriteRepairRenderInlineReply preWriteRepairDecisionRender = iota
+	// preWriteRepairRenderLivePrompt is the companion for an interactive widget
+	// (PromptContinueReviewRepair) that collects the decision live within the same
+	// turn: no pending confirmation, no y/n tail.
+	preWriteRepairRenderLivePrompt
+	// preWriteRepairRenderAutonomousStop is the terminal report for a run with no
+	// user to answer (headless/goal/MCP or full mode) that exhausted its bounded
+	// auto-continue budget: no pending confirmation, no y/n tail, and a remedy
+	// line instead of an unanswerable question.
+	preWriteRepairRenderAutonomousStop
+)
+
 func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, englishIntro string, koreanIntro string) string {
-	return formatPreWriteReviewRepairUserDecisionContent(cfg, session, englishIntro, koreanIntro, true)
+	return formatPreWriteReviewRepairUserDecisionContent(cfg, session, englishIntro, koreanIntro, preWriteRepairRenderInlineReply)
 }
 
 // formatPreWriteReviewRepairUserDecisionPrompt renders the same review context as
@@ -6321,18 +6473,35 @@ func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, e
 // interactive confirmation widget (PromptContinueReviewRepair) collects the
 // decision live within the same turn.
 func formatPreWriteReviewRepairUserDecisionPrompt(cfg Config, session *Session, englishIntro string, koreanIntro string) string {
-	return formatPreWriteReviewRepairUserDecisionContent(cfg, session, englishIntro, koreanIntro, false)
+	return formatPreWriteReviewRepairUserDecisionContent(cfg, session, englishIntro, koreanIntro, preWriteRepairRenderLivePrompt)
 }
 
-func formatPreWriteReviewRepairUserDecisionContent(cfg Config, session *Session, englishIntro string, koreanIntro string, forInlineReply bool) string {
+// formatPreWriteReviewRepairAutonomousStopReply is the terminal report used when
+// an autonomous or full-mode run stops a non-converging pre-write repair loop
+// after exhausting its bounded auto-continue budget. It shows the same review
+// context but never asks an absent user to type y/n and never records a pending
+// confirmation that no follow-up turn will consume.
+func formatPreWriteReviewRepairAutonomousStopReply(cfg Config, session *Session, englishIntro string, koreanIntro string) string {
+	return formatPreWriteReviewRepairUserDecisionContent(cfg, session, englishIntro, koreanIntro, preWriteRepairRenderAutonomousStop)
+}
+
+func formatPreWriteReviewRepairUserDecisionContent(cfg Config, session *Session, englishIntro string, koreanIntro string, render preWriteRepairDecisionRender) string {
 	canContinueRepair := sessionAllowsReviewRepairContinuation(session)
-	if forInlineReply {
+	switch render {
+	case preWriteRepairRenderInlineReply:
 		if canContinueRepair {
 			recordPendingReviewRepairConfirmation(session)
 		} else if session != nil {
 			session.PendingReviewRepairConfirm = nil
 		}
+	default:
+		// Live-prompt and autonomous-stop never leave a pending confirmation
+		// behind: the decision is either collected live or made automatically.
+		if session != nil {
+			session.PendingReviewRepairConfirm = nil
+		}
 	}
+	forInlineReply := render == preWriteRepairRenderInlineReply
 	korean := localePrefersKorean(cfg)
 	var b strings.Builder
 	if korean {
@@ -6364,7 +6533,13 @@ func formatPreWriteReviewRepairUserDecisionContent(cfg Config, session *Session,
 		}
 		b.WriteString(proposalText)
 	}
-	if canContinueRepair && forInlineReply && korean {
+	if canContinueRepair && render == preWriteRepairRenderAutonomousStop && korean {
+		b.WriteString("\n\n[3] 다음 조치\n확인 없이 진행하는 실행이라 자동 재수리 예산을 모두 사용할 때까지 반복했지만 쓰기 전 리뷰가 수렴하지 못했습니다. 변경된 파일은 없습니다.")
+		b.WriteString("\n- 이 편집을 그래도 적용하려면 review.blocking을 advisory로 설정하거나 /model cross-review로 동작하는 독립 리뷰어를 지정한 뒤 같은 요청을 다시 실행하세요.")
+	} else if canContinueRepair && render == preWriteRepairRenderAutonomousStop {
+		b.WriteString("\n\n[3] Next step\nThis run proceeds without prompts, so it auto-continued the repair loop until the automatic budget was exhausted, but the pre-write review did not converge. No files were changed.")
+		b.WriteString("\n- To apply this edit anyway, set review.blocking = advisory or configure a working independent reviewer with /model cross-review, then re-run the same request.")
+	} else if canContinueRepair && forInlineReply && korean {
 		b.WriteString("\n\n[3] 다음 선택\n이 검토 결과를 기준으로 계속 수정할까요? [y=계속, n=중지]\n`y` 또는 `n`만 입력해 주세요.")
 	} else if canContinueRepair && forInlineReply {
 		b.WriteString("\n\n[3] Next decision\nShould I keep repairing from this review result? [y=continue, n=stop]\nReply with exactly `y` or `n`.")
@@ -10388,6 +10563,33 @@ func (a *Agent) editPermissionGranted() bool {
 // the generic read-only-analysis wording.
 func (a *Agent) permissionModeIsPlan() bool {
 	return a != nil && a.Workspace.Perms != nil && a.Workspace.Perms.Mode() == ModePlan
+}
+
+// permissionModeIsFull reports whether the active permission mode is full
+// (ModeBypass) according to any of the three mode sources (live permission
+// manager, config, persisted session). Full mode means "proceed autonomously
+// without prompts", so the review-repair loop must drive its own continue/stop
+// decisions here instead of dead-ending on an unanswerable y/n prompt.
+func (a *Agent) permissionModeIsFull() bool {
+	if a == nil {
+		return false
+	}
+	if a.Workspace.Perms != nil && a.Workspace.Perms.Mode() == ModeBypass {
+		return true
+	}
+	if ParseMode(a.Config.PermissionMode) == ModeBypass {
+		return true
+	}
+	if a.Session != nil && ParseMode(a.Session.PermissionMode) == ModeBypass {
+		return true
+	}
+	return false
+}
+
+// sessionPermissionModeIsFull reports whether the persisted session permission
+// mode is full (ModeBypass). Used where only the session is in scope.
+func sessionPermissionModeIsFull(session *Session) bool {
+	return session != nil && ParseMode(session.PermissionMode) == ModeBypass
 }
 
 // applyEditAuthorityToEnvelope grants file-mutation capability for the turn when
