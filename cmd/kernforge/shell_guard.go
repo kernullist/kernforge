@@ -26,6 +26,30 @@ type workspaceFileSignature struct {
 }
 
 func snapshotWorkspaceFiles(root string) (map[string]workspaceFileSignature, error) {
+	return snapshotWorkspaceFilesOpts(root, workspaceSnapshotOpts{})
+}
+
+type workspaceSnapshotOpts struct {
+	// IncludeContentHash enables SHA-256 of file contents. Turn-start isolation
+	// and most change detection only need size/mtime; hashing every file made
+	// the first turn hang for minutes on large workspaces.
+	IncludeContentHash bool
+	// OnlyPaths, when non-empty, snapshots just those root-relative paths
+	// instead of walking the whole tree.
+	OnlyPaths []string
+}
+
+var workspaceSnapshotSkipDirs = map[string]bool{
+	".git": true, ".svn": true, ".hg": true, ".jj": true,
+	"node_modules": true, ".pnpm-store": true, ".yarn": true,
+	".build": true, "build": true, "dist": true, "target": true,
+	"vendor": true, "bin": true, "obj": true, ".idea": true, ".vs": true,
+	".next": true, ".turbo": true, ".cache": true, "coverage": true,
+	"deriveddatacache": true, "intermediate": true, "binaries": true,
+	"saved": true, "__pycache__": true, ".pytest_cache": true,
+}
+
+func snapshotWorkspaceFilesOpts(root string, opts workspaceSnapshotOpts) (map[string]workspaceFileSignature, error) {
 	snapshot := map[string]workspaceFileSignature{}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -35,9 +59,52 @@ func snapshotWorkspaceFiles(root string) (map[string]workspaceFileSignature, err
 		rootAbs = resolvedRoot
 	}
 	walkRoot := rootAbs
+	if len(opts.OnlyPaths) > 0 {
+		for _, raw := range opts.OnlyPaths {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			rel := raw
+			if filepath.IsAbs(raw) {
+				computed, relErr := filepath.Rel(walkRoot, filepath.Clean(raw))
+				if relErr != nil {
+					continue
+				}
+				rel = computed
+			}
+			rel = filepath.Clean(filepath.FromSlash(rel))
+			if rel == "" || rel == "." {
+				continue
+			}
+			if !workspaceRelativePathStaysWithinRoot(rel) {
+				continue
+			}
+			path := filepath.Join(walkRoot, rel)
+			info, infoErr := os.Lstat(path)
+			if infoErr != nil {
+				if os.IsNotExist(infoErr) {
+					continue
+				}
+				return nil, infoErr
+			}
+			signature, sigErr := workspaceFileSignatureForPathOpts(rootAbs, path, info, opts.IncludeContentHash)
+			if sigErr != nil {
+				return nil, sigErr
+			}
+			snapshot[rel] = signature
+		}
+		return snapshot, nil
+	}
 	err = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if d.IsDir() {
+			name := strings.ToLower(strings.TrimSpace(d.Name()))
+			if workspaceSnapshotSkipDirs[name] {
+				return filepath.SkipDir
+			}
 		}
 		info, infoErr := os.Lstat(path)
 		if infoErr != nil {
@@ -51,14 +118,11 @@ func snapshotWorkspaceFiles(root string) (map[string]workspaceFileSignature, err
 			}
 			rel = filepath.Clean(computed)
 		}
-		signature, sigErr := workspaceFileSignatureForPath(rootAbs, path, info)
+		signature, sigErr := workspaceFileSignatureForPathOpts(rootAbs, path, info, opts.IncludeContentHash)
 		if sigErr != nil {
 			return sigErr
 		}
 		snapshot[rel] = signature
-		if d.IsDir() {
-			return nil
-		}
 		return nil
 	})
 	if err != nil {
@@ -68,6 +132,10 @@ func snapshotWorkspaceFiles(root string) (map[string]workspaceFileSignature, err
 }
 
 func workspaceFileSignatureForPath(rootAbs string, path string, info fs.FileInfo) (workspaceFileSignature, error) {
+	return workspaceFileSignatureForPathOpts(rootAbs, path, info, false)
+}
+
+func workspaceFileSignatureForPathOpts(rootAbs string, path string, info fs.FileInfo, includeContentHash bool) (workspaceFileSignature, error) {
 	signature := workspaceFileSignature{
 		Size:    info.Size(),
 		ModTime: info.ModTime().UnixNano(),
@@ -101,7 +169,7 @@ func workspaceFileSignatureForPath(rootAbs string, path string, info fs.FileInfo
 		signature.LinkTargetSize = targetInfo.Size()
 		signature.LinkTargetModTime = targetInfo.ModTime().UnixNano()
 		signature.LinkTargetMode = targetInfo.Mode()
-		if targetInfo.Mode().IsRegular() {
+		if includeContentHash && targetInfo.Mode().IsRegular() {
 			contentSHA, err := hashRegularFile(path)
 			if err != nil {
 				return workspaceFileSignature{}, err
@@ -110,7 +178,7 @@ func workspaceFileSignatureForPath(rootAbs string, path string, info fs.FileInfo
 		}
 		return signature, nil
 	}
-	if info.Mode().IsRegular() {
+	if includeContentHash && info.Mode().IsRegular() {
 		contentSHA, err := hashRegularFile(path)
 		if err != nil {
 			return workspaceFileSignature{}, err
@@ -144,6 +212,28 @@ func hashRegularFile(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func workspaceFileSignaturesMatch(left, right workspaceFileSignature) bool {
+	if left.Size != right.Size || left.ModTime != right.ModTime || left.Mode != right.Mode {
+		return false
+	}
+	if left.LinkTarget != right.LinkTarget ||
+		left.LinkTargetStatus != right.LinkTargetStatus ||
+		left.LinkTargetSize != right.LinkTargetSize ||
+		left.LinkTargetModTime != right.LinkTargetModTime ||
+		left.LinkTargetMode != right.LinkTargetMode {
+		return false
+	}
+	// Content hashes are optional. A metadata-only baseline compared against a
+	// hashed re-check must not spuriously conflict when size/mtime still match.
+	if left.ContentSHA != "" && right.ContentSHA != "" && left.ContentSHA != right.ContentSHA {
+		return false
+	}
+	if left.LinkTargetContentSHA != "" && right.LinkTargetContentSHA != "" && left.LinkTargetContentSHA != right.LinkTargetContentSHA {
+		return false
+	}
+	return true
 }
 
 func normalizeAllowedWriteScopes(root string, allowed []string) []string {
@@ -221,7 +311,7 @@ func changedWorkspaceSignaturePaths(before map[string]workspaceFileSignature, cu
 	for path := range seen {
 		left, leftOK := before[path]
 		right, rightOK := current[path]
-		if leftOK && rightOK && left == right {
+		if leftOK && rightOK && workspaceFileSignaturesMatch(left, right) {
 			continue
 		}
 		changed = append(changed, filepath.ToSlash(path))

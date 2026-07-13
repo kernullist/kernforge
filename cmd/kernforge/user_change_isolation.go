@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -34,6 +35,11 @@ func (a *Agent) startUserChangeIsolation() {
 		StartedAt:    time.Now(),
 	}
 	if strings.TrimSpace(root) != "" {
+		a.emitProgressEvent(ProgressEvent{
+			Message: localizedText(a.Config,
+				"Capturing workspace baseline...",
+				"워크스페이스 기준 스냅샷을 만드는 중입니다..."),
+		})
 		baseline, err := snapshotWorkspaceFiles(root)
 		if err != nil {
 			state.SnapshotError = err.Error()
@@ -65,7 +71,16 @@ func (a *Agent) checkUserChangeIsolationBeforeTool(call ToolCall) error {
 	if state == nil || len(state.Baseline) == 0 || strings.TrimSpace(state.Root) == "" {
 		return nil
 	}
-	current, err := snapshotWorkspaceFiles(state.Root)
+	relativeScopes := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if rel := userChangeIsolationRelativePath(state.Root, scope); rel != "" {
+			relativeScopes = append(relativeScopes, rel)
+		}
+	}
+	current, err := snapshotWorkspaceFilesOpts(state.Root, workspaceSnapshotOpts{
+		OnlyPaths:          relativeScopes,
+		IncludeContentHash: true, // scoped re-check: hashing a few edit targets is cheap
+	})
 	if err != nil {
 		report := UserChangeIsolationReport{
 			GeneratedAt: time.Now(),
@@ -76,7 +91,7 @@ func (a *Agent) checkUserChangeIsolationBeforeTool(call ToolCall) error {
 		a.Session.LastUserChangeIsolationReport = &report
 		return nil
 	}
-	conflicts := detectUserChangeConflicts(state.Root, state.Baseline, current, scopes, state.AgentTouched)
+	conflicts := detectUserChangeConflicts(state.Root, state.Baseline, current, relativeScopes, state.AgentTouched)
 	if len(conflicts) == 0 {
 		return nil
 	}
@@ -142,7 +157,7 @@ func (a *Agent) rebaselineUserChangeIsolationFromRead(call ToolCall, execErr err
 	if !conflicted[readKey] {
 		return
 	}
-	current, err := snapshotWorkspaceFiles(root)
+	current, err := snapshotWorkspaceFilesOpts(root, workspaceSnapshotOpts{OnlyPaths: []string{readRel}})
 	if err != nil {
 		report.Warnings = appendTaskStateItem(report.Warnings, "Could not refresh user-change isolation baseline after re-reading "+readRel+": "+err.Error(), 8)
 		report.Normalize()
@@ -151,8 +166,21 @@ func (a *Agent) rebaselineUserChangeIsolationFromRead(call ToolCall, execErr err
 	clean := filepath.Clean(filepath.FromSlash(readRel))
 	if signature, ok := current[clean]; ok {
 		state.Baseline[clean] = signature
+	} else if signature, ok := current[filepath.FromSlash(readRel)]; ok {
+		state.Baseline[clean] = signature
 	} else {
-		delete(state.Baseline, clean)
+		// Fall back to a direct metadata refresh so a path-key mismatch cannot
+		// delete the baseline entry and force a permanent conflict.
+		path := filepath.Join(root, filepath.FromSlash(readRel))
+		if info, infoErr := os.Lstat(path); infoErr == nil {
+			if signature, sigErr := workspaceFileSignatureForPath(root, path, info); sigErr == nil {
+				state.Baseline[clean] = signature
+			} else {
+				delete(state.Baseline, clean)
+			}
+		} else {
+			delete(state.Baseline, clean)
+		}
 	}
 	nextConflicts := make([]string, 0, len(report.ConflictedPaths))
 	for _, path := range report.ConflictedPaths {
@@ -207,7 +235,7 @@ func detectUserChangeConflicts(root string, baseline map[string]workspaceFileSig
 		}
 		left, leftOK := baseline[clean]
 		right, rightOK := current[clean]
-		if leftOK && rightOK && left == right {
+		if leftOK && rightOK && workspaceFileSignaturesMatch(left, right) {
 			continue
 		}
 		conflicts = append(conflicts, filepath.ToSlash(clean))

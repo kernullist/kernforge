@@ -539,6 +539,7 @@ func (a *Agent) markFinalAnswerCorrectionAccepted() {
 	if a.Session.LastCodingHarnessReport != nil {
 		a.Session.LastCodingHarnessReport.FinalAnswerCorrection = &visibility
 	}
+	a.clearHarnessBlockedRecovery()
 }
 
 func (a *Agent) markFinalAnswerCorrectionRejected(reason string) {

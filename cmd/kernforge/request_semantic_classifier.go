@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -568,7 +569,10 @@ func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Con
 		JSONMode:        true,
 		SessionID:       firstNonBlankString(a.SessionIDForRequest(), ""),
 	}
-	resp, err := a.Client.Complete(ctx, req)
+	// This Completes before the main turn and used to run with zero progress
+	// events, so a slow classifier looked like a dead first command (generic
+	// "still preparing" spinner for the whole LLM round-trip).
+	resp, err := a.completeSemanticClassifierRequest(ctx, req)
 	if err != nil {
 		envelope.Warnings = append(envelope.Warnings, "semantic classifier failed: "+firstNonEmptyLine(err.Error()))
 		envelope.Normalize()
@@ -600,6 +604,110 @@ func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Con
 		return envelope
 	}
 	return candidate
+}
+
+// completeSemanticClassifierRequest runs the pre-turn classifier Complete with
+// the same start/wait/done progress surface as the main model path, so a slow
+// classification cannot look like a hung first command.
+func (a *Agent) completeSemanticClassifierRequest(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	if a == nil || a.Client == nil {
+		return ChatResponse{}, fmt.Errorf("no model provider is configured")
+	}
+	provider := ""
+	if a.Client != nil {
+		provider = strings.TrimSpace(a.Client.Name())
+	}
+	model := firstNonBlankString(req.Model, a.Config.Model)
+	startedAt := time.Now()
+	a.emitProgressEvent(ProgressEvent{
+		Kind:     progressKindModelRequestStart,
+		Provider: provider,
+		Model:    model,
+		Stage:    "semantic_classifier",
+		Message: localizedText(a.Config,
+			"Classifying the request before the main turn...",
+			"본 turn 전에 요청을 분류하고 있습니다..."),
+	})
+	stopWait := a.startModelRequestWaitProgress(ctx, provider, model, "semantic_classifier")
+	defer stopWait()
+
+	resp, err := a.Client.Complete(ctx, req)
+	status := "completed"
+	if err != nil {
+		status = "failed"
+	}
+	if ctx.Err() == nil {
+		a.emitProgressEvent(ProgressEvent{
+			Kind:     progressKindModelRequestDone,
+			Provider: provider,
+			Model:    model,
+			Stage:    "semantic_classifier",
+			Status:   status,
+			Elapsed:  time.Since(startedAt),
+			Message: localizedText(a.Config,
+				"Request classification finished.",
+				"요청 분류가 끝났습니다."),
+		})
+	}
+	return resp, err
+}
+
+// startModelRequestWaitProgress emits periodic model-wait progress while a
+// direct Client.Complete (outside completeModelTurn) is still in flight.
+func (a *Agent) startModelRequestWaitProgress(ctx context.Context, provider, model, stage string) func() {
+	if a == nil {
+		return func() {}
+	}
+	waitDone := make(chan struct{})
+	go func() {
+		initialDelay := modelRequestWaitInitialDelay
+		if initialDelay <= 0 {
+			initialDelay = 5 * time.Second
+		}
+		repeatDelay := modelRequestWaitRepeatDelay
+		if repeatDelay <= 0 {
+			repeatDelay = 15 * time.Second
+		}
+		timer := time.NewTimer(initialDelay)
+		defer timer.Stop()
+		select {
+		case <-waitDone:
+			return
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			a.emitProgressEvent(ProgressEvent{
+				Kind:     progressKindModelRequestWait,
+				Provider: provider,
+				Model:    model,
+				Stage:    stage,
+				Elapsed:  initialDelay,
+			})
+		}
+		ticker := time.NewTicker(repeatDelay)
+		defer ticker.Stop()
+		startedAt := time.Now().Add(-initialDelay)
+		for {
+			select {
+			case <-waitDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.emitProgressEvent(ProgressEvent{
+					Kind:     progressKindModelRequestWait,
+					Provider: provider,
+					Model:    model,
+					Stage:    stage,
+					Elapsed:  time.Since(startedAt),
+				})
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(waitDone) })
+	}
 }
 
 // accrueSemanticClassifierCalibration records a baseline-vs-candidate semantic

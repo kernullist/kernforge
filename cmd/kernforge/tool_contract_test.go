@@ -73,7 +73,7 @@ func TestToolContractMalformedArgumentsCreatesInvalidSyntheticResult(t *testing.
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	if _, err := agent.completeLoop(context.Background(), false, false, false); err != nil {
+	if _, err := agent.completeLoop(context.Background(), false, false, false, 0); err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
 	if readTool.calls != 0 {
@@ -143,7 +143,7 @@ func TestToolContractReadOnlyBlocksMutatingTool(t *testing.T) {
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	if _, err := agent.completeLoop(context.Background(), true, false, false); err != nil {
+	if _, err := agent.completeLoop(context.Background(), true, false, false, 0); err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
 	if patchTool.calls != 0 {
@@ -299,7 +299,7 @@ func TestToolContractIncompleteStopDoesNotExecutePartialToolCall(t *testing.T) {
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	if _, err := agent.completeLoop(context.Background(), false, false, false); err != nil {
+	if _, err := agent.completeLoop(context.Background(), false, false, false, 0); err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
 	if readTool.calls != 0 {
@@ -363,7 +363,7 @@ func TestToolContractNoGitEnvelopeBlocksGitMutation(t *testing.T) {
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	if _, err := agent.completeLoop(context.Background(), false, false, false); err != nil {
+	if _, err := agent.completeLoop(context.Background(), false, false, false, 0); err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
 	if gitTool.calls != 0 {

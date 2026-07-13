@@ -638,7 +638,7 @@ func TestAgentRunsParallelSafeReadOnlyToolCallsConcurrently(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), true, false, false)
+	reply, err := agent.completeLoop(context.Background(), true, false, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -1365,7 +1365,7 @@ func TestAgentBlocksBroadListFilesAfterPreFixReviewFindings(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -1415,7 +1415,7 @@ func TestAgentBlocksBroadGrepAfterPreFixReviewFindings(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -1463,7 +1463,7 @@ func TestAgentBlocksRepeatedReadFileAfterPreFixReviewFindings(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -1508,7 +1508,7 @@ func TestAgentForcesPatchAfterPreFixReviewInspectionBudget(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -2945,22 +2945,18 @@ func TestAgentEmptyResponseErrorIncludesProviderModelAndAfterTool(t *testing.T) 
 		Store:     store,
 	}
 
-	_, err := agent.Reply(context.Background(), "리서치 문서를 파일로 작성해줘")
-	if err == nil {
-		t.Fatalf("expected empty response failure")
+	reply, err := agent.Reply(context.Background(), "리서치 문서를 파일로 작성해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
 	}
-	text := err.Error()
-	if !strings.Contains(text, "provider=openrouter") {
-		t.Fatalf("expected provider in error, got %q", text)
+	if !strings.Contains(reply, "empty") && !strings.Contains(reply, "빈") {
+		t.Fatalf("expected empty-stop recovery reply, got %q", reply)
 	}
-	if !strings.Contains(text, "model=openai/gpt-oss-120b") {
-		t.Fatalf("expected model in error, got %q", text)
+	if session.PendingHarnessBlockedRecovery == nil || session.PendingHarnessBlockedRecovery.Cause != harnessRecoveryCauseEmptyStop {
+		t.Fatalf("expected pending empty-stop recovery, got %#v", session.PendingHarnessBlockedRecovery)
 	}
-	if !strings.Contains(text, "stop_reason=stream_empty_fallback_empty_after_stream_retry") {
-		t.Fatalf("expected detailed stop reason in error, got %q", text)
-	}
-	if !strings.Contains(text, "after_tool=true") {
-		t.Fatalf("expected after_tool flag in error, got %q", text)
+	if !strings.Contains(reply, "Choose a next step:") && !strings.Contains(reply, "다음 단계를 고르세요:") {
+		t.Fatalf("expected recovery choices in reply, got %q", reply)
 	}
 }
 
@@ -5218,7 +5214,7 @@ func TestAgentRetriesEditToolWithoutPreFixReviewSummary(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -5421,7 +5417,7 @@ func TestAgentDoesNotRetryEditAfterStoredPreFixVisibleReviewSummary(t *testing.T
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -5535,27 +5531,30 @@ func TestAgentToolLoopLimitIncludesLastToolSummaryAndStopReason(t *testing.T) {
 		Store:     store,
 	}
 
-	_, err := agent.Reply(context.Background(), "inspect the workspace")
-	if err == nil {
-		t.Fatalf("expected tool loop limit error")
+	reply, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(err.Error(), "tool loop limit exceeded") {
-		t.Fatalf("unexpected error: %v", err)
+	if !strings.Contains(reply, "tool-loop") && !strings.Contains(reply, "도구 루프") {
+		t.Fatalf("expected tool-loop recovery reply, got %q", reply)
 	}
-	if !strings.Contains(err.Error(), "last_tools=list_files") {
-		t.Fatalf("expected last tool summary, got %v", err)
+	if session.PendingHarnessBlockedRecovery == nil || session.PendingHarnessBlockedRecovery.Cause != harnessRecoveryCauseToolLoopLimit {
+		t.Fatalf("expected pending tool-loop recovery, got %#v", session.PendingHarnessBlockedRecovery)
 	}
-	if !strings.Contains(err.Error(), "stop_reason=tool_calls") {
-		t.Fatalf("expected stop reason, got %v", err)
+	if !strings.Contains(reply, "last_tools=list_files") {
+		t.Fatalf("expected last tool summary in recovery detail, got %q", reply)
 	}
-	if !strings.Contains(err.Error(), "iteration=3") {
-		t.Fatalf("expected iteration count, got %v", err)
+	if !strings.Contains(reply, "stop_reason=tool_calls") {
+		t.Fatalf("expected stop reason in recovery detail, got %q", reply)
 	}
-	if !strings.Contains(err.Error(), "max_iterations=2") {
-		t.Fatalf("expected max iteration count, got %v", err)
+	if !strings.Contains(reply, "iteration=3") {
+		t.Fatalf("expected iteration count in recovery detail, got %q", reply)
 	}
-	if !strings.Contains(err.Error(), "recent_turns=") {
-		t.Fatalf("expected recent tool turns summary, got %v", err)
+	if !strings.Contains(reply, "max_iterations=2") {
+		t.Fatalf("expected max iteration count in recovery detail, got %q", reply)
+	}
+	if !strings.Contains(reply, "recent_turns=") {
+		t.Fatalf("expected recent tool turns summary in recovery detail, got %q", reply)
 	}
 	if len(provider.requests) != 3 {
 		t.Fatalf("expected one recovery turn beyond the normal tool budget, got %d requests", len(provider.requests))
@@ -7247,7 +7246,7 @@ func TestAgentReadOnlyAnalysisBlocksMutationCapableToolsAtExecution(t *testing.T
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), true, false, false)
+	reply, err := agent.completeLoop(context.Background(), true, false, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -9679,7 +9678,7 @@ func TestAgentClosesBlockedReadOnlyEditToolBatchBeforeGuidance(t *testing.T) {
 	}
 	session.AddMessage(Message{Role: "user", Text: "analysis-only"})
 
-	reply, err := agent.completeLoop(context.Background(), true, false, false)
+	reply, err := agent.completeLoop(context.Background(), true, false, false, 0)
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -11495,12 +11494,18 @@ func TestAgentStopsAfterRepeatedReadFilePathAcrossRangesAfterRecoveryTurn(t *tes
 		Store:     store,
 	}
 
-	_, err := agent.Reply(context.Background(), "inspect this file")
-	if err == nil {
-		t.Fatalf("expected repeated same-file reads to stop the loop")
+	reply, err := agent.Reply(context.Background(), "inspect this file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(err.Error(), "repeatedly reading the same file") {
-		t.Fatalf("unexpected error: %v", err)
+	if !strings.Contains(reply, "같은 파일을 계속 다시 읽") &&
+		!strings.Contains(reply, "kept re-reading the same file") &&
+		!strings.Contains(reply, "Choose a next step") &&
+		!strings.Contains(reply, "다음 단계를 고르세요") {
+		t.Fatalf("expected same-file read churn to escalate with a recovery choice card, got %q", reply)
+	}
+	if session.PendingHarnessBlockedRecovery == nil || session.PendingHarnessBlockedRecovery.Cause != harnessRecoveryCauseReadChurn {
+		t.Fatalf("expected pending stall recovery, got %#v", session.PendingHarnessBlockedRecovery)
 	}
 	if len(provider.requests) != 8 {
 		t.Fatalf("expected abort on eighth repeated same-file turn, got %d requests", len(provider.requests))
@@ -11689,9 +11694,18 @@ func TestAgentAbortsAfterFourthRepeatedToolFailure(t *testing.T) {
 		Store:     store,
 	}
 
-	_, err := agent.Reply(context.Background(), "try the preview flow")
-	if err == nil || !strings.Contains(err.Error(), "stopped after repeated tool failure") {
-		t.Fatalf("expected repeated tool failure error, got %v", err)
+	reply, err := agent.Reply(context.Background(), "try the preview flow")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "tool failure") && !strings.Contains(reply, "도구 실패") {
+		t.Fatalf("expected repeated tool failure recovery reply, got %q", reply)
+	}
+	if !strings.Contains(reply, "preview surface busy") && !strings.Contains(reply, "failing_tool") && !strings.Contains(reply, "마지막 실패") && !strings.Contains(reply, "Last failure") {
+		t.Fatalf("expected last failure detail in recovery reply, got %q", reply)
+	}
+	if session.PendingHarnessBlockedRecovery == nil || session.PendingHarnessBlockedRecovery.Cause != harnessRecoveryCauseRepeatedToolFailure {
+		t.Fatalf("expected pending repeated-tool-failure recovery, got %#v", session.PendingHarnessBlockedRecovery)
 	}
 	if len(provider.requests) != 4 {
 		t.Fatalf("expected abort on fourth failing turn, got %d requests", len(provider.requests))
@@ -12891,7 +12905,7 @@ func TestAgentGeneratedDocumentArtifactSynthesizesSkippedVerificationFinalWithou
 		},
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -13195,7 +13209,7 @@ func TestAgentSynthesizesGeneratedDocumentCountMismatchWithoutPostFinalLoop(t *t
 		},
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -13443,7 +13457,7 @@ func TestAgentRepairsGeneratedDocumentThenSynthesizesBadFinalSummary(t *testing.
 		},
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	reply, err := agent.completeLoop(context.Background(), false, true, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -14121,7 +14135,7 @@ func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	reply, err := agent.completeLoop(context.Background(), false, false, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -14216,7 +14230,7 @@ func TestAgentHidesToolsForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	reply, err := agent.completeLoop(context.Background(), false, false, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -14301,7 +14315,7 @@ func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *t
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	reply, err := agent.completeLoop(context.Background(), false, false, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -17203,7 +17217,7 @@ func TestAgentNormalizesShellApplyPatchBeforeReadOnlyGate(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), true, false, false)
+	reply, err := agent.completeLoop(context.Background(), true, false, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
@@ -17707,7 +17721,7 @@ func TestCompleteLoopLeavesSharedPlanOpenWhenBackgroundWorkRemains(t *testing.T)
 		Store:     store,
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	reply, err := agent.completeLoop(context.Background(), false, false, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}

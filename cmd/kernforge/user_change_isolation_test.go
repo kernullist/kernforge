@@ -1,13 +1,66 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestSnapshotWorkspaceFilesSkipsContentHashByDefault(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "big.bin")
+	payload := bytes.Repeat([]byte("x"), 256*1024)
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	started := time.Now()
+	snapshot, err := snapshotWorkspaceFiles(root)
+	if err != nil {
+		t.Fatalf("snapshotWorkspaceFiles: %v", err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("metadata snapshot took too long: %s", time.Since(started))
+	}
+	sig, ok := snapshot["big.bin"]
+	if !ok {
+		t.Fatalf("expected big.bin in snapshot, got %#v", snapshot)
+	}
+	if sig.ContentSHA != "" {
+		t.Fatalf("default snapshot must not hash file contents, got %q", sig.ContentSHA)
+	}
+	if sig.Size != int64(len(payload)) {
+		t.Fatalf("expected size %d, got %d", len(payload), sig.Size)
+	}
+}
+
+func TestSnapshotWorkspaceFilesSkipsHeavyDirs(t *testing.T) {
+	root := t.TempDir()
+	hidden := filepath.Join(root, "node_modules", "pkg")
+	if err := os.MkdirAll(hidden, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "index.js"), []byte("module.exports = 1\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "app.js"), []byte("console.log(1)\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile app: %v", err)
+	}
+	snapshot, err := snapshotWorkspaceFiles(root)
+	if err != nil {
+		t.Fatalf("snapshotWorkspaceFiles: %v", err)
+	}
+	if _, ok := snapshot[filepath.Join("node_modules", "pkg", "index.js")]; ok {
+		t.Fatalf("node_modules files must be skipped, got %#v", snapshot)
+	}
+	if _, ok := snapshot["app.js"]; !ok {
+		t.Fatalf("expected app.js in snapshot, got %#v", snapshot)
+	}
+}
 
 func TestUserChangeIsolationBlocksExternalTargetChange(t *testing.T) {
 	root := t.TempDir()

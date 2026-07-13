@@ -10,6 +10,9 @@ func (a *Agent) maybeAnswerRecentErrorQuestion(userText string) (string, bool) {
 	if a == nil || a.Session == nil {
 		return "", false
 	}
+	if looksLikeOperatorRecoveryContinuePrompt(userText) {
+		return "", false
+	}
 	if classifyTurnIntent(userText) != TurnIntentDiagnoseRecentError {
 		return "", false
 	}

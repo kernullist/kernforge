@@ -66,7 +66,13 @@ type Session struct {
 	LastJobSupervisorReport         *JobSupervisorReport             `json:"last_job_supervisor_report,omitempty"`
 	LastReviewRun                   *ReviewRun                       `json:"last_review_run,omitempty"`
 	PendingReviewRepairConfirm      *ReviewRepairConfirmationState   `json:"pending_review_repair_confirmation,omitempty"`
-	PendingImplementationDecision   *PendingImplementationDecision   `json:"pending_implementation_decision,omitempty"`
+	PendingHarnessBlockedRecovery   *HarnessBlockedRecovery          `json:"pending_harness_blocked_recovery,omitempty"`
+	// StallContinueEditBias asks the next turn to prefer concrete edits over
+	// re-reading already-seen files after the operator chose /continue from a
+	// stall recovery card. Cleared after a successful workspace mutation or when
+	// the continue turn ends.
+	StallContinueEditBias         bool                           `json:"stall_continue_edit_bias,omitempty"`
+	PendingImplementationDecision *PendingImplementationDecision `json:"pending_implementation_decision,omitempty"`
 	// PriorReviewArtifactConsent is a per-session, one-time decision about whether
 	// the model may read review artifacts under .kernforge/reviews that were
 	// produced by a PRIOR session (stale cross-session findings). Empty means not

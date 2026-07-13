@@ -1,5 +1,7 @@
 package main
 
+import "time"
+
 func shouldCancelOnEscape(hasForegroundTarget bool, shouldCancel func() bool) bool {
 	if !hasForegroundTarget {
 		return false
@@ -9,6 +11,12 @@ func shouldCancelOnEscape(hasForegroundTarget bool, shouldCancel func() bool) bo
 	}
 	return true
 }
+
+// requestCancelAbandonTimeout is how long the interactive UI waits after a
+// confirmed cancel for the agent goroutine to exit before returning the prompt
+// anyway. Hung provider sockets are force-closed immediately on cancel; this is
+// only a last-resort UI bound.
+const requestCancelAbandonTimeout = 2 * time.Second
 
 func confirmAndCancel(confirmCancel func() bool, cancel func()) bool {
 	if confirmCancel != nil && !confirmCancel() {

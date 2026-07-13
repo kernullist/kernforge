@@ -220,3 +220,106 @@ func TestMainOnlyFallbackSelfReviewFindingsAreAdvisory(t *testing.T) {
 		t.Fatalf("deterministic findings must keep blocking under main_only_fallback, got %#v", deterministic.Gate)
 	}
 }
+
+func TestPreWriteRequestLooksLikeGeneratedDocumentArtifactReadmeRefresh(t *testing.T) {
+	request := "현재 구현을 반영한 README 문서를 최신화해서 작성해"
+	if !preWriteRequestLooksLikeGeneratedDocumentArtifact(request) {
+		t.Fatalf("README document refresh must classify as generated document artifact request")
+	}
+	if !looksLikeDocumentAuthoringIntent(request) {
+		t.Fatalf("README document refresh must look like document authoring")
+	}
+	if requestHasSourceModificationIntent(strings.ToLower(request), []string{"README.md"}) {
+		t.Fatalf("README document refresh must not be treated as source-modification intent")
+	}
+	preview := EditPreview{
+		Preview: "--- a/README.md\n+++ b/README.md\n@@\n-old\n+new\n",
+		Paths:   []string{"README.md"},
+		Proposals: []EditProposal{{
+			File: "README.md",
+		}},
+	}
+	if got := preWriteGeneratedDocumentArtifactRequest(nil, preview, request); got == "" {
+		t.Fatalf("README.md preview with document-authoring request must skip blocking pre-write review")
+	}
+}
+
+func TestDeterministicNoRF001ForReadmeDocumentAuthoring(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	run := ReviewRun{
+		Trigger:   "pre_write",
+		Target:    reviewTargetChange,
+		Objective: "현재 구현을 반영한 README 문서를 최신화해서 작성해",
+		ChangeSet: ReviewChangeSet{ChangedPaths: []string{"README.md"}},
+		Evidence: ReviewEvidencePack{
+			Sources:      []string{"provided_diff"},
+			ChangedPaths: []string{"README.md"},
+			Text:         "# README\n",
+		},
+	}
+	for _, f := range deterministicReviewFindings(rt, run) {
+		if f.Title == "Code-change request reviewed without source-code evidence" {
+			t.Fatalf("README document authoring must not emit RF-001-style zero-source warning, got %#v", f)
+		}
+	}
+}
+
+func TestRuntimeGateSingleModelAdvisoryWarningsDoNotNeedReview(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	review := ReviewRun{
+		ID:            "review-single-model",
+		AutoTriggered: true,
+		Trigger:       "pre_write",
+		SkipReason:    modelReviewSkipSingleModelRoute,
+		ConsentSource: "single_model_route",
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:           true,
+			IndependenceLevel: "single_model",
+		},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictApprovedWithWarnings,
+			WarningFindings:  []string{"RF-001"},
+			BlockingFindings: nil,
+		},
+		Result: ReviewResult{
+			Degraded:       true,
+			DegradedReason: "model review " + modelReviewSkipSingleModelRoute,
+		},
+	}
+	ledger := buildRuntimeGateLedgerWithReview(root, session, runtimeGateActionReview, &review, "")
+	if ledger.Status != runtimeGateStatusReady || !ledger.Ready {
+		t.Fatalf("single-model advisory warnings must not leave the runtime gate in needs_review, got status=%q ready=%t warnings=%#v", ledger.Status, ledger.Ready, ledger.Warnings)
+	}
+	if ledger.ReviewTransaction.Status != "advisory" {
+		t.Fatalf("expected advisory review transaction, got %#v", ledger.ReviewTransaction)
+	}
+}
+
+func TestReviewAutoSingleModelSkipsImplicitModelReview(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	agent := &Agent{Config: cfg}
+	if !reviewAutoSingleModelSkipsImplicitModelReview(agent) {
+		t.Fatalf("single-model ask consent must compact/skip implicit model review")
+	}
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	agent.Config = cfg
+	if reviewAutoSingleModelSkipsImplicitModelReview(agent) {
+		t.Fatalf("consent=always must keep running implicit self-review")
+	}
+	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {Provider: "scripted", Model: "cross-model"},
+	}
+	agent.Config = cfg
+	if reviewAutoSingleModelSkipsImplicitModelReview(agent) {
+		t.Fatalf("configured cross reviewer must not use single-model skip compact path")
+	}
+}

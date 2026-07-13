@@ -739,15 +739,26 @@ func requestHasSourceModificationIntent(lower string, paths []string) bool {
 		return false
 	}
 	hasSourcePath := false
+	hasExecutableSourcePath := false
 	for _, path := range paths {
 		normalized := strings.ToLower(filepathSlashTrim(path))
 		if normalized == "" {
 			continue
 		}
-		if reviewPathIsExecutableSource(normalized) || (!pathLooksLikeDocumentArtifact(normalized) && strings.Contains(normalized, ".")) {
+		if reviewPathIsExecutableSource(normalized) {
+			hasExecutableSourcePath = true
 			hasSourcePath = true
-			break
+			continue
 		}
+		if !pathLooksLikeDocumentArtifact(normalized) && strings.Contains(normalized, ".") {
+			hasSourcePath = true
+		}
+	}
+	// Pure document authoring (README refresh, reports) often mentions
+	// "구현"/"implementation" as subject matter. Without an executable source
+	// path that must not count as a code-change request.
+	if !hasExecutableSourcePath && requestLooksLikePureDocumentAuthoring(lower) {
+		return false
 	}
 	hasSourceSignal := hasSourcePath || containsAny(lower,
 		"code", "source", "source code", "implementation", "function", "method", "class", "module", "runtime", "handler",
@@ -758,9 +769,12 @@ func requestHasSourceModificationIntent(lower string, paths []string) bool {
 		"bug", "bugs", "defect", "defects", "regression", "issue", "issues", "crash", "failure", "failing", "fails", "broken",
 		"버그", "오류", "에러", "문제", "문제점", "회귀", "깨짐", "실패",
 	)
+	// Bare "구현"/"반영"/"implementation" are not edit verbs: they commonly appear
+	// as nouns in document subjects ("현재 구현을 반영한 README"). Prefer
+	// imperative forms ("구현해", "implement ").
 	hasSourceEditVerb := containsAny(lower,
 		"address ", "change ", "correct ", "edit ", "fix ", "implement ", "modify ", "patch ", "refactor ", "remove ", "rename ", "replace ",
-		"수정", "고쳐", "고치", "해결", "패치", "반영", "구현", "변경", "삭제", "교체",
+		"수정", "고쳐", "고치", "해결", "패치", "반영해", "구현해", "구현 해", "변경", "삭제", "교체",
 	)
 	if hasSourceEditVerb && (hasSourceSignal || hasBugSignal) {
 		return true

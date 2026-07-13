@@ -1237,9 +1237,11 @@ type AnthropicClient struct {
 	baseURL    string
 	httpClient *http.Client
 	headers    map[string]string
+	connKiller *httpConnKiller
 }
 
 func NewAnthropicClient(baseURL, apiKey string) *AnthropicClient {
+	client := &http.Client{Timeout: 10 * time.Minute}
 	return &AnthropicClient{
 		apiKey:  apiKey,
 		baseURL: normalizeAnthropicBaseURL(baseURL),
@@ -1248,8 +1250,16 @@ func NewAnthropicClient(baseURL, apiKey string) *AnthropicClient {
 		// 10-minute ceiling is generous for large max_tokens completions while
 		// still bounding pathological stalls. Callers can still cancel earlier via
 		// the request context.
-		httpClient: &http.Client{Timeout: 10 * time.Minute},
+		httpClient: client,
+		connKiller: attachHTTPConnKiller(client),
 	}
+}
+
+func (c *AnthropicClient) ForceCloseConnections() {
+	if c == nil {
+		return
+	}
+	forceCloseHTTPClient(c.httpClient, c.connKiller)
 }
 
 // anthropicThinkingBudgetForEffort maps a normalized reasoning effort to an
@@ -1721,10 +1731,13 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	if err != nil {
 		return ChatResponse{}, err
 	}
-	defer resp.Body.Close()
+	stopCancelWatch := armHTTPResponseCancel(ctx, resp)
+	defer stopCancelWatch()
+	bodyReader := newContextReadCloser(ctx, resp.Body)
+	defer closeHTTPBodyWithTimeout(bodyReader, httpBodyCloseTimeout)
 
 	if resp.StatusCode >= 300 {
-		data, readErr := io.ReadAll(resp.Body)
+		data, readErr := io.ReadAll(bodyReader)
 		if readErr != nil {
 			return ChatResponse{}, readErr
 		}
@@ -1732,10 +1745,10 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	}
 
 	if streaming {
-		return readAnthropicStream(ctx, resp.Body, req.OnTextDelta, req.OnProgressEvent)
+		return readAnthropicStream(ctx, bodyReader, req.OnTextDelta, req.OnProgressEvent)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(bodyReader)
 	if err != nil {
 		return ChatResponse{}, err
 	}
@@ -1877,6 +1890,9 @@ func readAnthropicStream(ctx context.Context, body io.ReadCloser, onTextDelta fu
 	sawMessageStop := false
 
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return ChatResponse{}, err
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
@@ -2065,14 +2081,17 @@ type OpenAIClient struct {
 	name       string
 	reasoning  string
 	httpClient *http.Client
+	connKiller *httpConnKiller
 }
 
 func NewOpenAIClient(baseURL, apiKey string) *OpenAIClient {
+	client := &http.Client{}
 	return &OpenAIClient{
 		apiKey:     apiKey,
 		baseURL:    normalizeOpenAIBaseURL(baseURL),
 		name:       "openai",
-		httpClient: &http.Client{},
+		httpClient: client,
+		connKiller: attachHTTPConnKiller(client),
 	}
 }
 
@@ -2081,22 +2100,33 @@ func NewOpenAICompatibleClient(provider, baseURL, apiKey string) *OpenAIClient {
 	if provider == "" {
 		provider = "openai-compatible"
 	}
+	client := &http.Client{}
 	return &OpenAIClient{
 		apiKey:     strings.TrimSpace(apiKey),
 		baseURL:    normalizeProviderBaseURL(provider, baseURL),
 		name:       provider,
-		httpClient: &http.Client{},
+		httpClient: client,
+		connKiller: attachHTTPConnKiller(client),
 	}
 }
 
 func NewDeepSeekClient(baseURL, apiKey string, reasoningEffort string) *OpenAIClient {
+	client := &http.Client{}
 	return &OpenAIClient{
 		apiKey:     strings.TrimSpace(apiKey),
 		baseURL:    normalizeDeepSeekBaseURL(baseURL),
 		name:       "deepseek",
 		reasoning:  normalizeReasoningEffort(reasoningEffort),
-		httpClient: &http.Client{},
+		httpClient: client,
+		connKiller: attachHTTPConnKiller(client),
 	}
+}
+
+func (c *OpenAIClient) ForceCloseConnections() {
+	if c == nil {
+		return
+	}
+	forceCloseHTTPClient(c.httpClient, c.connKiller)
 }
 
 func (c *OpenAIClient) Name() string {
@@ -2347,11 +2377,14 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	if err != nil {
 		return ChatResponse{}, err
 	}
-	defer resp.Body.Close()
+	stopCancelWatch := armHTTPResponseCancel(ctx, resp)
+	defer stopCancelWatch()
+	bodyReader := newContextReadCloser(ctx, resp.Body)
+	defer closeHTTPBodyWithTimeout(bodyReader, httpBodyCloseTimeout)
 	captureProviderTurnStateHeader(resp, req.TurnState)
 
 	if resp.StatusCode >= 300 {
-		data, err := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(bodyReader)
 		if err != nil {
 			return ChatResponse{}, err
 		}
@@ -2370,11 +2403,14 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 
 	if payload.Stream {
-		streamResp, err := readOpenAIStream(ctx, providerName, resp.Body, req.OnTextDelta, req.OnProgressEvent, len(req.Tools) > 0)
+		streamResp, err := readOpenAIStream(ctx, providerName, bodyReader, req.OnTextDelta, req.OnProgressEvent, len(req.Tools) > 0)
 		if err != nil {
 			return ChatResponse{}, err
 		}
 		if shouldFallbackAfterOpenAIStream(streamResp) {
+			if ctx.Err() != nil {
+				return ChatResponse{}, ctx.Err()
+			}
 			fallbackReq := req
 			fallbackReq.OnTextDelta = nil
 			fallbackReq.OnProgressEvent = nil
@@ -2388,7 +2424,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return streamResp, nil
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(bodyReader)
 	if err != nil {
 		return ChatResponse{}, err
 	}
@@ -2504,6 +2540,7 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 	sawDone := false
 	streamUnlocked := !bufferLeadingText
 	sawToolCalls := false
+	reasoningProgressEmitted := false
 	deltaFilter := hiddenAssistantMarkupDeltaFilter{}
 	emitVisibleTextDelta := func(delta string) {
 		if onTextDelta == nil || delta == "" {
@@ -2515,6 +2552,9 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 	}
 
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return ChatResponse{}, err
+		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
@@ -2566,6 +2606,15 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 			if shouldCollectOpenAIReasoningContent(providerName) {
 				if deltaReasoning := extractOpenAIMessageText(choice.Delta.ReasoningContent); deltaReasoning != "" {
 					reasoningBuilder.WriteString(deltaReasoning)
+					if !reasoningProgressEmitted {
+						reasoningProgressEmitted = true
+						emitProgressEvent(onProgressEvent, ProgressEvent{
+							Kind:     progressKindModelRequestWait,
+							Provider: providerName,
+							Message:  "Model is producing hidden reasoning...",
+							Elapsed:  0,
+						})
+					}
 				}
 			}
 			for _, tc := range choice.Delta.ToolCalls {
@@ -2687,12 +2736,16 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 
 func shouldCollectOpenAIReasoningContent(providerName string) bool {
 	providerName = normalizeProviderName(providerName)
-	return strings.EqualFold(providerName, "deepseek") || isLocalOpenAICompatibleProvider(providerName)
+	// OpenRouter-routed DeepSeek models also emit reasoning_content; without
+	// collecting it, a long thinking phase looks like a silent hang.
+	return strings.EqualFold(providerName, "deepseek") ||
+		strings.EqualFold(providerName, "openrouter") ||
+		isLocalOpenAICompatibleProvider(providerName)
 }
 
 func shouldPreserveOpenAIReasoningContent(providerName string, text string, toolCalls []ToolCall) bool {
 	providerName = normalizeProviderName(providerName)
-	if strings.EqualFold(providerName, "deepseek") {
+	if strings.EqualFold(providerName, "deepseek") || strings.EqualFold(providerName, "openrouter") {
 		return len(toolCalls) > 0
 	}
 	if isLocalOpenAICompatibleProvider(providerName) {
@@ -3061,14 +3114,24 @@ type OllamaClient struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+	connKiller *httpConnKiller
 }
 
 func NewOllamaClient(baseURL, apiKey string) *OllamaClient {
+	client := &http.Client{}
 	return &OllamaClient{
 		apiKey:     apiKey,
 		baseURL:    normalizeOllamaBaseURL(baseURL),
-		httpClient: &http.Client{},
+		httpClient: client,
+		connKiller: attachHTTPConnKiller(client),
 	}
+}
+
+func (c *OllamaClient) ForceCloseConnections() {
+	if c == nil {
+		return
+	}
+	forceCloseHTTPClient(c.httpClient, c.connKiller)
 }
 
 func (c *OllamaClient) Name() string {

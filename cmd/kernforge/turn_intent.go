@@ -21,6 +21,11 @@ func classifyTurnIntent(text string) TurnIntent {
 	if base == "" {
 		base = strings.ToLower(strings.TrimSpace(text))
 	}
+	// Recovery continue prompts must stay on the continue/edit path even when they
+	// mention a prior failure as repair context.
+	if looksLikeOperatorRecoveryContinuePrompt(base) {
+		return TurnIntentContinueLastTask
+	}
 	if looksLikeRecentErrorQuestion(base) {
 		return TurnIntentDiagnoseRecentError
 	}
@@ -163,6 +168,12 @@ func looksLikeRecentErrorQuestion(text string) bool {
 	if lower == "" {
 		return false
 	}
+	// Operator recovery / continue-repair prompts often mention a prior syntax or
+	// tool failure as context for fixing code. Those must not be answered by the
+	// recent-error explainer; they are edit-continue work.
+	if looksLikeOperatorRecoveryContinuePrompt(lower) {
+		return false
+	}
 	hasRecentRef := containsAny(lower,
 		"방금", "아까", "직전", "최근", "이 에러", "이 오류", "그 에러", "그 오류",
 		"last error", "recent error", "that error", "this error", "previous error",
@@ -171,4 +182,36 @@ func looksLikeRecentErrorQuestion(text string) bool {
 		"에러", "오류", "실패", "왜", "원인", "failed", "failure", "error", "why", "cause",
 	)
 	return hasRecentRef && hasErrorWord
+}
+
+func looksLikeOperatorRecoveryContinuePrompt(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"previous turn was blocked",
+		"previous turn stopped because",
+		"the previous turn stopped",
+		"continue the user's task",
+		"continue the user's original task",
+		"prefer write_file",
+		"do not keep re-reading",
+		"do not repeat the same tool",
+		"do not retry the exact failing",
+		"avoid more exploratory tool churn",
+		"final gate stayed blocked",
+		"operator continue is active",
+		"recorded failure",
+		"already-inspected files",
+		"compile/syntax failure",
+		"이전 턴은",
+		"지금 사용자 작업을 이어서",
+		"사용자의 원래 작업을",
+		"이미 읽은 파일을 다시 읽기보다",
+		"운영자 continue",
+		"기록된 실패",
+		"focused edit",
+		"focused 수정",
+	)
 }

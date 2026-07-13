@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestRequestDocVsEditClassification locks in the document-vs-edit routing fix.
 // "analyze this code and write it up as a document" must author a document, not
@@ -161,5 +164,12 @@ func TestRequestHasSourceModificationIntentDocContentGuard(t *testing.T) {
 	}
 	if !requestHasSourceModificationIntent("이 버그를 고쳐줘", nil) {
 		t.Errorf("imperative fix command must stay source-modification intent")
+	}
+	readme := "현재 구현을 반영한 README 문서를 최신화해서 작성해"
+	if requestHasSourceModificationIntent(strings.ToLower(readme), []string{"README.md"}) {
+		t.Errorf("README refresh that mentions 구현 as document subject must not be source-modification intent")
+	}
+	if !requestHasSourceModificationIntent("read RegGit_Design_Doc.md and implement the fix in the code", []string{"RegGit_Design_Doc.md"}) {
+		t.Errorf("implement-the-fix requests must stay source-modification intent even when a design doc is named")
 	}
 }

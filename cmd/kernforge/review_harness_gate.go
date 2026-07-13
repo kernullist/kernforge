@@ -45,12 +45,15 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 		})
 	} else if reviewRequestWantsSourceChange(run) &&
 		!reviewRunLooksReadOnlyAnalysis(run) &&
-		!reviewEvidenceHasExecutableSource(run.Evidence) {
+		!reviewEvidenceHasExecutableSource(run.Evidence) &&
+		!reviewRunLooksLikeDocumentAuthoring(run) {
 		// The request asks to change code, but no executable source file reached
 		// the evidence pack (only docs, plans, or non-source diffs). Model
 		// findings would judge code they never saw, so surface a prominent
 		// warning (never a blocker) instead of leaving the model to emit its own
-		// evidence_gap findings that then trap a repair loop.
+		// evidence_gap findings that then trap a repair loop. Document-authoring
+		// requests (README refresh, reports) are excluded even when wording
+		// mentions implementation as document subject matter.
 		findings = append(findings, ReviewFinding{
 			Source:       "deterministic",
 			ReviewerRole: "evidence_reviewer",
@@ -3223,7 +3226,14 @@ func reviewEvidenceHasExecutableSource(evidence ReviewEvidencePack) bool {
 // source evidence).
 func reviewRequestWantsSourceChange(run ReviewRun) bool {
 	request := strings.ToLower(firstNonBlankString(run.Objective, run.RequestAnalysis.OriginalRequest))
-	return requestHasSourceModificationIntent(request, run.ChangeSet.ChangedPaths)
+	paths := append([]string(nil), run.ChangeSet.ChangedPaths...)
+	paths = append(paths, run.Evidence.ChangedPaths...)
+	return requestHasSourceModificationIntent(request, paths)
+}
+
+func reviewRunLooksLikeDocumentAuthoring(run ReviewRun) bool {
+	request := firstNonBlankString(run.Objective, run.RequestAnalysis.OriginalRequest)
+	return requestLooksLikePureDocumentAuthoring(request)
 }
 
 // reviewModelFindingTargetsDocAgainstCodeChange reports whether a model finding

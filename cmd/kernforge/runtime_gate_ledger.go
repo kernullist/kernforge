@@ -146,6 +146,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 
 	runtimeGateAttachVerification(session, &ledger)
 	runtimeGateAttachCodingHarness(session, &ledger)
+	runtimeGateAttachHarnessBlockedRecovery(session, &ledger)
 	runtimeGateAttachStaleContext(session, &ledger, observedReview)
 	runtimeGateAttachRouteHealth(session, &ledger, observedReview)
 	ledger.Normalize()
@@ -655,6 +656,20 @@ func reviewBlockersAreOnlyReviewerRouteFailures(blockerIDs []string) bool {
 	return true
 }
 
+// runtimeGateReviewWarningsAreSingleModelAdvisoryOnly reports whether the review
+// warnings are expected residue from a single-model auto-triggered path (implicit
+// self-review skipped or main-only advisory fallback), not an independent
+// reviewer signal that should keep the runtime gate in needs_review.
+func runtimeGateReviewWarningsAreSingleModelAdvisoryOnly(review ReviewRun) bool {
+	if len(review.Gate.BlockingFindings) > 0 || !review.AutoTriggered {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(review.SkipReason), modelReviewSkipSingleModelRoute) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(review.ReviewerGatePolicy), reviewReviewerGatePolicyMainOnlyFallback)
+}
+
 func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review ReviewRun) {
 	if ledger == nil {
 		return
@@ -763,7 +778,12 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 		})
 	} else if len(review.Gate.WarningFindings) > 0 || strings.EqualFold(review.Gate.Verdict, reviewVerdictApprovedWithWarnings) {
 		tx.Status = "warning"
-		if len(review.Gate.WarningFindings) > 0 {
+		if runtimeGateReviewWarningsAreSingleModelAdvisoryOnly(review) {
+			// Single-model auto-skip / advisory self-review notes are expected when
+			// there is no independent reviewer. Diff preview already gated the
+			// write, so do not leave the runtime gate stuck in needs_review.
+			tx.Status = "advisory"
+		} else if len(review.Gate.WarningFindings) > 0 {
 			ledger.Warnings = append(ledger.Warnings, "latest review has warnings: "+strings.Join(limitStrings(review.Gate.WarningFindings, 6), ", "))
 		} else {
 			driver := firstNonBlankString(review.Result.DegradedReason, review.Gate.Reason)
@@ -1024,6 +1044,40 @@ func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger)
 	if len(ledger.Blockers) == 0 {
 		ledger.Warnings = append(ledger.Warnings, "coding harness did not approve the final state")
 	}
+}
+
+func runtimeGateAttachHarnessBlockedRecovery(session *Session, ledger *RuntimeGateLedger) {
+	if session == nil || ledger == nil || session.PendingHarnessBlockedRecovery == nil {
+		return
+	}
+	recovery := *session.PendingHarnessBlockedRecovery
+	recovery.Normalize()
+	if len(recovery.Actions) == 0 {
+		return
+	}
+	// Prepend recovery actions so status "next:" prefers the operator choice card.
+	prepend := make([]ReviewNextCommand, 0, len(recovery.Actions))
+	for _, action := range recovery.Actions {
+		command := strings.TrimSpace(action.Command)
+		if command == "" {
+			continue
+		}
+		reason := firstNonBlankString(action.TitleEN, action.ReasonEN, "harness blocked recovery")
+		prepend = append(prepend, ReviewNextCommand{
+			ID:             firstNonBlankString(action.ID, action.Kind, "harness-recovery"),
+			Command:        command,
+			Reason:         reason,
+			Safety:         "read_only",
+			When:           "after pre-final coding harness block",
+			ClientHint:     firstNonBlankString(action.ChatHint, action.ReasonEN),
+			ExpectedResult: "The harness block is cleared or an honest disclosure path is chosen.",
+		})
+	}
+	if len(prepend) == 0 {
+		return
+	}
+	ledger.NextCommands = append(prepend, ledger.NextCommands...)
+	ledger.NextCommands = normalizeRuntimeGateNextCommands(ledger.NextCommands, 8)
 }
 
 func runtimeGateAttachStaleContext(session *Session, ledger *RuntimeGateLedger, review *ReviewRun) {

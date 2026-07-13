@@ -46,7 +46,7 @@ func commandFamily(command string) string {
 
 func commandHelpTopic(command string) string {
 	switch command {
-	case "review":
+	case "review", "finish", "retry-verify", "continue":
 		return "review"
 	case "verify", "checkpoint", "fuzz-func", "fuzz-campaign", "source-scan", "create-driver-poc":
 		return "verification"

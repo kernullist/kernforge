@@ -59,6 +59,18 @@ type Agent struct {
 	EmitProgressEvent             func(ProgressEvent)
 	lastEmittedText               string
 	turnMu                        sync.Mutex
+	turnStateMu                   sync.Mutex
+	turnOwnerGen                  uint64
+	turnNextGen                   uint64
+	// routeHoldMu guards routeHolds: release funcs for model-route slots this
+	// agent currently owns. Cancel/abandon must force-release them so a hung
+	// Complete cannot starve later turns on the shared scheduler.
+	routeHoldMu sync.Mutex
+	routeHolds  []*modelRouteHold
+}
+
+type modelRouteHold struct {
+	release func()
 }
 
 var completeModelTurnRequestTimeout = configRequestTimeout
@@ -117,7 +129,7 @@ const (
 	// and accrue; once that stalls for this many consecutive rounds the loop
 	// stops and hands the user a y/n decision. The absolute cap above still
 	// bounds the total (and is the backstop for a count that merely oscillates).
-	maxPreWriteReviewNoProgressRounds    = 3
+	maxPreWriteReviewNoProgressRounds = 3
 	// maxAutonomousReviewRepairContinuations bounds how many times an autonomous
 	// run (no interactive continuation widget) or a full-mode run auto-continues
 	// a pre-write review-repair loop that hit a stop cap. It stands in for the
@@ -132,8 +144,8 @@ const (
 	// malformed serialized payload (a blob instead of real file text). Like the
 	// invalid-JSON / invalid-patch retries, the model gets a correction chance
 	// instead of the whole request hard-failing on one bad payload.
-	maxInvalidEditPayloadRetries        = 2
-	maxPreWriteReviewRepairInspectTools = 6
+	maxInvalidEditPayloadRetries         = 2
+	maxPreWriteReviewRepairInspectTools  = 6
 	maxPreWriteReviewRepairInspectNudges = 1
 	maxPreFixReviewRepairInspectTools    = 6
 	maxPreFixReviewRepairInspectNudges   = 1
@@ -196,20 +208,167 @@ const (
 	reviewRepairConfirmationModeReviewerGateUnavailable = "reviewer_gate_unavailable"
 )
 
-func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImages []MessageImage) (string, error) {
+func (a *Agent) beginTurn() (gen uint64, ok bool) {
+	if a == nil {
+		return 0, false
+	}
 	if !a.turnMu.TryLock() {
+		return 0, false
+	}
+	a.turnStateMu.Lock()
+	a.turnNextGen++
+	gen = a.turnNextGen
+	a.turnOwnerGen = gen
+	a.turnStateMu.Unlock()
+	return gen, true
+}
+
+func (a *Agent) releaseTurn(gen uint64) {
+	if a == nil {
+		return
+	}
+	a.turnStateMu.Lock()
+	defer a.turnStateMu.Unlock()
+	if a.turnOwnerGen != gen {
+		return
+	}
+	a.turnOwnerGen = 0
+	a.turnMu.Unlock()
+}
+
+func (a *Agent) turnOwned(gen uint64) bool {
+	if a == nil || gen == 0 {
+		return false
+	}
+	a.turnStateMu.Lock()
+	defer a.turnStateMu.Unlock()
+	return a.turnOwnerGen == gen
+}
+
+// AbandonActiveTurn releases the interactive turn lock so a canceled/hung
+// background Reply cannot keep queueing new user input forever. The abandoned
+// goroutine must not Unlock again; releaseTurn becomes a no-op for its gen.
+// It also force-releases any model-route slots still held by a stuck Complete
+// so the next turn is not starved on Acquire.
+func (a *Agent) AbandonActiveTurn() {
+	if a == nil {
+		return
+	}
+	a.turnStateMu.Lock()
+	hadOwner := a.turnOwnerGen != 0
+	a.turnOwnerGen = 0
+	if a.Session != nil {
+		a.Session.TurnQueue = nil
+	}
+	a.turnStateMu.Unlock()
+	if hadOwner {
+		a.turnMu.Unlock()
+	}
+	a.forceReleaseModelRouteHolds()
+	forceCloseProviderClient(a.Client)
+}
+
+// trackModelRouteRelease registers a scheduler slot release so AbandonActiveTurn
+// can free it if Complete hangs past cancel. The returned func is Once-safe and
+// removes the hold when the normal path releases.
+func (a *Agent) trackModelRouteRelease(release func()) func() {
+	if a == nil || release == nil {
+		if release == nil {
+			return func() {}
+		}
+		return release
+	}
+	hold := &modelRouteHold{release: release}
+	a.routeHoldMu.Lock()
+	a.routeHolds = append(a.routeHolds, hold)
+	a.routeHoldMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			release()
+			a.dropModelRouteHold(hold)
+		})
+	}
+}
+
+func (a *Agent) dropModelRouteHold(hold *modelRouteHold) {
+	if a == nil || hold == nil {
+		return
+	}
+	a.routeHoldMu.Lock()
+	defer a.routeHoldMu.Unlock()
+	for i, existing := range a.routeHolds {
+		if existing == hold {
+			a.routeHolds = append(a.routeHolds[:i], a.routeHolds[i+1:]...)
+			return
+		}
+	}
+}
+
+func (a *Agent) forceReleaseModelRouteHolds() {
+	if a == nil {
+		return
+	}
+	a.routeHoldMu.Lock()
+	holds := a.routeHolds
+	a.routeHolds = nil
+	a.routeHoldMu.Unlock()
+	for _, hold := range holds {
+		if hold != nil && hold.release != nil {
+			hold.release()
+		}
+	}
+}
+
+func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImages []MessageImage) (string, error) {
+	gen, ok := a.beginTurn()
+	if !ok {
 		item, err := a.EnqueueUserInputDuringExecution(userText, extraImages)
 		if err != nil {
 			return "", err
 		}
 		return formatQueuedTurnInputReply(a.Config, item), nil
 	}
-	defer a.turnMu.Unlock()
+	defer a.releaseTurn(gen)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	a.lastEmittedText = ""
 	a.discardStaleFinalAnswerCandidates()
 	startIndex := len(a.Session.Messages)
 	confirmedReviewRepair := false
 	confirmedReviewerGateRepair := false
+	if a.Session != nil && a.Session.PendingHarnessBlockedRecovery != nil {
+		switch {
+		case looksLikeHarnessDiscloseFinishIntent(userText):
+			a.noteUserConversationEvent(userText, extraImages)
+			a.Session.AddMessage(Message{Role: "user", Text: userText, Images: extraImages})
+			reply, err := a.finishHarnessBlockedWithDisclosure()
+			if err != nil && strings.TrimSpace(reply) == "" {
+				return "", err
+			}
+			// Successful finish already records the assistant final answer. A still-blocked
+			// recovery card does not, so persist it here for the operator transcript.
+			if err != nil && strings.TrimSpace(reply) != "" {
+				a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+				a.noteAssistantConversationEvent(reply)
+			} else if err == nil && strings.TrimSpace(reply) != "" {
+				a.noteAssistantConversationEvent(reply)
+			}
+			a.Session.RefreshConversationState()
+			if a.Store != nil {
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return reply, saveErr
+				}
+			}
+			return reply, nil
+		case looksLikeHarnessRetryVerifyIntent(userText):
+			userText = retryVerifyRecoveryPrompt(a.Config)
+		case looksLikeHarnessRepairContinueIntent(userText):
+			userText = repairBlockedRecoveryPrompt(a.Config)
+		}
+	}
 	if a.hasPendingReviewRepairConfirmation() {
 		pendingMode := a.pendingReviewRepairConfirmationMode()
 		switch parseReviewRepairConfirmationInput(userText) {
@@ -242,6 +401,11 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	requestEnvelope = a.maybeRefineRequestEnvelopeWithSemanticClassifier(ctx, requestEnvelope)
 	a.applyEditAuthorityToEnvelope(&requestEnvelope)
 	a.rememberRequestEnvelope(requestEnvelope)
+	a.emitProgressEvent(ProgressEvent{
+		Message: localizedText(a.Config,
+			"Preparing the main turn...",
+			"본 turn을 준비하는 중입니다..."),
+	})
 	requestMode := requestEnvelope.agentRequestMode()
 	intent := requestMode.Intent
 	readOnlyAnalysis := requestMode.ReadOnlyAnalysis
@@ -263,19 +427,39 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	enriched = a.Skills.InjectPromptContext(enriched)
 	if a.LongMem != nil {
 		memoryPolicy := persistentMemoryPromptPolicyForRequest(userText)
-		if memoryContext := a.LongMem.PromptContextDetailsWithPolicy(a.Workspace.BaseRoot, userText, a.Session.ID, memoryPolicy); strings.TrimSpace(memoryContext.Text) != "" {
-			enriched += "\n\nRelevant persistent memory from past sessions:\n" + memoryContext.Text
-			if message := formatPersistentMemoryProgressMessage(a.Config, memoryContext); message != "" {
-				a.emitProgressEvent(ProgressEvent{
-					Kind:    progressKindMemoryContext,
-					Message: message,
-				})
+		if memoryPolicy.IncludeContinuity || memoryPolicy.IncludeQueryMatches {
+			a.emitProgressEvent(ProgressEvent{
+				Kind: progressKindMemoryContext,
+				Message: localizedText(a.Config,
+					"Loading persistent memory...",
+					"지속 메모리를 불러오는 중입니다..."),
+			})
+			if memoryContext := a.LongMem.PromptContextDetailsWithPolicy(a.Workspace.BaseRoot, userText, a.Session.ID, memoryPolicy); strings.TrimSpace(memoryContext.Text) != "" {
+				enriched += "\n\nRelevant persistent memory from past sessions:\n" + memoryContext.Text
+				if message := formatPersistentMemoryProgressMessage(a.Config, memoryContext); message != "" {
+					a.emitProgressEvent(ProgressEvent{
+						Kind:    progressKindMemoryContext,
+						Message: message,
+					})
+				}
 			}
 		}
 	}
 	analysisContext := ""
 	analysisContextProgress := ""
-	if !shouldSuppressProjectAnalysisFastPathForIntent(intent) {
+	// Document-authoring turns do not need the full cached project-analysis
+	// corpus. Loading knowledge_pack/vector_corpus/index JSON on a first turn
+	// was blocking the UI for minutes with only "Preparing the main turn...".
+	loadProjectAnalysis := !shouldSuppressProjectAnalysisFastPathForIntent(intent) &&
+		!requestEnvelope.DocumentAuthoring &&
+		!looksLikeDocumentAuthoringIntent(userText)
+	if loadProjectAnalysis {
+		a.emitProgressEvent(ProgressEvent{
+			Kind: progressKindAnalysisContext,
+			Message: localizedText(a.Config,
+				"Loading project analysis context...",
+				"프로젝트 분석 컨텍스트를 불러오는 중입니다..."),
+		})
 		analysisContext, analysisContextProgress = a.latestProjectAnalysisContextWithProgress(userText)
 		analysisContext = strings.TrimSpace(analysisContext)
 	}
@@ -288,7 +472,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	if analysisContext != "" {
 		enriched += "\n\nRelevant project analysis from past analyze-project runs:\n" + analysisContext
 	}
-	if analysisContext == "" {
+	if analysisContext == "" && !requestEnvelope.DocumentAuthoring {
 		if scout := a.autoScoutContext(userText); scout != "" {
 			enriched += scout
 		}
@@ -297,6 +481,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	images = appendUniqueImages(images, extraImages...)
 	a.noteUserConversationEvent(userText, images)
 	if a.shouldStartNewExternalAcceptanceContext(userText) {
+		a.clearHarnessBlockedRecovery()
 		a.initializeTaskState(userText)
 		contract := buildAcceptanceContract(userText, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
 		a.Session.AcceptanceContract = &contract
@@ -404,7 +589,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 			}
 		}
 	}
-	reply, err := a.completeLoop(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
+	reply, err := a.completeLoop(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest, gen)
 	if err != nil {
 		return "", err
 	}
@@ -705,15 +890,8 @@ func (a *Agent) readChurnEscalationReply(seen map[string]struct{}) string {
 	if len(files) > 8 {
 		files = append(files[:8:8], fmt.Sprintf("(+%d more)", len(files)-8))
 	}
-	request := ""
-	if a != nil && a.Session != nil {
-		if a.Session.AcceptanceContract != nil {
-			request = strings.TrimSpace(baseUserQueryText(a.Session.AcceptanceContract.SourcePrompt))
-		}
-		if request == "" {
-			request = strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(a.Session)))
-		}
-	}
+	request := a.stallEscalationRequestText()
+	evidence := collectRecentRepairEvidence(a.Session, 24)
 	var b strings.Builder
 	b.WriteString(localizedText(cfg,
 		"I stopped to avoid an unproductive loop: I re-read the same files repeatedly without gathering new information, so I could not determine how to proceed on my own.",
@@ -724,14 +902,103 @@ func (a *Agent) readChurnEscalationReply(seen map[string]struct{}) string {
 	if len(files) > 0 {
 		fmt.Fprintf(&b, "\n\n%s\n- %s", localizedText(cfg, "Files I kept re-reading:", "반복해서 읽은 파일:"), strings.Join(files, "\n- "))
 	}
-	fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
-		"Please clarify what you want so I can implement just that: the specific change or behavior, the target file/function, and any context the current code does not make clear (for example what a value should be used for and where).",
-		"원하시는 바를 명확히 알려주시면 그 부분만 구현하겠습니다: 구체적 변경/동작, 대상 파일/함수, 그리고 현재 코드만으로는 불분명한 맥락(예: 어떤 값을 무엇에/어디에 써야 하는지)."))
+	if !evidence.empty() && evidence.Detail != "" {
+		fmt.Fprintf(&b, "\n\n%s\n%s", localizedText(cfg, "Concrete defect already observed:", "이미 확인된 구체적 결함:"), evidence.Detail)
+		fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
+			"Choose continue below to fix that defect with an edit. Do not ask for a broader product clarification until the recorded compile/syntax failure is repaired.",
+			"아래 continue를 골라 그 결함을 수정으로 고치세요. 기록된 컴파일/문법 실패가 고쳐지기 전에는 더 넓은 제품 요구를 다시 묻지 마세요."))
+	} else {
+		fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
+			"Choose a next step below, or tell me the exact change to make.",
+			"아래에서 다음 단계를 고르거나, 바꿀 내용을 구체적으로 알려 주세요."))
+	}
 	return strings.TrimSpace(b.String())
 }
 
-func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) (string, error) {
+func (a *Agent) singleFileReadChurnEscalationReply(path string) string {
+	cfg := Config{}
+	if a != nil {
+		cfg = a.Config
+	}
+	path = strings.TrimSpace(path)
+	request := a.stallEscalationRequestText()
+	evidence := collectRecentRepairEvidence(a.Session, 24)
+	var b strings.Builder
+	b.WriteString(localizedText(cfg,
+		"I stopped to avoid an unproductive loop: I kept re-reading the same file without making progress.",
+		"진전 없는 반복을 피하려고 멈췄습니다: 같은 파일을 계속 다시 읽기만 하고 앞으로 나아가지 못했습니다."))
+	if request != "" {
+		fmt.Fprintf(&b, "\n\n%s %s", localizedText(cfg, "Request:", "요청:"), compactPromptSection(request, 240))
+	}
+	if path != "" {
+		fmt.Fprintf(&b, "\n\n%s\n- %s", localizedText(cfg, "File I kept re-reading:", "반복해서 읽은 파일:"), path)
+	}
+	if !evidence.empty() && evidence.Detail != "" {
+		fmt.Fprintf(&b, "\n\n%s\n%s", localizedText(cfg, "Concrete defect already observed:", "이미 확인된 구체적 결함:"), evidence.Detail)
+		fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
+			"Choose continue below to fix that defect with an edit.",
+			"아래 continue를 골라 그 결함을 수정으로 고치세요."))
+	} else {
+		fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
+			"Choose a next step below, or tell me the exact change to make in that file.",
+			"아래에서 다음 단계를 고르거나, 그 파일에서 바꿀 내용을 구체적으로 알려 주세요."))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (a *Agent) multiPathReadChurnEscalationReply(distinct int) string {
+	cfg := Config{}
+	if a != nil {
+		cfg = a.Config
+	}
+	request := a.stallEscalationRequestText()
+	var b strings.Builder
+	b.WriteString(localizedText(cfg,
+		fmt.Sprintf("I stopped to avoid an unproductive loop: I kept cycling read_file across the same %d files without making progress.", distinct),
+		fmt.Sprintf("진전 없는 반복을 피하려고 멈췄습니다: 같은 파일 %d개를 번갈아 읽기만 하고 앞으로 나아가지 못했습니다.", distinct)))
+	if request != "" {
+		fmt.Fprintf(&b, "\n\n%s %s", localizedText(cfg, "Request:", "요청:"), compactPromptSection(request, 240))
+	}
+	fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
+		"Choose a next step below, or tell me which file and change to implement first.",
+		"아래에서 다음 단계를 고르거나, 먼저 손볼 파일과 변경 내용을 알려 주세요."))
+	return strings.TrimSpace(b.String())
+}
+
+func (a *Agent) stallEscalationRequestText() string {
+	if a == nil || a.Session == nil {
+		return ""
+	}
+	if a.Session.AcceptanceContract != nil {
+		if request := strings.TrimSpace(baseUserQueryText(a.Session.AcceptanceContract.SourcePrompt)); request != "" {
+			return request
+		}
+	}
+	return strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(a.Session)))
+}
+
+func flattenMultiPathReadWindow(window [][]string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0)
+	for _, batch := range window {
+		for _, path := range batch {
+			path = strings.TrimSpace(path)
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return normalizeTaskStateList(out, 8)
+}
+
+func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool, turnGen uint64) (string, error) {
 	a.refreshBackgroundJobs()
+	if turnGen != 0 && !a.turnOwned(turnGen) {
+		return "", ErrRequestCanceled
+	}
 	if reply, ok, err := a.maybeAnswerFromCachedProjectAnalysis(ctx); err != nil {
 		_ = a.Store.Save(a.Session)
 		return "", err
@@ -879,8 +1146,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	gitOnlyEditRedirects := 0
 	postChangeReviewRevisions := 0
 	postChangeReviewExhaustedNudge := false
+	postChangeStaleRecoveryTried := false
 	lastPostChangeReviewFingerprint := ""
 	lastReviewedFinalAnswer := ""
+	falseAnalysisOnlyClaimRetries := 0
 	finalAnswerOnlyCorrection := false
 	serverModelWarningEmitted := false
 	modelVerificationEmitted := false
@@ -897,6 +1166,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	verificationOutOfScopeThisTurn := false
 	verificationOutOfScopeFinalOnly := false
 	repeatedToolFailureRecoveryTurns := 0
+	syntaxFixNudges := 0
+	stallEditBiasReadNudges := 0
 	continuedReplyPrefix := ""
 	continuedReplyMessageIndex := -1
 	turnStartedAt := time.Now()
@@ -904,6 +1175,20 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	mcpTurnMetadata := a.mcpTurnMetadataForToolCall(turnStartedAt)
 	providerTurnMetadata := providerTurnMetadataFromMCP(mcpTurnMetadata)
 	a.noteTurnStartedConversationEvent(turnStartedAt, mcpTurnMetadata)
+	stallContinueEditBiasActive := a.Session != nil && a.Session.StallContinueEditBias
+	if stallContinueEditBiasActive {
+		evidence := collectRecentRepairEvidence(a.Session, 24)
+		files := evidence.Files
+		if a.Session.PendingHarnessBlockedRecovery != nil {
+			files = normalizeTaskStateList(append(append([]string{}, files...), a.Session.PendingHarnessBlockedRecovery.BlockerTitles...), 8)
+		}
+		a.Session.AddMessage(internalUserMessage(stallContinueEditBiasGuidance(a.Config, evidence, files)))
+	}
+	defer func() {
+		if a.Session != nil {
+			a.Session.StallContinueEditBias = false
+		}
+	}()
 	markUserInputRequestedDuringTurn := func() {
 		if mcpTurnMetadata != nil {
 			mcpTurnMetadata[mcpTurnMetadataUserInputRequestedKey] = true
@@ -964,6 +1249,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
+		}
+		if turnGen != 0 && !a.turnOwned(turnGen) {
+			return "", ErrRequestCanceled
 		}
 		if toolBudgetLimit > 0 && turnCount >= toolBudgetLimit {
 			if shouldExtendToolBudget(a.Session.Messages, lastToolErrorCount, lastToolCallSignatureCount, lastReadFilePathTurns, toolBudgetExtensions) {
@@ -1078,6 +1366,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if a.Session != nil && a.Session.PendingImplementationDecision != nil {
 			onTextDelta = nil
 		}
+		a.emitProgressEvent(ProgressEvent{
+			Message: localizedText(a.Config,
+				"Building the model request...",
+				"모델 요청을 구성하는 중입니다..."),
+		})
 		systemPrompt := a.systemPrompt()
 		if finalAnswerOnlyCorrection {
 			systemPrompt += "\n\n" + finalAnswerOnlyHarnessPromptGuidance()
@@ -1454,7 +1747,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					turnRuntime.Counters.RepeatedToolCallRecoveryTurns = 0
 				}
 				if lastToolCallSignatureCount >= repeatedToolCallAbortThreshold {
-					return "", fmt.Errorf("stopped after repeated identical tool calls")
+					baseReply := operatorStallBaseReply(a.Config, harnessRecoveryCauseRepeatedToolCalls, lastToolCallSummary)
+					reply := a.finalizeOperatorStallReply(harnessRecoveryCauseRepeatedToolCalls, baseReply, nil)
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    "repeated identical tool calls reached abort; escalated to the user instead of returning an error",
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     lastToolCallSignatureCount,
+						Iteration: turnCount,
+					})
+					markRuntimeBlocked("repeated_identical_tool_calls")
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+					a.noteAssistantConversationEvent(reply)
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					return reply, nil
 				}
 				if lastToolCallSignatureCount >= repeatedToolCallRecoveryThreshold && turnRuntime.Counters.RepeatedToolCallRecoveryTurns < 1 {
 					turnRuntime.Counters.RepeatedToolCallRecoveryTurns++
@@ -1551,7 +1859,26 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					turnRuntime.Counters.RepeatedReadFilePathRecoveryCount = 0
 				}
 				if lastReadFilePathTurns >= repeatedReadFilePathAbortTurns {
-					return "", fmt.Errorf("stopped after repeatedly reading the same file without making progress: %s", readPath)
+					// Escalate to an operator choice card instead of a dead-end
+					// assistant error. The model already failed to self-correct
+					// after nudge + recovery, so hand control to the user.
+					baseReply := a.singleFileReadChurnEscalationReply(readPath)
+					recovery := a.recordStallBlockedRecovery(harnessRecoveryCauseReadChurn, baseReply, []string{readPath})
+					reply := strings.TrimSpace(baseReply + "\n\n" + renderHarnessBlockedRecoveryReply(a.Config, nil, recovery.ExtraBlockers, recovery))
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    "read_file repeated the same path until abort; escalated to the user instead of returning an error",
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     lastReadFilePathTurns,
+						Iteration: turnCount,
+					})
+					markRuntimeBlocked("repeated_read_file_path")
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+					a.noteAssistantConversationEvent(reply)
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					return reply, nil
 				}
 				if lastReadFilePathTurns >= repeatedReadFilePathRecoveryThreshold && turnRuntime.Counters.RepeatedReadFilePathRecoveryCount < 1 {
 					turnRuntime.Counters.RepeatedReadFilePathRecoveryCount++
@@ -1646,7 +1973,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					// Bounded-loop / escalate-to-user: rather than aborting with a bare
 					// error, return a useful clarification request so an under-specified
 					// task ends in a question, not a crash.
-					reply := a.readChurnEscalationReply(readChurnSeenPaths)
+					baseReply := a.readChurnEscalationReply(readChurnSeenPaths)
+					recovery := a.recordStallBlockedRecovery(harnessRecoveryCauseReadChurn, baseReply, stallRecoveryFilesFromSeen(readChurnSeenPaths))
+					reply := strings.TrimSpace(baseReply + "\n\n" + renderHarnessBlockedRecoveryReply(a.Config, nil, recovery.ExtraBlockers, recovery))
 					recordRuntimeIntervention(RuntimeIntervention{
 						Kind:      RuntimeInterventionRepeatedTool,
 						Reason:    "read_file kept re-reading an already-seen file set; escalated to the user instead of aborting",
@@ -1654,6 +1983,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						Count:     readChurnNoNewPathTurns,
 						Iteration: turnCount,
 					})
+					markRuntimeBlocked("read_churn_escalation")
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					a.noteAssistantConversationEvent(reply)
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
@@ -1713,7 +2044,27 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						turnRuntime.Counters.RepeatedReadSetRecoveryCount = 0
 					}
 					if multiPathReadRepeatTurns >= repeatedReadSetAbortTurns {
-						return "", fmt.Errorf("stopped after repeatedly cycling read_file across the same %d files without making progress", distinct)
+						baseReply := a.multiPathReadChurnEscalationReply(distinct)
+						files := stallRecoveryFilesFromSeen(readChurnSeenPaths)
+						if len(files) == 0 {
+							files = flattenMultiPathReadWindow(multiPathReadWindow)
+						}
+						recovery := a.recordStallBlockedRecovery(harnessRecoveryCauseReadChurn, baseReply, files)
+						reply := strings.TrimSpace(baseReply + "\n\n" + renderHarnessBlockedRecoveryReply(a.Config, nil, recovery.ExtraBlockers, recovery))
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:      RuntimeInterventionRepeatedTool,
+							Reason:    "read_file cycled the same path set until abort; escalated to the user instead of returning an error",
+							ToolCalls: resp.Message.ToolCalls,
+							Count:     multiPathReadRepeatTurns,
+							Iteration: turnCount,
+						})
+						markRuntimeBlocked("repeated_read_file_set")
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						a.noteAssistantConversationEvent(reply)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						return reply, nil
 					}
 					if multiPathReadRepeatTurns >= repeatedReadSetRecoveryThreshold && turnRuntime.Counters.RepeatedReadSetRecoveryCount < 1 {
 						turnRuntime.Counters.RepeatedReadSetRecoveryCount++
@@ -1775,6 +2126,28 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					readChurnNoNewPathTurns = 0
 					readChurnMutationMark = workspaceMutationCount
 				}
+			}
+			if !successfulEditTool && stallEditBiasReadNudges < 1 &&
+				toolCallsAreAllReadFile(resp.Message.ToolCalls) &&
+				(stallContinueEditBiasActive || syntaxFixNudges > 0) {
+				stallEditBiasReadNudges++
+				evidence := collectRecentRepairEvidence(a.Session, 24)
+				if evidence.Detail == "" && looksLikeCompileOrSyntaxFailure(lastToolError) {
+					evidence.Detail = compactPromptSection(lastToolError, 420)
+					evidence.Kind = "syntax"
+				}
+				guidance := stallContinueEditBiasGuidance(a.Config, evidence, evidence.Files)
+				if evidence.Kind == "syntax" || looksLikeCompileOrSyntaxFailure(evidence.Detail) {
+					guidance = syntaxFailureForceEditGuidance(a.Config, evidence)
+				}
+				if err := addRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: operator continue / syntax repair requires an edit before more reads of already-inspected files.",
+					guidance,
+				); err != nil {
+					return "", err
+				}
+				continue
 			}
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
@@ -1865,7 +2238,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							Iteration: turnCount,
 						})
 						markRuntimeBlocked("commentary_only")
-						return "", fmt.Errorf("model produced commentary-only assistant messages without tool calls or final answer")
+						reply := a.finalizeOperatorStallReply(harnessRecoveryCauseCommentaryOnly, "", nil)
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						a.noteAssistantConversationEvent(reply)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						return reply, nil
 					}
 					decision := a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
 						Kind:        RecoveryKindCommentaryOnly,
@@ -1967,6 +2346,29 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					localCodeToolAvailabilityBlameRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(internalUserMessage(localCodeToolAvailabilityBlameGuidance(a.Config)))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+				// A blocked shell write or other non-edit tool must not be narrated as
+				// "analysis-only / edit tools unavailable" when the envelope still
+				// allows file mutation. Bounce once so the model uses write_file /
+				// apply_patch instead of dumping a manual patch.
+				if requestEnvelope.AllowsFileMutation &&
+					!readOnlyAnalysis &&
+					falseAnalysisOnlyClaimRetries < 1 &&
+					replyFalselyClaimsEditToolsUnavailable(reply) {
+					falseAnalysisOnlyClaimRetries++
+					a.discardRecentFinalAnswerCandidate(reply)
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionBlockedTool,
+						Reason:    "final answer falsely claimed edit tools were unavailable",
+						Guidance:  falseAnalysisOnlyClaimGuidance(a.Config),
+						Count:     falseAnalysisOnlyClaimRetries,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(falseAnalysisOnlyClaimGuidance(a.Config)))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -2076,10 +2478,20 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if !readiness.Ready {
 					if turnRuntime.Counters.FinalAnswerNudges >= 2 {
 						// Keep the internal codename only in the runtime transition
-						// (debug/log) field; lead the user-facing error with the
+						// (debug/log) field; lead the user-facing reply with the
 						// localized cause plus the readiness guidance.
 						markRuntimeBlocked("final_gate_unresolved_intervention")
-						return "", finalReadinessBlockedUserError(a.Config, readiness)
+						detail := ""
+						if gateErr := finalReadinessBlockedUserError(a.Config, readiness); gateErr != nil {
+							detail = gateErr.Error()
+						}
+						reply := a.finalizeOperatorStallReply(harnessRecoveryCauseFinalGate, operatorStallBaseReply(a.Config, harnessRecoveryCauseFinalGate, detail), nil)
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						a.noteAssistantConversationEvent(reply)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						return reply, nil
 					}
 					turnRuntime.Counters.FinalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
@@ -2106,7 +2518,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if stopHookShouldBlock(stopVerdict) {
 					if stopHookRevisions >= maxStopHookRevisions {
-						return "", fmt.Errorf("Stop hook kept blocking final answer after %d continuation attempt(s): %s", stopHookRevisions, strings.TrimSpace(stopVerdict.StopMessage))
+						detail := fmt.Sprintf("Stop hook kept blocking final answer after %d continuation attempt(s): %s", stopHookRevisions, strings.TrimSpace(stopVerdict.StopMessage))
+						markRuntimeBlocked("stop_hook")
+						reply := a.finalizeOperatorStallReply(harnessRecoveryCauseFinalGate, operatorStallBaseReply(a.Config, harnessRecoveryCauseFinalGate, detail), nil)
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						a.noteAssistantConversationEvent(reply)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						return reply, nil
 					}
 					stopHookRevisions++
 					stopHookActive = true
@@ -2136,6 +2556,29 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					markRuntimeCompleted("out_of_scope_verification_final")
 					return reply, nil
+				}
+				// Run post-change review BEFORE the pre-final harness whenever a
+				// successful edit landed. Otherwise the harness demands a "Review
+				// result" (and the ledger treats the pre-write review as stale)
+				// before post-change ever gets a chance to refresh coverage — a
+				// chicken-and-egg that dead-ends as gate:blocked.
+				if successfulEditTool && !a.shouldSkipPostChangeReviewForKnownFinalBlocker(reply, unresolvedVerification) {
+					needsModelTurn, err := a.runAutomaticPostChangeReviewGate(ctx, latestUser, reply, &lastPostChangeReviewFingerprint, &postChangeReviewRevisions, &postChangeReviewExhaustedNudge)
+					if err != nil {
+						return "", err
+					}
+					if needsModelTurn {
+						finalAnswerOnlyCorrection = false
+						syncRuntimeFlags()
+						a.discardRecentFinalAnswerCandidate(reply)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
+					if reply, finalized, err := a.maybeFinalizeGeneratedDocumentArtifactFinalReply(latestUser, reply, attemptedEditTool, unresolvedVerification); finalized || err != nil {
+						return reply, err
+					}
 				}
 				harnessApproved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
 				if !harnessApproved && a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(latestUser, a.Session.LastCodingHarnessReport, unresolvedVerification) {
@@ -2197,7 +2640,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						a.Session.LastCodingHarnessReport = recheck
 						a.Session.LastTestImpactReport = &recheck.TestImpact
 						a.Session.LastJobSupervisorReport = &recheck.JobSupervisor
-						if !runtimeGateBlocksAction(a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)) {
+						ledger := a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+						if !runtimeGateBlocksAction(ledger) {
 							reply = healed
 							if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
 								a.Session.Messages[continuedReplyMessageIndex].Text = reply
@@ -2216,25 +2660,80 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							markRuntimeCompleted("pre_final_harness_disclosure_self_healed")
 							return reply, nil
 						}
+						// Disclosure heal cleared the harness, but the ledger is still
+						// blocked only by review staleness. Give post-change review one
+						// more chance to refresh coverage before treating this as a hard
+						// block (real findings still fall through below).
+						if successfulEditTool &&
+							!postChangeStaleRecoveryTried &&
+							runtimeGateBlockersAreReviewStalenessOnly(ledger) &&
+							!a.shouldSkipPostChangeReviewForKnownFinalBlocker(healed, unresolvedVerification) {
+							postChangeStaleRecoveryTried = true
+							a.Session.LastCodingHarnessReport = prevReport
+							a.Session.LastTestImpactReport = prevTestImpact
+							a.Session.LastJobSupervisorReport = prevJobSupervisor
+							needsModelTurn, err := a.runAutomaticPostChangeReviewGate(ctx, latestUser, healed, &lastPostChangeReviewFingerprint, &postChangeReviewRevisions, &postChangeReviewExhaustedNudge)
+							if err != nil {
+								return "", err
+							}
+							if needsModelTurn {
+								finalAnswerOnlyCorrection = false
+								syncRuntimeFlags()
+								a.discardRecentFinalAnswerCandidate(reply)
+								if err := a.Store.Save(a.Session); err != nil {
+									return "", err
+								}
+								continue
+							}
+							a.Session.LastCodingHarnessReport = recheck
+							a.Session.LastTestImpactReport = &recheck.TestImpact
+							a.Session.LastJobSupervisorReport = &recheck.JobSupervisor
+							if !runtimeGateBlocksAction(a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)) {
+								reply = healed
+								if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
+									a.Session.Messages[continuedReplyMessageIndex].Text = reply
+								} else if len(a.Session.Messages) > 0 {
+									a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+								}
+								a.acceptRecentFinalAnswerCandidate(reply)
+								a.markFinalAnswerCorrectionAccepted()
+								a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
+								a.finalizePatchTransactionOnReturn()
+								a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+								a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+								if err := a.Store.Save(a.Session); err != nil {
+									return "", err
+								}
+								markRuntimeCompleted("pre_final_harness_disclosure_self_healed_after_stale_review_refresh")
+								return reply, nil
+							}
+						}
 						a.Session.LastCodingHarnessReport = prevReport
 						a.Session.LastTestImpactReport = prevTestImpact
 						a.Session.LastJobSupervisorReport = prevJobSupervisor
 					}
 					a.discardRecentFinalAnswerCandidate(reply)
 					extraBlockers := nonHarnessLedgerBlockers(a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer))
+					var blockedReply string
 					if a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) {
-						reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
+						blockedReply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
 					} else {
-						reply = preFinalCodingHarnessBlockedReply(a.Session.LastCodingHarnessReport, extraBlockers...)
+						recovery := a.recordHarnessBlockedRecovery(reply, a.Session.LastCodingHarnessReport, extraBlockers, attemptedEditTool, unresolvedVerification)
+						blockedReply = preFinalCodingHarnessBlockedReplyWithRecovery(a.Config, a.Session.LastCodingHarnessReport, recovery, extraBlockers...)
 					}
-					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: blockedReply})
 					a.markFinalAnswerCorrectionRejected("correction_attempts_exhausted")
+					if a.Session.LastFinalAnswerCorrection != nil && a.Session.LastFinalAnswerCorrection.Contract != nil {
+						if primary := harnessBlockedRecoveryPrimaryCommand(a.Session); primary != "" {
+							a.Session.LastFinalAnswerCorrection.Contract.NextCommand = primary
+						}
+					}
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
 					markRuntimeBlocked("pre_final_harness_blocked")
-					return reply, nil
+					return blockedReply, nil
 				}
 				if !harnessApproved && finalHarnessRevisions < 2 {
 					finalHarnessRevisions++
@@ -2254,6 +2753,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if reply, finalized, err := a.maybeFinalizeGeneratedDocumentArtifactFinalReply(latestUser, reply, attemptedEditTool, unresolvedVerification); finalized || err != nil {
 					return reply, err
 				}
+				// Post-change already ran above for successful edits; keep this as a
+				// fingerprint-cached no-op safety net for paths that skipped the early
+				// gate (for example after a later successful edit mid-turn).
 				if successfulEditTool && !a.shouldSkipPostChangeReviewForKnownFinalBlocker(reply, unresolvedVerification) {
 					needsModelTurn, err := a.runAutomaticPostChangeReviewGate(ctx, latestUser, reply, &lastPostChangeReviewFingerprint, &postChangeReviewRevisions, &postChangeReviewExhaustedNudge)
 					if err != nil {
@@ -2321,10 +2823,20 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if requestRuntimeV2EnabledForEnvelope(a.Config, requestEnvelope) && !finalGateDecision.Ready {
 					if turnRuntime.Counters.FinalAnswerNudges >= 2 {
 						// Keep the internal codename only in the runtime transition
-						// (debug/log) field; lead the user-facing error with the
+						// (debug/log) field; lead the user-facing reply with the
 						// plain reason plus the guidance the decision carries.
 						markRuntimeBlocked("request_runtime_v2_final_gate")
-						return "", finalGateBlockedUserError(a.Config, finalGateDecision)
+						detail := ""
+						if gateErr := finalGateBlockedUserError(a.Config, finalGateDecision); gateErr != nil {
+							detail = gateErr.Error()
+						}
+						reply := a.finalizeOperatorStallReply(harnessRecoveryCauseFinalGate, operatorStallBaseReply(a.Config, harnessRecoveryCauseFinalGate, detail), nil)
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						a.noteAssistantConversationEvent(reply)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						return reply, nil
 					}
 					turnRuntime.Counters.FinalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
@@ -2409,7 +2921,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					CreatedAt:   time.Now(),
 				})
 				markRuntimeBlocked("length_stop")
-				return "", fmt.Errorf("model stopped before producing a usable response due to token limit (stop_reason=%s)", lastStopReason)
+				detail := fmt.Sprintf("stop_reason=%s", lastStopReason)
+				reply := a.finalizeOperatorStallReply(harnessRecoveryCauseLengthStop, operatorStallBaseReply(a.Config, harnessRecoveryCauseLengthStop, detail), nil)
+				a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+				a.noteAssistantConversationEvent(reply)
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				return reply, nil
 			}
 			if isContentFilterStopReason(lastStopReason) {
 				// M19: a content-filter stop is terminal, not an empty-stop hiccup.
@@ -2434,7 +2953,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					continue
 				}
 				markRuntimeBlocked("content_filter")
-				return "", fmt.Errorf("provider content filter blocked this response (stop_reason=%s)", normalizeStopReason(lastStopReason))
+				detail := "stop_reason=" + normalizeStopReason(lastStopReason)
+				reply := a.finalizeOperatorStallReply(harnessRecoveryCauseContentFilter, operatorStallBaseReply(a.Config, harnessRecoveryCauseContentFilter, detail), nil)
+				a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+				a.noteAssistantConversationEvent(reply)
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				return reply, nil
 			}
 			turnRuntime.Counters.EmptyFinalReplies++
 			a.cleanupOrphanToolMessagesAfterRecovery("empty_stop_orphan_tool_cleanup")
@@ -2453,7 +2979,17 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					Iteration:  turnCount,
 				})
 				markRuntimeBlocked("empty_stop")
-				return "", formatEmptyModelResponseError(a.Session, lastStopReason, sawToolResultThisTurn)
+				detail := ""
+				if emptyErr := formatEmptyModelResponseError(a.Session, lastStopReason, sawToolResultThisTurn); emptyErr != nil {
+					detail = emptyErr.Error()
+				}
+				reply := a.finalizeOperatorStallReply(harnessRecoveryCauseEmptyStop, operatorStallBaseReply(a.Config, harnessRecoveryCauseEmptyStop, detail), nil)
+				a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+				a.noteAssistantConversationEvent(reply)
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				return reply, nil
 			}
 			emptyGuidance := RenderEmptyStopRetryPrompt(readOnlyAnalysis, lastStopReason, turnRuntime.Counters.EmptyFinalReplies)
 			decision := a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
@@ -3505,6 +4041,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if toolResultRepresentsWorkspaceEdit(call.Name, result.Meta) {
 					edited = true
 					successfulEditTool = true
+					if a.Session != nil {
+						a.Session.StallContinueEditBias = false
+					}
+					stallContinueEditBiasActive = false
 					turnAppliedEditPaths = appendAppliedEditPaths(turnAppliedEditPaths, call, result.Meta)
 					// A successful workspace edit ends any mismatch streak: the
 					// per-turn mismatch budget bounds consecutive guessing, not a
@@ -3536,6 +4076,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					preWriteReviewReanchorBlocks = 0
 					lastPostChangeReviewFingerprint = ""
 					postChangeReviewExhaustedNudge = false
+					postChangeStaleRecoveryTried = false
 				}
 				if isEditTool(call.Name) {
 					if summary := summarizeEditToolResult(call.Name, result.DisplayText); summary != "" {
@@ -3651,7 +4192,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						fmt.Sprintf("무진행 가드: %s 동안 도구 호출 %d회를 했지만 작업공간 변경이 전혀 없고 새 정보도 없습니다. 중단하고 상태를 보고합니다.", wallClock.Round(time.Second), turnCount)))
 				}
 				markRuntimeBlocked("no_progress_guard")
-				reply := formatNoProgressGuardReply(a.Config, a.Session, turnCount, wallClock, len(noProgressReadPaths))
+				baseReply := formatNoProgressGuardReply(a.Config, a.Session, turnCount, wallClock, len(noProgressReadPaths))
+				files := make([]string, 0, len(noProgressReadPaths))
+				for p := range noProgressReadPaths {
+					files = append(files, p)
+				}
+				sort.Strings(files)
+				recovery := a.recordStallBlockedRecovery(harnessRecoveryCauseNoProgress, baseReply, files)
+				reply := strings.TrimSpace(baseReply + "\n\n" + renderHarnessBlockedRecoveryReply(a.Config, nil, recovery.ExtraBlockers, recovery))
 				a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
@@ -3672,8 +4220,38 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				repeatedToolFailureRecoveryTurns = 0
 			}
 		}
+		if syntaxFixNudges < 1 && looksLikeCompileOrSyntaxFailure(iterationToolError) {
+			syntaxFixNudges++
+			evidence := collectRecentRepairEvidence(a.Session, 24)
+			if evidence.Detail == "" {
+				evidence.Detail = compactPromptSection(iterationToolError, 420)
+				evidence.Kind = "syntax"
+			}
+			guidance := syntaxFailureForceEditGuidance(a.Config, evidence)
+			recordRuntimeIntervention(RuntimeIntervention{
+				Kind:      RuntimeInterventionRepeatedTool,
+				Reason:    "compile/syntax failure requires an edit instead of more reads",
+				Guidance:  guidance,
+				ToolCalls: resp.Message.ToolCalls,
+				Count:     1,
+				Iteration: turnCount,
+			})
+			a.Session.AddMessage(internalUserMessage(guidance))
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+			continue
+		}
 		if lastToolErrorCount >= repeatedToolFailureAbortThreshold && lastToolError != "" {
-			return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
+			reply := a.finalizeOperatorStallReply(harnessRecoveryCauseRepeatedToolFailure, operatorStallBaseReply(a.Config, harnessRecoveryCauseRepeatedToolFailure, lastToolError), nil)
+			markRuntimeBlocked("repeated_tool_failure")
+			a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+			a.noteAssistantConversationEvent(reply)
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			return reply, nil
 		}
 		if lastToolErrorCount >= repeatedToolFailureRecoveryThreshold && lastToolError != "" && repeatedToolFailureRecoveryTurns < 1 {
 			repeatedToolFailureRecoveryTurns++
@@ -3843,9 +4421,25 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
 	}
 	if lastToolErrorCount >= repeatedToolFailureAbortThreshold && lastToolError != "" {
-		return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
+		reply := a.finalizeOperatorStallReply(harnessRecoveryCauseRepeatedToolFailure, operatorStallBaseReply(a.Config, harnessRecoveryCauseRepeatedToolFailure, lastToolError), nil)
+		markRuntimeBlocked("repeated_tool_failure")
+		a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+		a.noteAssistantConversationEvent(reply)
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", err
+		}
+		return reply, nil
 	}
-	return "", fmt.Errorf("tool loop limit exceeded%s", formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, maxToolIterations, lastRecentToolTurns))
+	diag := formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, maxToolIterations, lastRecentToolTurns)
+	detail := strings.TrimSpace("tool loop limit exceeded" + diag)
+	reply := a.finalizeOperatorStallReply(harnessRecoveryCauseToolLoopLimit, operatorStallBaseReply(a.Config, harnessRecoveryCauseToolLoopLimit, detail), nil)
+	markRuntimeBlocked("tool_loop_limit")
+	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+	a.noteAssistantConversationEvent(reply)
+	if err := a.Store.Save(a.Session); err != nil {
+		return "", err
+	}
+	return reply, nil
 }
 
 func (a *Agent) emitProgressEvent(event ProgressEvent) {
@@ -5236,6 +5830,79 @@ func localCodeToolAvailabilityBlameGuidance(cfg Config) string {
 	)
 }
 
+// replyFalselyClaimsEditToolsUnavailable detects final answers that invent an
+// analysis-only / edit-tool-unavailable story after a non-edit tool was blocked
+// (for example run_shell workspace writes). Used only when the request envelope
+// still allows file mutation.
+func replyFalselyClaimsEditToolsUnavailable(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	claimsUnavailable := containsAny(lower,
+		"analysis-only",
+		"analysis only",
+		"request mode: analysis-only",
+		"read-only analysis",
+		"read only analysis",
+		"편집 도구가 차단",
+		"편집 도구는 차단",
+		"편집 도구가 없",
+		"편집 도구를 사용할 수 없",
+		"analysis-only 모드",
+		"analysis only 모드",
+		"읽기 전용 분석 모드",
+		"현재 analysis-only",
+		"현재 analysis only",
+		"edit tools are blocked",
+		"edit tools are unavailable",
+		"cannot use edit tools",
+		"can't use edit tools",
+		"unable to use edit tools",
+		"unable to edit files",
+		"cannot edit files",
+		"can't edit files",
+		"cannot modify files",
+		"can't modify files",
+	)
+	if !claimsUnavailable {
+		return false
+	}
+	// Dumping a patch for the user to save, or asking them to write the file,
+	// confirms the model is avoiding the available edit path.
+	handsOff := containsAny(lower,
+		"파일로 저장",
+		"직접 저장",
+		"수동으로 저장",
+		"아래 코드",
+		"다음 코드",
+		"다음 단계",
+		"save this",
+		"save the following",
+		"copy the following",
+		"create the file manually",
+		"write the file manually",
+		"apply the patch manually",
+		"```",
+	)
+	return handsOff || containsAny(lower,
+		"모드라서",
+		"모드여서",
+		"때문에",
+		"blocked",
+		"unavailable",
+		"차단",
+		"불가",
+	)
+}
+
+func falseAnalysisOnlyClaimGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"Your previous answer incorrectly claimed analysis-only mode or that edit tools were unavailable. File mutation is allowed on this turn. A blocked run_shell write (or similar) is not the same as edit tools being disabled — use write_file, apply_patch, or replace_in_file now to create or update the file. Do not dump the patch for the user to save manually unless an edit tool actually failed and you cite that exact tool error.",
+		"이전 답변은 analysis-only 모드이거나 편집 도구를 쓸 수 없다고 잘못 주장했습니다. 이번 턴은 파일 수정이 허용됩니다. run_shell 파일 쓰기 차단(또는 유사한 차단)은 편집 도구 비활성화와 다릅니다. 지금 write_file, apply_patch, 또는 replace_in_file로 파일을 만들거나 수정하세요. 편집 도구가 실제로 실패하고 그 정확한 오류를 인용하는 경우가 아니면 사용자에게 수동 저장용 패치를 넘기지 마세요.",
+	)
+}
+
 func verificationFollowupBlockedGuidance(cfg Config) string {
 	return localizedText(cfg,
 		"A build, test, or verification command was already skipped or declined in this turn. Do not call run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, or check_shell_bundle for the same verification again unless the user explicitly approves verification. Use the existing code, diff, review, and tool-output evidence and provide the final answer now. State that verification was not run; do not describe it as a tool outage. Keep verification gaps separate from code findings: do not relabel resolved code-review findings as remaining bugs only because verification is missing.",
@@ -6026,7 +6693,7 @@ func (a *Agent) completeModelTurnOnce(ctx context.Context, req ChatRequest) (Cha
 	if a == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
-	return completeModelTurnOnceWithModelRoutes(ctx, a.modelRouteScheduler(), a.modelRoutePolicy(), a.Config, a.Client, req)
+	return completeModelTurnOnceWithModelRoutes(ctx, a.modelRouteScheduler(), a.modelRoutePolicy(), a.Config, a.Client, req, a)
 }
 
 func (a *Agent) emitProviderResponseMetadata(req ChatRequest, resp ChatResponse, serverModelWarningEmitted *bool, modelVerificationEmitted *bool) {

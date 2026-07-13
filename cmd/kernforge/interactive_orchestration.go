@@ -187,7 +187,9 @@ func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, expl
 	if explicitEditRequest && looksLikeBugSearchAndFixIntent(lowerGoal) {
 		return true
 	}
-	if preWriteRequestLooksLikeGeneratedDocumentArtifact(lowerGoal) {
+	// Document authoring is a direct artifact write; the interactive plan/review
+	// preflight only adds latency (and used to look like a hung first turn).
+	if looksLikeDocumentAuthoringIntent(lowerGoal) || preWriteRequestLooksLikeGeneratedDocumentArtifact(lowerGoal) {
 		return true
 	}
 	if requestLooksLikeLocalVerificationWork(lowerGoal) && !requestLooksLikeImplementationOrSourceEditWork(lowerGoal) {

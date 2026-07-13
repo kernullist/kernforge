@@ -202,7 +202,7 @@ func TestTurnRuntimeCompleteLoopRecordsBlockedToolInterventionProgress(t *testin
 		EmitProgressEvent: func(event ProgressEvent) { events = append(events, event) },
 	}
 
-	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	reply, err := agent.completeLoop(context.Background(), false, false, false, 0)
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}

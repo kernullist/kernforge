@@ -53,6 +53,10 @@ func toolResultLooksLikeVerificationAttempt(toolName string, meta map[string]any
 		return true
 	}
 	if strings.EqualFold(strings.TrimSpace(toolName), "run_shell") {
+		command := toolMetaString(meta, "command")
+		if shellCommandLooksLikeSyntaxOrCompileCheck(command) {
+			return true
+		}
 		return runShellOutputLooksLikeVerification(text) || runShellOutputLooksLikeSkippedVerification(text)
 	}
 	return false
@@ -67,7 +71,16 @@ func toolResultHasSuccessfulVerificationEvidence(toolName string, meta map[strin
 		return status == VerificationPassed && toolMetaBoolDefault(meta, "success", true) && toolMetaBoolDefault(meta, "verification_evidence", true)
 	}
 	if toolMetaBool(meta, "verification_like") && toolMetaBoolDefault(meta, "success", true) {
-		return runShellOutputLooksLikeVerification(text)
+		if runShellOutputLooksLikeVerification(text) {
+			return true
+		}
+		// Syntax/compile checks (py_compile, tsc --noEmit, ...) often succeed with
+		// empty stdout. Trust an explicit exit_code=0 when the command was already
+		// classified verification_like.
+		if _, hasExit := meta["exit_code"]; hasExit && toolMetaInt(meta, "exit_code") == 0 {
+			return true
+		}
+		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(toolName), "run_shell") && runShellOutputLooksLikeVerification(text) && toolMetaBoolDefault(meta, "success", true) {
 		return true

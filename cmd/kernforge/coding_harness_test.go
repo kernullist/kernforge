@@ -1281,11 +1281,17 @@ func TestPreFinalHarnessExhaustionReturnsBlockedReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Pre-final coding harness is still blocking completion") {
-		t.Fatalf("expected blocked harness reply, got %q", reply)
+	if !strings.Contains(reply, "Completion is blocked until you choose a next step.") &&
+		!strings.Contains(reply, "Pre-final coding harness is still blocking completion") &&
+		!strings.Contains(reply, "Choose a next step:") &&
+		!strings.Contains(reply, "다음 단계를 고르세요:") {
+		t.Fatalf("expected blocked harness recovery reply, got %q", reply)
 	}
 	if !strings.Contains(reply, "Final answer has inconsistent bug counts") {
 		t.Fatalf("expected blocker details in blocked reply, got %q", reply)
+	}
+	if session.PendingHarnessBlockedRecovery == nil || len(session.PendingHarnessBlockedRecovery.Actions) == 0 {
+		t.Fatalf("expected pending harness blocked recovery actions, got %#v", session.PendingHarnessBlockedRecovery)
 	}
 	if len(provider.requests) != 4 {
 		t.Fatalf("expected two correction attempts before blocked final, got %d requests", len(provider.requests))
@@ -1413,7 +1419,10 @@ func TestPreFinalHarnessSelfHealsSkippedVerificationDisclosure(t *testing.T) {
 	if verifyCount != 0 {
 		t.Fatalf("verification must not run after the user declines, got %d", verifyCount)
 	}
-	if strings.Contains(reply, "Pre-final coding harness is still blocking completion") {
+	if strings.Contains(reply, "Pre-final coding harness is still blocking completion") ||
+		strings.Contains(reply, "Completion is blocked until you choose a next step.") ||
+		strings.Contains(reply, "Choose a next step:") ||
+		strings.Contains(reply, "다음 단계를 고르세요:") {
 		t.Fatalf("self-heal should replace the blocked reply, got %q", reply)
 	}
 	if !strings.Contains(reply, "Validation: verification was not run.") {
@@ -1461,6 +1470,9 @@ func TestPreFinalHarnessDoesNotSelfHealWhenNonHarnessLedgerBlockerRemains(t *tes
 	// needs_revision review that is NOT a reviewer-route failure. The harness report
 	// is still disclosure-only, so the self-heal would fire on the harness report
 	// alone -- but the ledger stays blocked, so the turn must NOT complete.
+	// Disable auto post-change so this fixture is not replaced by a fresh approved
+	// post-change run; this test locks heal vs real review findings, not the
+	// stale-refresh recovery path.
 	session.LastReviewRun = &ReviewRun{
 		ID:      "review-cooccur-1",
 		Trigger: "pre_write",
@@ -1483,7 +1495,9 @@ func TestPreFinalHarnessDoesNotSelfHealWhenNonHarnessLedgerBlockerRemains(t *tes
 	history := &VerificationHistoryStore{Path: filepath.Join(root, "verification-history.json")}
 	ws := Workspace{BaseRoot: root, Root: root}
 	agent := &Agent{
-		Config:        Config{},
+		Config: Config{
+			Review: ReviewHarnessConfig{AutoAfterChange: boolPtr(false)},
+		},
 		Client:        provider,
 		Tools:         NewToolRegistry(NewWriteFileTool(ws)),
 		Workspace:     ws,
@@ -1504,7 +1518,10 @@ func TestPreFinalHarnessDoesNotSelfHealWhenNonHarnessLedgerBlockerRemains(t *tes
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Pre-final coding harness is still blocking completion") {
+	if !strings.Contains(reply, "Completion is blocked until you choose a next step.") &&
+		!strings.Contains(reply, "Pre-final coding harness is still blocking completion") &&
+		!strings.Contains(reply, "Choose a next step:") &&
+		!strings.Contains(reply, "다음 단계를 고르세요:") {
 		t.Fatalf("a co-occurring non-harness ledger blocker must prevent self-heal completion, got %q", reply)
 	}
 	if !strings.Contains(reply, "Verification was not run disclosure missing") {
@@ -1523,6 +1540,91 @@ func TestPreFinalHarnessDoesNotSelfHealWhenNonHarnessLedgerBlockerRemains(t *tes
 	}
 }
 
+// TestPostChangeReviewRunsBeforePreFinalHarnessAfterEdit locks the ordering fix
+// for the stale-review / "Review result is missing" deadlock: after a successful
+// edit, automatic post-change review must refresh coverage before the pre-final
+// harness demands a review disclosure. Without that ordering, a stale pre-write
+// review blocks completion even though post-change never got a turn.
+func TestPostChangeReviewRunsBeforePreFinalHarnessAfterEdit(t *testing.T) {
+	root := t.TempDir()
+	finalReply := testModificationFinalAnswer("main.go", "verification was not run.", "no known remaining blocker.")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: finalReply}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	// Stale pre-write review that covered main.go before the write lands. Early
+	// post-change must replace this before harness/ledger finalization.
+	session.LastReviewRun = &ReviewRun{
+		ID:               "review-stale-prewrite",
+		Trigger:          "pre_write",
+		AutoTriggered:    true,
+		ReviewFingerprint: "stale-fingerprint",
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+		Result: ReviewResult{Summary: "pre-write approved before the write"},
+		Freshness: ReviewFreshness{
+			Stale:       true,
+			StaleReason: "reviewed files changed since review: main.go",
+		},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	history := &VerificationHistoryStore{Path: filepath.Join(root, "verification-history.json")}
+	ws := Workspace{BaseRoot: root, Root: root}
+	var progress []string
+	agent := &Agent{
+		Config: Config{
+			AutoVerify: boolPtr(false),
+			Review:     ReviewHarnessConfig{AutoAfterChange: boolPtr(true)},
+		},
+		Client:        provider,
+		Tools:         NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace:     ws,
+		Session:       session,
+		Store:         store,
+		VerifyHistory: history,
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			_ = plan
+			return false, nil
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{}, false
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(reply, "Pre-final coding harness is still blocking completion") ||
+		strings.Contains(reply, "Completion is blocked until you choose a next step.") ||
+		strings.Contains(reply, "Choose a next step:") ||
+		strings.Contains(reply, "다음 단계를 고르세요:") {
+		t.Fatalf("early post-change should clear stale coverage so the turn can finish, got %q", reply)
+	}
+	if session.LastReviewRun == nil || !strings.EqualFold(session.LastReviewRun.Trigger, "post_change") {
+		t.Fatalf("expected a post_change review to refresh coverage before finalization, got %#v", session.LastReviewRun)
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "post-change review") && !strings.Contains(joinedProgress, "변경 후 리뷰") {
+		t.Fatalf("expected post-change review progress before finalization, got %#v", progress)
+	}
+	if session.RuntimeGateLedger != nil {
+		led := *session.RuntimeGateLedger
+		led.Normalize()
+		if strings.EqualFold(led.Status, runtimeGateStatusBlocked) {
+			t.Fatalf("completed turn must not leave a blocked ledger, blockers=%#v", led.Blockers)
+		}
+	}
+}
+
 func TestPreFinalCodingHarnessBlockedReplyIncludesLedgerBlockers(t *testing.T) {
 	report := &CodingHarnessReport{
 		Outcome: OutcomeInvariantReport{Findings: []CodingHarnessFinding{{
@@ -1538,8 +1640,52 @@ func TestPreFinalCodingHarnessBlockedReplyIncludesLedgerBlockers(t *testing.T) {
 	if !strings.Contains(withExtras, "latest review has unwaived blockers: RF-1") {
 		t.Fatalf("expected the extra ledger blocker in the reply, got %q", withExtras)
 	}
+	if !strings.Contains(withExtras, "Choose a next step:") &&
+		!strings.Contains(withExtras, "다음 단계를 고르세요:") &&
+		!strings.Contains(withExtras, "/finish --disclose") {
+		t.Fatalf("expected recovery actions in blocked reply, got %q", withExtras)
+	}
 	if reportOnly := preFinalCodingHarnessBlockedReply(report); strings.Contains(reportOnly, "latest review") {
 		t.Fatalf("report-only reply must not invent ledger blockers, got %q", reportOnly)
+	}
+}
+
+func TestBuildHarnessBlockedRecoveryPrefersDiscloseAndRetry(t *testing.T) {
+	report := &CodingHarnessReport{
+		Outcome: OutcomeInvariantReport{Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "Verification claim has no recorded evidence",
+			Detail:   "The final answer claims verification succeeded.",
+		}}},
+	}
+	recovery := buildHarnessBlockedRecovery(Config{}, report, nil, "done, verified", true, false)
+	if recovery.PrimaryCommand != "/finish --disclose" {
+		t.Fatalf("expected primary /finish --disclose, got %#v", recovery)
+	}
+	commands := map[string]bool{}
+	for _, action := range recovery.Actions {
+		commands[action.Command] = true
+	}
+	if !commands["/finish --disclose"] || !commands["/retry-verify"] {
+		t.Fatalf("expected disclose and retry-verify actions, got %#v", recovery.Actions)
+	}
+}
+
+func TestOperatorStatusNextCommandLinePrefersHarnessRecovery(t *testing.T) {
+	session := &Session{
+		PendingHarnessBlockedRecovery: &HarnessBlockedRecovery{
+			PrimaryCommand: "/finish --disclose",
+			Actions: []HarnessRecoveryAction{{
+				Command: "/finish --disclose",
+				TitleEN: "Finish with honest disclosure",
+			}},
+		},
+	}
+	got := operatorStatusNextCommandLine(session, RuntimeGateLedger{
+		NextCommands: []ReviewNextCommand{{Command: "/review", Reason: "stale"}},
+	})
+	if !strings.Contains(got, "/finish --disclose") {
+		t.Fatalf("expected recovery primary next command, got %q", got)
 	}
 }
 
@@ -1607,6 +1753,63 @@ func TestDiffAwareHarnessBlocksKoreanBuildPassClaimWithoutEvidence(t *testing.T)
 	report := agent.buildDiffAwareSelfReviewReport("검증:\n- `msbuild \"SampleApp/SampleApp.sln\" /m` 실행 및 통과 확인했습니다.", false)
 	if !codingHarnessReportHasFinding(report.Findings, "Verification claim has no recorded evidence") {
 		t.Fatalf("expected Korean verification success claim to be blocked, got %#v", report.Findings)
+	}
+}
+
+// TestDiffAwareHarnessAllowsPyCompileEvidenceForVerificationClaim locks the
+// make-one-video failure mode: the model ran `python -m py_compile` (empty
+// stdout on success), claimed verification/compile passed, and the harness
+// blocked because py_compile was not treated as verification evidence.
+func TestDiffAwareHarnessAllowsPyCompileEvidenceForVerificationClaim(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.PatchTransactions = []PatchTransaction{{
+		ID:            "patch-tx-test",
+		WorkspaceRoot: root,
+		Status:        patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-tx-test-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "merge_mp4_gui.py",
+				Operation: "create",
+				After: HarnessFileFingerprint{
+					Path:   "merge_mp4_gui.py",
+					Kind:   "file",
+					Exists: true,
+				},
+			}},
+		}},
+	}}
+	session.Messages = []Message{{
+		Role:     "tool",
+		ToolName: "run_shell",
+		Text:     "Wall time: 0.2 seconds\nProcess exited with code 0\nOutput:",
+		ToolMeta: map[string]any{
+			"command":                  "python -m py_compile merge_mp4_gui.py",
+			"mutation_class":           string(shellMutationReadOnly),
+			"verification_like":        true,
+			"verification_status":      string(VerificationPassed),
+			"verification_evidence":    true,
+			"verification_approved":    true,
+			"command_execution_status": "completed",
+			"exit_code":                0,
+			"success":                  true,
+			"effect":                   "execute",
+		},
+	}}
+	agent := &Agent{
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	report := agent.buildDiffAwareSelfReviewReport(
+		"Changed files: merge_mp4_gui.py. Self-review: no blocker. Validation: python -m py_compile passed. Remaining risk: none.",
+		true,
+	)
+	if codingHarnessReportHasFinding(report.Findings, "Verification claim has no recorded evidence") {
+		t.Fatalf("recorded py_compile success must support a compile/verification claim, got %#v", report.Findings)
 	}
 }
 

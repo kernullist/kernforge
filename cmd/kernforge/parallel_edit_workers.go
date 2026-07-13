@@ -1039,7 +1039,7 @@ func (a *Agent) completeModelTurnWithClient(ctx context.Context, client Provider
 		}
 
 		attemptCtx, cancel := context.WithTimeout(ctx, configRequestTimeout(a.Config))
-		resp, err := completeModelTurnOnceWithModelRoutes(attemptCtx, a.modelRouteScheduler(), a.modelRoutePolicy(), a.Config, client, req)
+		resp, err := completeModelTurnOnceWithModelRoutes(attemptCtx, a.modelRouteScheduler(), a.modelRoutePolicy(), a.Config, client, req, a)
 		cancel()
 		if err == nil {
 			return resp, nil
@@ -1079,7 +1079,17 @@ func completeModelTurnOnceWithClient(ctx context.Context, client ProviderClient,
 var (
 	modelRequestWaitInitialDelay = 5 * time.Second
 	modelRequestWaitRepeatDelay  = 15 * time.Second
+	// modelRouteCancelSlotReleaseTimeout is how long we wait for a canceled
+	// Complete to finish (and release its scheduler slot) before force-freeing
+	// the slot so later turns are not starved.
+	modelRouteCancelSlotReleaseTimeout = 500 * time.Millisecond
 )
+
+// modelRouteHoldTracker can wrap Acquire release funcs so cancel/abandon can
+// force-free hung slots. Agent implements this; nil trackers are ignored.
+type modelRouteHoldTracker interface {
+	trackModelRouteRelease(release func()) func()
+}
 
 // completeModelTurnOnceWithModelRoutes runs one model turn through the route
 // scheduler. When a fallback chain is configured (cfg.FallbackModels), it tries
@@ -1089,12 +1099,12 @@ var (
 // exhausted. With no fallback chain configured (the default) this is exactly the
 // previous single-route behavior. Transient/retryable errors are NOT consumed
 // here; they are left to the per-route retry loop in completeModelTurn.
-func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest) (ChatResponse, error) {
+func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest, trackers ...modelRouteHoldTracker) (ChatResponse, error) {
 	if client == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
 
-	resp, err := completeModelTurnSingleRouteAttempt(ctx, scheduler, policy, cfg, client, req)
+	resp, err := completeModelTurnSingleRouteAttempt(ctx, scheduler, policy, cfg, client, req, trackers...)
 	if !shouldTryFallbackModel(err, resp) {
 		return resp, err
 	}
@@ -1113,7 +1123,7 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 			Status:  fallbackModel,
 			Message: modelRouteFallbackMessage(primaryModel, fallbackModel, err, resp),
 		})
-		fallbackResp, fallbackErr := completeModelTurnSingleRouteAttempt(ctx, scheduler, policy, cfg, client, fallbackReq)
+		fallbackResp, fallbackErr := completeModelTurnSingleRouteAttempt(ctx, scheduler, policy, cfg, client, fallbackReq, trackers...)
 		// Keep the latest attempt as the outcome to return if the chain is
 		// exhausted, so the caller sees the final model's error/refusal rather
 		// than the stale primary one.
@@ -1140,7 +1150,7 @@ func modelRouteFallbackMessage(primaryModel string, fallbackModel string, err er
 	return fmt.Sprintf("Primary model %s returned a %s; falling back to %s.", primaryModel, reason, strings.TrimSpace(fallbackModel))
 }
 
-func completeModelTurnSingleRouteAttempt(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest) (ChatResponse, error) {
+func completeModelTurnSingleRouteAttempt(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest, trackers ...modelRouteHoldTracker) (ChatResponse, error) {
 	if client == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
@@ -1197,6 +1207,11 @@ func completeModelTurnSingleRouteAttempt(ctx context.Context, scheduler *ModelRo
 	release, err := scheduler.Acquire(ctx, route, limit)
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("model route queue wait failed for %s: %w", route.Label, err)
+	}
+	for _, tracker := range trackers {
+		if tracker != nil {
+			release = tracker.trackModelRouteRelease(release)
+		}
 	}
 	if limit > 0 {
 		waited := time.Since(routeWaitStarted)
@@ -1296,7 +1311,24 @@ func completeModelTurnSingleRouteAttempt(ctx context.Context, scheduler *ModelRo
 
 	select {
 	case <-ctx.Done():
-		return ChatResponse{}, ctx.Err()
+		// Cancel returns before Complete finishes. Force-close the provider and
+		// free the scheduler slot if Complete stays stuck — otherwise the next
+		// turn blocks forever on Acquire while this goroutine still holds it.
+		forceCloseProviderClient(client)
+		releaseTimeout := modelRouteCancelSlotReleaseTimeout
+		if releaseTimeout <= 0 {
+			releaseTimeout = 500 * time.Millisecond
+		}
+		timer := time.NewTimer(releaseTimeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+			return ChatResponse{}, ctx.Err()
+		case <-timer.C:
+			release()
+			go func() { <-done }()
+			return ChatResponse{}, ctx.Err()
+		}
 	case out := <-done:
 		return out.resp, out.err
 	}

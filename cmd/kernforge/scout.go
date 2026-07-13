@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 var (
@@ -37,6 +38,7 @@ var (
 const (
 	scoutMaxCandidates   = 2
 	scoutMaxContextChars = 2800
+	scoutWalkBudget      = 3 * time.Second
 )
 
 type scoutTerms struct {
@@ -104,9 +106,13 @@ func extractScoutTerms(input string) scoutTerms {
 
 func findScoutCandidates(root string, terms scoutTerms) []scoutCandidate {
 	var candidates []scoutCandidate
+	deadline := time.Now().Add(scoutWalkBudget)
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
+		}
+		if time.Now().After(deadline) {
+			return fs.SkipAll
 		}
 		if d.IsDir() {
 			if scoutIgnoredDirs[strings.ToLower(d.Name())] {
@@ -258,6 +264,13 @@ func renderScoutContext(root string, candidates []scoutCandidate) string {
 func shouldRunAutoScout(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	if lower == "" {
+		return false
+	}
+	// Document-authoring requests often contain words like "구현" ("reflect current
+	// implementation into README"). Those are not code-location lookups; running a
+	// full workspace walk here used to leave the UI silent for minutes after the
+	// semantic classifier finished.
+	if looksLikeDocumentAuthoringIntent(input) || looksLikeDocumentArtifactOutputRequest(input) {
 		return false
 	}
 	if containsAny(lower,

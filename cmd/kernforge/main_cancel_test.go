@@ -403,6 +403,14 @@ func TestRuntimeStateCurrentThinkingStatusPrefersCancelPending(t *testing.T) {
 	if status != "Canceling current request..." && status != "취소하는 중 ..." {
 		t.Fatalf("expected canceling status, got %q", status)
 	}
+
+	rt.requestCancelMu.Lock()
+	rt.requestCancelStartedAt = time.Now().Add(-6 * time.Second)
+	rt.requestCancelMu.Unlock()
+	status = rt.currentThinkingStatus(30 * time.Second)
+	if !strings.Contains(status, "waiting for the provider") && !strings.Contains(status, "제공자 연결 해제") {
+		t.Fatalf("expected prolonged cancel status, got %q", status)
+	}
 }
 
 func TestUIThinkingLineSuppressesRedundantGenericThinkingStatus(t *testing.T) {

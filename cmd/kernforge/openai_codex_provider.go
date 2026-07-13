@@ -159,6 +159,7 @@ type OpenAICodexClient struct {
 	reasoningEffort                   string
 	serviceTier                       string
 	httpClient                        *http.Client
+	connKiller                        *httpConnKiller
 	tokenSource                       codexOAuthAccessTokenSource
 	allowedWorkspaceIDs               []string
 	reasoningSummaryUnsupportedMu     sync.RWMutex
@@ -179,16 +180,25 @@ func NewOpenAICodexClientWithReasoningEffortAndWorkspaceIDs(baseURL string, reas
 
 func NewOpenAICodexClientWithReasoningEffortServiceTierAndWorkspaceIDs(baseURL string, reasoningEffort string, serviceTier string, allowedWorkspaceIDs []string) *OpenAICodexClient {
 	httpClient := &http.Client{}
+	connKiller := attachHTTPConnKiller(httpClient)
 	normalizedWorkspaces := normalizeForcedChatGPTWorkspaceIDs(allowedWorkspaceIDs)
 	return &OpenAICodexClient{
 		baseURL:                           normalizeOpenAICodexBaseURL(baseURL),
 		reasoningEffort:                   normalizeReasoningEffort(reasoningEffort),
 		serviceTier:                       normalizeServiceTier(serviceTier),
 		httpClient:                        httpClient,
+		connKiller:                        connKiller,
 		tokenSource:                       NewCodexOAuthTokenSourceWithWorkspaceIDs("", httpClient, normalizedWorkspaces),
 		allowedWorkspaceIDs:               append([]string(nil), normalizedWorkspaces...),
 		reasoningSummaryUnsupportedModels: map[string]bool{},
 	}
+}
+
+func (c *OpenAICodexClient) ForceCloseConnections() {
+	if c == nil {
+		return
+	}
+	forceCloseHTTPClient(c.httpClient, c.connKiller)
 }
 
 func (c *OpenAICodexClient) Name() string {
@@ -317,7 +327,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		if resp.StatusCode == http.StatusUnauthorized && !authRecovered {
 			if recovery, ok := openAICodexUnauthorizedRecovery(tokenSource); ok {
 				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
+				closeHTTPBodyWithTimeout(resp.Body, httpBodyCloseTimeout)
 				refreshedToken, err := refreshOpenAICodexTokenAfterUnauthorized(ctx, recovery)
 				if err != nil {
 					return ChatResponse{}, err
@@ -327,10 +337,10 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 				continue
 			}
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode >= 300 {
 			data, err := io.ReadAll(resp.Body)
+			closeHTTPBodyWithTimeout(resp.Body, httpBodyCloseTimeout)
 			if err != nil {
 				return ChatResponse{}, err
 			}
@@ -358,11 +368,15 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 			}
 			return ChatResponse{}, apiErr
 		}
-		out, err := readOpenAICodexStreamWithOptions(ctx, resp.Body, openAICodexStreamOptions{
+		stopCancelWatch := armHTTPResponseCancel(ctx, resp)
+		bodyReader := newContextReadCloser(ctx, resp.Body)
+		out, err := readOpenAICodexStreamWithOptions(ctx, bodyReader, openAICodexStreamOptions{
 			OnProgressEvent: req.OnProgressEvent,
 			SessionID:       sessionID,
 			ImageOutputRoot: userConfigDir(),
 		})
+		stopCancelWatch()
+		closeHTTPBodyWithTimeout(bodyReader, httpBodyCloseTimeout)
 		if err != nil {
 			if !disableReasoningSummary && openAICodexReasoningSummaryUnsupportedProviderError(err) {
 				c.markReasoningSummaryUnsupported(model)

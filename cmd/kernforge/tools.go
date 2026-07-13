@@ -5391,9 +5391,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	}
 	if assessment.Class == shellMutationWorkspaceWrite {
 		if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
-			return "", fmt.Errorf("run_shell cannot perform manual workspace file writes; use apply_patch or apply_edit_proposal so edits stay reviewable (%s)", reason)
+			return "", fmt.Errorf("run_shell cannot perform manual workspace file writes; use write_file, apply_patch, or replace_in_file so edits stay reviewable (%s)", reason)
 		}
-		return "", fmt.Errorf("run_shell cannot modify workspace files because shell writes bypass the diff preview and review gate; use apply_patch or apply_edit_proposal instead (%s)", assessment.Reason)
+		return "", fmt.Errorf("run_shell cannot modify workspace files because shell writes bypass the diff preview and review gate; use write_file, apply_patch, or replace_in_file instead (%s)", assessment.Reason)
 	}
 	if assessment.Class == shellMutationVerificationArtifacts {
 		t.ws.Progress("run_shell recognized a verification/build command that may write workspace build artifacts. Source edits are still blocked.")
@@ -5526,7 +5526,10 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 	}
 	_, workDir, _ := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
 	assessment := assessShellCommandMutation(command)
-	verificationLike := assessment.Class == shellMutationVerificationArtifacts || runShellOutputLooksLikeVerification(text) || runShellOutputLooksLikeSkippedVerification(text)
+	verificationLike := assessment.Class == shellMutationVerificationArtifacts ||
+		shellCommandLooksLikeSyntaxOrCompileCheck(command) ||
+		runShellOutputLooksLikeVerification(text) ||
+		runShellOutputLooksLikeSkippedVerification(text)
 	meta := map[string]any{
 		"command":           command,
 		"mutation_class":    string(assessment.Class),
@@ -6163,6 +6166,31 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	}
 
 	return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "no workspace write markers detected"}
+}
+
+// shellCommandLooksLikeSyntaxOrCompileCheck reports whether the command is a
+// read-only syntax/compile check that produces no stdout on success (for example
+// python -m py_compile). These are verification evidence without being build
+// artifact writers, so they must not go through the VerificationArtifacts
+// confirmation path — but they must still set verification_like so a final
+// answer may honestly claim the check passed.
+func shellCommandLooksLikeSyntaxOrCompileCheck(command string) bool {
+	tokens := shellCommandAssessmentTokens(command)
+	if len(tokens) == 0 {
+		return false
+	}
+	return shellCommandInvokesVerificationCommand(tokens,
+		[]string{"python", "-m", "py_compile"},
+		[]string{"python3", "-m", "py_compile"},
+		[]string{"py", "-m", "py_compile"},
+		[]string{"python", "-m", "compileall"},
+		[]string{"python3", "-m", "compileall"},
+		[]string{"py", "-m", "compileall"},
+		[]string{"tsc", "--noemit"},
+		[]string{"node", "--check"},
+		[]string{"ruby", "-c"},
+		[]string{"php", "-l"},
+	)
 }
 
 func shellCommandUnsupportedSyntaxError(toolName string, assessment shellCommandAssessment) error {

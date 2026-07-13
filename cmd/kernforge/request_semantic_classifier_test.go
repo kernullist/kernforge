@@ -4,7 +4,9 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestParseRequestSemanticClassificationResponseAcceptsFencedJSON(t *testing.T) {
@@ -280,6 +282,88 @@ func TestAgentSemanticClassifierHoldsDocumentPromotionUntilCalibrated(t *testing
 	}
 	if session.LastSemanticRequestEnvelope == nil || !session.LastSemanticRequestEnvelope.DocumentAuthoring {
 		t.Fatalf("expected shadow candidate to be retained for calibration, got %#v", session.LastSemanticRequestEnvelope)
+	}
+}
+
+func TestAgentSemanticClassifierEmitsProgressWhileWaiting(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.AutoLocale = boolPtr(false)
+	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{
+		Mode:          RequestSemanticClassifierModeEnabled,
+		MinConfidence: floatPtr(0.7),
+	}
+	prevInitial := modelRequestWaitInitialDelay
+	prevRepeat := modelRequestWaitRepeatDelay
+	modelRequestWaitInitialDelay = 20 * time.Millisecond
+	modelRequestWaitRepeatDelay = 20 * time.Millisecond
+	defer func() {
+		modelRequestWaitInitialDelay = prevInitial
+		modelRequestWaitRepeatDelay = prevRepeat
+	}()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	provider := &blockingCancelProvider{started: started, release: release}
+	var events []ProgressEvent
+	var eventsMu sync.Mutex
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "scripted", "model", "", "default"),
+		EmitProgressEvent: func(event ProgressEvent) {
+			eventsMu.Lock()
+			events = append(events, event)
+			eventsMu.Unlock()
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = agent.maybeRefineRequestEnvelopeWithSemanticClassifier(
+			context.Background(),
+			buildRequestEnvelope("update the policy list"),
+		)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("classifier Complete did not start")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		eventsMu.Lock()
+		gotStart := false
+		gotWait := false
+		for _, event := range events {
+			if event.Kind == progressKindModelRequestStart && event.Stage == "semantic_classifier" {
+				gotStart = true
+			}
+			if event.Kind == progressKindModelRequestWait && event.Stage == "semantic_classifier" {
+				gotWait = true
+			}
+		}
+		eventsMu.Unlock()
+		if gotStart && gotWait {
+			break
+		}
+		if time.Now().After(deadline) {
+			eventsMu.Lock()
+			t.Fatalf("expected classifier start+wait progress, got %#v", events)
+			eventsMu.Unlock()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("classifier did not finish")
 	}
 }
 

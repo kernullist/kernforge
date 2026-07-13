@@ -3035,7 +3035,7 @@ func TestUserChangeIsolationDetectsSameSizeRestoredMtimeChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat protected: %v", err)
 	}
-	before, err := snapshotWorkspaceFiles(root)
+	before, err := snapshotWorkspaceFilesOpts(root, workspaceSnapshotOpts{IncludeContentHash: true})
 	if err != nil {
 		t.Fatalf("snapshot before: %v", err)
 	}
@@ -3049,7 +3049,7 @@ func TestUserChangeIsolationDetectsSameSizeRestoredMtimeChange(t *testing.T) {
 	if err := os.Chtimes(protected, info.ModTime(), info.ModTime()); err != nil {
 		t.Fatalf("restore mtime: %v", err)
 	}
-	current, err := snapshotWorkspaceFiles(root)
+	current, err := snapshotWorkspaceFilesOpts(root, workspaceSnapshotOpts{IncludeContentHash: true})
 	if err != nil {
 		t.Fatalf("snapshot current: %v", err)
 	}
@@ -3282,7 +3282,7 @@ func TestNormalizeUserChangeIsolationPathPreservesCaseOffWindows(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSnapshotIncludesGitMetadata(t *testing.T) {
+func TestWorkspaceSnapshotSkipsGitDir(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, ".git", "config")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -3291,13 +3291,19 @@ func TestWorkspaceSnapshotIncludesGitMetadata(t *testing.T) {
 	if err := os.WriteFile(target, []byte("[core]\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile target: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "readme.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile readme: %v", err)
+	}
 	snapshot, err := snapshotWorkspaceFiles(root)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	rel := filepath.Clean(filepath.Join(".git", "config"))
-	if _, ok := snapshot[rel]; !ok {
-		t.Fatalf("expected snapshot to include %s", rel)
+	if _, ok := snapshot[rel]; ok {
+		t.Fatalf(".git contents must be skipped for fast turn-start snapshots")
+	}
+	if _, ok := snapshot["readme.md"]; !ok {
+		t.Fatalf("expected readme.md in snapshot")
 	}
 }
 
@@ -4460,5 +4466,110 @@ func TestSkippedVerificationOutputIsNotSuccessfulEvidence(t *testing.T) {
 	}
 	if !runShellOutputLooksLikeVerification("ok  \t./cmd/kernforge") {
 		t.Fatalf("passing verification-like output should still be recognized")
+	}
+}
+
+func TestShellCommandLooksLikeSyntaxOrCompileCheck(t *testing.T) {
+	matches := []string{
+		"python -m py_compile merge_mp4_gui.py",
+		"python3 -m py_compile a.py b.py",
+		"py -m py_compile app.py",
+		"python -m compileall .",
+		"tsc --noEmit",
+		"node --check server.js",
+		"ruby -c script.rb",
+		"php -l index.php",
+	}
+	for _, command := range matches {
+		if !shellCommandLooksLikeSyntaxOrCompileCheck(command) {
+			t.Fatalf("expected syntax/compile check: %q", command)
+		}
+	}
+	nonMatches := []string{
+		"python merge_mp4_gui.py",
+		"python -m pip install flask",
+		"echo hello",
+		"go test ./...",
+	}
+	for _, command := range nonMatches {
+		if shellCommandLooksLikeSyntaxOrCompileCheck(command) {
+			t.Fatalf("expected NON syntax/compile check: %q", command)
+		}
+	}
+	// Stay read-only mutation class so ConfirmVerificationPlan is not required.
+	if got := assessShellCommandMutation("python -m py_compile app.py"); got.Class != shellMutationReadOnly {
+		t.Fatalf("py_compile must remain read-only mutation (no verify confirm), got %#v", got)
+	}
+}
+
+func TestEmptyStdoutPyCompileCountsAsSuccessfulVerificationEvidence(t *testing.T) {
+	meta := map[string]any{
+		"command":                  "python -m py_compile merge_mp4_gui.py",
+		"mutation_class":           string(shellMutationReadOnly),
+		"verification_like":        true,
+		"verification_status":      string(VerificationPassed),
+		"verification_evidence":    true,
+		"verification_approved":    true,
+		"command_execution_status": "completed",
+		"exit_code":                0,
+		"success":                  true,
+		"effect":                   "execute",
+	}
+	if !toolResultHasSuccessfulVerificationEvidence("run_shell", meta, "(no output)") {
+		t.Fatalf("empty-stdout py_compile success must count as verification evidence")
+	}
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role:     "tool",
+		ToolName: "run_shell",
+		Text:     "Wall time: 0.1 seconds\nProcess exited with code 0\nOutput:",
+		ToolMeta: meta,
+	}}
+	if !sessionHasSuccessfulVerificationEvidence(session) {
+		t.Fatalf("session must recognize recorded py_compile evidence")
+	}
+}
+
+func TestRunShellExecuteDetailedMarksPyCompileAsVerificationLike(t *testing.T) {
+	python, err := exec.LookPath("python")
+	if err != nil {
+		python, err = exec.LookPath("python3")
+	}
+	if err != nil {
+		t.Skip("python not available")
+	}
+	_ = python
+	root := t.TempDir()
+	script := filepath.Join(root, "app.py")
+	if err := os.WriteFile(script, []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatalf("write app.py: %v", err)
+	}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Perms: NewPermissionManager(ModeBypass, func(string) (bool, error) {
+			return true, nil
+		}),
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			t.Fatalf("py_compile must not prompt for verification plan, got %#v", plan)
+			return false, nil
+		},
+	}
+	registry := NewToolRegistry(NewRunShellTool(ws))
+	result, execErr := registry.ExecuteDetailed(context.Background(), "run_shell", `{"command":"python -m py_compile app.py"}`)
+	if execErr != nil {
+		t.Fatalf("ExecuteDetailed: %v meta=%#v", execErr, result.Meta)
+	}
+	if !toolMetaBool(result.Meta, "verification_like") {
+		t.Fatalf("expected verification_like for py_compile, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "verification_status"); got != string(VerificationPassed) {
+		t.Fatalf("expected passed verification_status, got %#v", result.Meta)
+	}
+	if toolMetaString(result.Meta, "mutation_class") != string(shellMutationReadOnly) {
+		t.Fatalf("py_compile must stay read_only mutation class, got %#v", result.Meta)
+	}
+	if !toolResultHasSuccessfulVerificationEvidence("run_shell", result.Meta, result.DisplayText) {
+		t.Fatalf("ExecuteDetailed py_compile result must count as verification evidence, meta=%#v text=%q", result.Meta, result.DisplayText)
 	}
 }

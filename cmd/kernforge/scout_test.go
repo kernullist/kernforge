@@ -19,6 +19,15 @@ func TestShouldRunAutoScoutOnlyForLookupStyleQueries(t *testing.T) {
 	if !shouldRunAutoScout("WorkerBootstrap 사용처 찾아줘") {
 		t.Fatalf("expected Korean lookup query to trigger auto scout")
 	}
+	if shouldRunAutoScout("현재 구현을 반영한 README 문서를 최신화해서 작성해") {
+		t.Fatalf("document-authoring request must not trigger a silent workspace scout walk")
+	}
+}
+
+func TestShouldSkipInteractivePlanPreflightForDocumentAuthoring(t *testing.T) {
+	if !shouldSkipInteractivePlanPreflight("현재 구현을 반영한 README 문서를 최신화해서 작성해", false, false, false) {
+		t.Fatal("document authoring should skip interactive plan preflight")
+	}
 }
 
 func TestReplySkipsAutoScoutWhenAnalysisContextExists(t *testing.T) {

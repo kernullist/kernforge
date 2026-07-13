@@ -208,6 +208,11 @@ func humanizeProgressStage(value string, korean bool) string {
 			return "리뷰"
 		}
 		return "review"
+	case "semantic_classifier", "classifier":
+		if korean {
+			return "요청 분류"
+		}
+		return "request classification"
 	default:
 		return humanizeEnumFallback(stage)
 	}
@@ -323,6 +328,8 @@ func humanizeProgressMessage(cfg Config, text string) string {
 		return localizedText(cfg, "Review found warnings that need a patch update.", "리뷰에서 패치 수정이 필요한 경고를 발견했습니다.")
 	case strings.Contains(lower, "waiting for the model to summarize"):
 		return localizedText(cfg, "Preparing the final answer.", "최종 답변을 정리하는 중입니다.")
+	case strings.Contains(lower, "producing hidden reasoning") || strings.Contains(lower, "hidden reasoning"):
+		return localizedText(cfg, "Model is thinking...", "모델이 추론하는 중입니다...")
 	case strings.Contains(lower, "tool loop limit reached"):
 		return localizedText(cfg, "Tool-use limit reached; asking the model to finish or choose a clearer next step.", "도구 사용 한도에 도달해, 모델에 마무리하거나 다음 단계를 다시 정하게 합니다.")
 	case strings.Contains(lower, "current model does not support tool use"):

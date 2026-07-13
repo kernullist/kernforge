@@ -3641,6 +3641,9 @@ Conversation And Sessions:
 /automation [status|due|digest|monitor|watch|daemon-start|notify|run-due] Show or manage local verification and PR review automations
 /review [change|plan|selection|pr|final|goal|analysis] Run the common review harness and write .kernforge/reviews/latest.*
 /review-soak --mode scripted|real-provider [--turns N] [--timeout 2m] Run the bounded live-provider endurance soak and write .kernforge/soak artifacts
+/finish --disclose      Finish a harness-blocked turn with honest verification-not-run disclosure
+/retry-verify          Retry focused verification after a harness block, then finish with recorded evidence
+/continue              Resume the primary next step after a pre-final coding harness block
 /review pr [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Review a PR target, optionally with explicit GitHub writes
 /goal [start|run|status|audit|complete|cancel] Record a persistent goal, then explicitly run the autonomous loop when ready
 /session tasks         Show the current task list
@@ -4507,6 +4510,15 @@ Implicit automatic model-backed reviews obey review.model_review_consent: ask (d
 On a single-model route (no independent reviewer configured) implicit model reviews are skipped automatically with skipped_single_model_route and no consent prompt appears; explicit /review still runs, and consent always is the opt-in that keeps implicit self-reviews running.
 Skipped implicit reviews record model_review_status such as skipped_by_user, skipped_single_model_route, or skipped_no_interactive_consent and do not send another reviewer model request.
 When an automatic review is skipped or blocked, review artifacts preserve the original user-visible main-model proposal/ref when available.
+
+/finish --disclose
+- After a pre-final coding harness block, rewrite the candidate final answer with honest verification disclosure and complete the turn when the gate allows.
+
+/retry-verify
+- After a harness block for missing/overclaimed verification, ask the agent to run focused verification and finish with recorded evidence.
+
+/continue
+- Resume the primary next step recorded for the pending harness-blocked recovery card.
 
 /review change [diff-or-note]
 - Review the current workspace diff, a patch transaction, or supplied diff/code.

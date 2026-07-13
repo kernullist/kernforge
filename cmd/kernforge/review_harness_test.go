@@ -604,10 +604,10 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifact(t *testing.T) {
 		t.Fatalf("expected deterministic generated document gate to stay consumed, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain)
 	}
 	joinedProgress := strings.Join(progress, "\n")
-	if !strings.Contains(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") {
+	if !strings.Contains(joinedProgress, "변경 후 코드 리뷰 하네스를 생략합니다") {
 		t.Fatalf("expected Korean skip progress, got %#v", progress)
 	}
-	if strings.Count(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") != 1 {
+	if strings.Count(joinedProgress, "변경 후 코드 리뷰 하네스를 생략합니다") != 1 {
 		t.Fatalf("expected generated document skip progress to be emitted once, got %#v", progress)
 	}
 	if strings.Contains(joinedProgress, "Automatic post-change review") {
@@ -792,10 +792,10 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 		t.Fatalf("expected deterministic generated document gate from acceptance contract to stay consumed, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewedAgain, needsAgain, feedbackAgain, fingerprintAgain)
 	}
 	joinedProgress := strings.Join(progress, "\n")
-	if !strings.Contains(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") {
+	if !strings.Contains(joinedProgress, "변경 후 코드 리뷰 하네스를 생략합니다") {
 		t.Fatalf("expected Korean skip progress from original request, got %#v", progress)
 	}
-	if strings.Count(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") != 1 {
+	if strings.Count(joinedProgress, "변경 후 코드 리뷰 하네스를 생략합니다") != 1 {
 		t.Fatalf("expected generated document skip progress to be emitted once, got %#v", progress)
 	}
 	if strings.Contains(joinedProgress, "Automatic post-change review") {
@@ -915,8 +915,8 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 		t.Fatalf("expected no review model call for accepted generated report artifact, got %d", len(client.requests))
 	}
 	joinedProgress := strings.Join(progress, "\n")
-	if !strings.Contains(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") &&
-		!strings.Contains(joinedProgress, "Skipping automatic post-change review") {
+	if !strings.Contains(joinedProgress, "변경 후 코드 리뷰 하네스를 생략합니다") &&
+		!strings.Contains(joinedProgress, "Skipping the post-change code-review harness") {
 		t.Fatalf("expected generated document skip progress, got %#v", progress)
 	}
 }

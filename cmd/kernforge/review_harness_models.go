@@ -1503,6 +1503,27 @@ func emitReviewPipelineProgress(rt *runtimeState, run ReviewRun, step int, engli
 	rt.agent.EmitProgress(message)
 }
 
+func emitReviewCompactSingleModelProgress(rt *runtimeState, run ReviewRun, starting bool) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	if starting {
+		rt.agent.EmitProgress(reviewRunLocalizedText(rt.cfg, run,
+			"Single-model safety checks: collecting evidence and deterministic gates (implicit model self-review skipped).",
+			"단일 모델 안전 검사: 증거와 결정적 게이트만 확인합니다(암시적 모델 self-review 생략)."))
+		return
+	}
+	verdict := firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown")
+	rt.agent.EmitProgress(fmt.Sprintf(
+		reviewRunLocalizedText(rt.cfg, run,
+			"Single-model safety checks finished: %s (blockers=%d, warnings=%d).",
+			"단일 모델 안전 검사 완료: %s (차단=%d, 경고=%d)."),
+		verdict,
+		len(run.Gate.BlockingFindings),
+		len(run.Gate.WarningFindings),
+	))
+}
+
 func compactReviewPipelineProgress(cfg Config, run ReviewRun, step int, total int, englishStage string, englishDetail string, koreanDetail string) string {
 	stage := compactReviewPipelineStageName(step, englishStage)
 	detail := localizedText(cfg, englishDetail, koreanDetail)

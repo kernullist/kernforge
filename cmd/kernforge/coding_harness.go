@@ -925,10 +925,29 @@ func finalAnswerOnlyHarnessRevisionGuidance(report *CodingHarnessReport, feedbac
 		"Do not call tools, run shell commands, inspect more source files, start review, or edit files for this correction pass.",
 		"Use only the already recorded workspace state and evidence. Fix the final answer so it does not overclaim verification, artifact state, bug counts, or remaining risk.",
 	}
+	if codingHarnessReportHasFindingTitle(report, "Verification claim has no recorded evidence") {
+		lines = append(lines,
+			"Verification overclaim rule: remove any claim that verification/tests/build/compile passed. Either cite only evidence already recorded in this session, or state that verification was not run / has no recorded successful result.",
+		)
+	}
 	if feedback != "" {
 		lines = append(lines, "", feedback)
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func codingHarnessReportHasFindingTitle(report *CodingHarnessReport, title string) bool {
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	for _, finding := range copyReport.allFindings() {
+		if strings.TrimSpace(finding.Title) == strings.TrimSpace(title) {
+			return true
+		}
+	}
+	return false
 }
 
 func finalAnswerOnlyHarnessPromptGuidance() string {
@@ -937,61 +956,6 @@ func finalAnswerOnlyHarnessPromptGuidance() string {
 
 func finalAnswerOnlyHarnessToolBlockedGuidance(report *CodingHarnessReport) string {
 	return finalAnswerOnlyHarnessRevisionGuidance(report, "")
-}
-
-// preFinalCodingHarnessBlockedReply renders the user-facing blocked reply. The
-// coding-harness report findings drive the list, and extraBlockers carries any
-// non-harness runtime-gate-ledger blockers (stale review, patch-transaction
-// scope, stale context) so the enumerated list matches the status-line blocker
-// count instead of under-reporting the harness findings alone.
-func preFinalCodingHarnessBlockedReply(report *CodingHarnessReport, extraBlockers ...string) string {
-	lines := []string{
-		"Pre-final coding harness is still blocking completion.",
-		"I stopped instead of routing the task into another tool or review loop without a clear repair path.",
-	}
-	blockers := make([]string, 0)
-	seen := map[string]bool{}
-	addBlocker := func(text string) {
-		text = strings.TrimSpace(text)
-		if text == "" || len(blockers) >= finalHarnessMaxFindings {
-			return
-		}
-		key := strings.ToLower(text)
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		blockers = append(blockers, "- "+text)
-	}
-	if report != nil {
-		copyReport := *report
-		copyReport.Normalize()
-		for _, finding := range copyReport.allFindings() {
-			if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
-				continue
-			}
-			title := firstNonBlankString(finding.Title, "coding harness blocker")
-			if detail := strings.TrimSpace(finding.Detail); detail != "" {
-				addBlocker(title + ": " + detail)
-			} else {
-				addBlocker(title)
-			}
-			if len(blockers) >= finalHarnessMaxFindings {
-				break
-			}
-		}
-	}
-	for _, extra := range extraBlockers {
-		addBlocker(extra)
-	}
-	if report == nil && len(blockers) == 0 {
-		return "Pre-final coding harness is still blocking completion. I stopped instead of routing the task into another tool or review loop without a clear repair path."
-	}
-	if len(blockers) > 0 {
-		lines = append(lines, "", "Remaining blockers:")
-		lines = append(lines, blockers...)
-	}
-	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // reportOnlyBlockedBySkippedVerificationDisclosure reports true when the only

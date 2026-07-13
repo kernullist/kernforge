@@ -79,6 +79,7 @@ type runtimeState struct {
 	goalCompletionAudit             func(GoalState) (CompletionAuditArtifact, bool, error)
 	goalChangedFilesProvider        func(string) []string
 	interactive                     bool
+	offeringHarnessRecovery         bool
 	strictConfig                    bool
 	configProfile                   string
 	outputMu                        sync.Mutex
@@ -107,6 +108,7 @@ type runtimeState struct {
 	requestCancelMu                 sync.Mutex
 	requestCancelPauses             int
 	requestCancelPending            bool
+	requestCancelStartedAt          time.Time
 	requestCancelIgnoreUntil        time.Time
 	lastAssistantMu                 sync.Mutex
 	lastAssistantPrinted            string
@@ -829,6 +831,7 @@ func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) er
 		return err
 	}
 	rt.printAssistant(reply)
+	rt.afterAgentReplyMaybeOfferHarnessRecovery(ctx)
 	rt.printTurnElapsed(turnStartedAt)
 	return nil
 }
@@ -1330,12 +1333,14 @@ func (rt *runtimeState) runREPL() error {
 			if isAuthError(err) {
 				_ = rt.handleAuthError()
 			}
+			rt.maybeOfferStallRecoveryFromAssistantError(ctx, err)
 			rt.printTurnElapsed(turnStartedAt)
 			continue
 		}
 		if strings.TrimSpace(reply) != "" {
 			rt.printAssistant(reply)
 		}
+		rt.afterAgentReplyMaybeOfferHarnessRecovery(ctx)
 		rt.printTurnElapsed(turnStartedAt)
 	}
 }
@@ -1647,6 +1652,9 @@ func (rt *runtimeState) runWithRequestCancelWatcher(ctx context.Context, fn func
 		cancelRequest := func() {
 			rt.beginRequestCancel()
 			cancel()
+			if rt.agent != nil {
+				rt.agent.AbandonActiveTurn()
+			}
 		}
 		stopEscapeWatcher := startEscapeWatcher(cancelRequest, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
 		defer stopEscapeWatcher()
@@ -1692,6 +1700,9 @@ func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context
 		cancelRequest := func() {
 			rt.beginRequestCancel()
 			cancel()
+			if rt.agent != nil {
+				rt.agent.AbandonActiveTurn()
+			}
 		}
 		stopEscapeWatcher := startEscapeWatcher(cancelRequest, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
 		defer stopEscapeWatcher()
@@ -1705,19 +1716,84 @@ func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context
 		return "", err
 	}
 
+	if handled, reply, err := rt.maybeHandlePendingHarnessRecoveryInput(requestCtx, input); handled {
+		if err != nil && installCancelWatcher && requestCtx.Err() == context.Canceled && ctx.Err() == nil {
+			rt.noteRecentRequestCancel()
+			return "", ErrRequestCanceled
+		}
+		return reply, err
+	}
+
 	rt.startThinkingIndicator()
 	defer rt.stopThinkingIndicator()
 	defer rt.finishAssistantStream()
 
-	reply, err := rt.agent.ReplyWithImages(requestCtx, input, images)
-	if err != nil {
-		if installCancelWatcher && requestCtx.Err() == context.Canceled && ctx.Err() == nil {
-			rt.noteRecentRequestCancel()
-			return "", ErrRequestCanceled
-		}
-		return "", err
+	resultCh := make(chan managedAgentReplyResult, 1)
+	go func() {
+		reply, err := rt.agent.ReplyWithImages(requestCtx, input, images)
+		resultCh <- managedAgentReplyResult{reply: reply, err: err}
+	}()
+
+	if !installCancelWatcher {
+		res := <-resultCh
+		return res.reply, res.err
 	}
-	return reply, nil
+
+	forceClose := func() {
+		if rt.agent != nil {
+			rt.agent.AbandonActiveTurn()
+		}
+	}
+	reply, err, abandoned := awaitManagedAgentReply(requestCtx, ctx, resultCh, forceClose, requestCancelAbandonTimeout)
+	if abandoned || (err != nil && requestCtx.Err() == context.Canceled && ctx.Err() == nil) {
+		rt.noteRecentRequestCancel()
+		if rt.agent != nil {
+			rt.agent.AbandonActiveTurn()
+		}
+		return "", ErrRequestCanceled
+	}
+	return reply, err
+}
+
+type managedAgentReplyResult struct {
+	reply string
+	err   error
+}
+
+func awaitManagedAgentReply(
+	requestCtx context.Context,
+	parentCtx context.Context,
+	resultCh <-chan managedAgentReplyResult,
+	forceClose func(),
+	abandonAfter time.Duration,
+) (reply string, err error, abandoned bool) {
+	if resultCh == nil {
+		return "", fmt.Errorf("missing reply channel"), false
+	}
+	if abandonAfter <= 0 {
+		abandonAfter = requestCancelAbandonTimeout
+	}
+	select {
+	case res := <-resultCh:
+		return res.reply, res.err, false
+	case <-requestCtx.Done():
+		if parentCtx != nil && parentCtx.Err() != nil {
+			res := <-resultCh
+			return res.reply, res.err, false
+		}
+		if forceClose != nil {
+			forceClose()
+		}
+		timer := time.NewTimer(abandonAfter)
+		defer timer.Stop()
+		select {
+		case res := <-resultCh:
+			return res.reply, res.err, false
+		case <-timer.C:
+			go func() { <-resultCh }()
+			return "", ErrRequestCanceled, true
+		}
+	}
 }
 
 func (rt *runtimeState) startThinkingIndicator() {
@@ -2313,20 +2389,34 @@ func (rt *runtimeState) currentThinkingDetails() []string {
 func (rt *runtimeState) beginRequestCancel() {
 	rt.requestCancelMu.Lock()
 	rt.requestCancelPending = true
+	if rt.requestCancelStartedAt.IsZero() {
+		rt.requestCancelStartedAt = time.Now()
+	}
 	rt.requestCancelMu.Unlock()
 }
 
 func (rt *runtimeState) clearRequestCancelState() {
 	rt.requestCancelMu.Lock()
 	rt.requestCancelPending = false
+	rt.requestCancelStartedAt = time.Time{}
 	rt.requestCancelMu.Unlock()
 }
 
 func (rt *runtimeState) currentThinkingStatus(elapsed time.Duration) string {
 	rt.requestCancelMu.Lock()
 	cancelPending := rt.requestCancelPending
+	cancelStartedAt := rt.requestCancelStartedAt
 	rt.requestCancelMu.Unlock()
 	if cancelPending {
+		cancelElapsed := time.Duration(0)
+		if !cancelStartedAt.IsZero() {
+			cancelElapsed = time.Since(cancelStartedAt)
+		}
+		if cancelElapsed >= 5*time.Second {
+			return localizedText(rt.cfg,
+				"Canceling... still waiting for the provider connection to release.",
+				"취소하는 중 ... 제공자 연결 해제를 기다리는 중.")
+		}
 		return localizedText(rt.cfg, "Canceling current request...", "취소하는 중 ...")
 	}
 	rt.thinkingStatusMu.Lock()
@@ -7524,7 +7614,7 @@ func (rt *runtimeState) printStatusOverview(action string) {
 	if summary := rt.ui.statusSummaryBlock("", snapshot.Items, terminalWidth()); strings.TrimSpace(summary) != "" {
 		fmt.Fprintln(rt.writer, summary)
 	}
-	if next := runtimeGatePrimaryNextCommandLine(snapshot.Ledger); next != "" {
+	if next := operatorStatusNextCommandLine(rt.session, snapshot.Ledger); next != "" {
 		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", next))
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", "/status detail for lifecycle evidence, /provider status for live provider details."))
@@ -8344,6 +8434,18 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return rt.handleReviewSoakCommandWithContext(ctx, cmd.Args)
 		})
 		if err != nil {
+			return false, err
+		}
+	case "finish":
+		if err := rt.handleFinishCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "retry-verify":
+		if err := rt.handleRetryVerifyCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "continue":
+		if err := rt.handleContinueCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "automation":

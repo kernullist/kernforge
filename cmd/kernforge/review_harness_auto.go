@@ -55,7 +55,7 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, fi
 		}
 		a.Session.LastDocumentArtifactFingerprint = artifactFingerprint
 		if a.EmitProgress != nil {
-			line := localizedTextForReviewRequest(a.Config, skipRequest, "Skipping automatic post-change review because this turn only generated document artifacts. Artifact quality checks will validate the saved report without starting a repair loop.", "이번 턴은 생성 문서 산출물만 변경했으므로 자동 변경 후 리뷰를 건너뜁니다. 저장된 보고서는 산출물 품질 검사로 확인하고 코드 수리 루프는 시작하지 않습니다.")
+			line := localizedTextForReviewRequest(a.Config, skipRequest, "Skipping the post-change code-review harness because this turn only generated document artifacts. Artifact quality checks will validate the saved report without starting a repair loop.", "이번 턴은 생성 문서 산출물만 변경했으므로 변경 후 코드 리뷰 하네스를 생략합니다. 저장된 보고서는 산출물 품질 검사로 확인하고 코드 수리 루프는 시작하지 않습니다.")
 			line = strings.TrimSpace(line + " " + reviewOperatorProgressSuffix(reviewLifecyclePhasePostChangeReview, reviewTimelineStatusSkipped, "document_artifact flow uses artifact quality gate", reviewLifecyclePhaseArtifactQualityGate, reviewLifecyclePhaseFinalAnswerContract))
 			a.EmitProgress(line)
 		}
@@ -77,7 +77,11 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, fi
 		return true, true, formatPostChangeReviewFeedback(a.Config, cachedRun, true), lastFingerprint, nil
 	}
 	if a.EmitProgress != nil {
-		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running automatic post-change review...", "자동 변경 후 리뷰를 실행합니다..."))
+		if reviewAutoSingleModelSkipsImplicitModelReview(a) {
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running single-model post-change safety checks (deterministic gates; implicit model self-review is skipped)...", "단일 모델 변경 후 안전 검사를 실행합니다(결정적 게이트; 암시적 모델 self-review는 생략)..."))
+		} else {
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running automatic post-change review...", "자동 변경 후 리뷰를 실행합니다..."))
+		}
 	}
 	rt := a.reviewHarnessRuntime(root)
 	run, err := runReviewHarness(ctx, rt, ReviewHarnessOptions{
@@ -220,9 +224,14 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		return nil
 	}
 	if a.EmitProgress != nil {
-		a.emitRepairWorkflowProgress(request, 3, "pre-write review", "쓰기 전 리뷰", "Review the proposed diff before any file write.", "파일에 쓰기 전에 제안 diff를 검토합니다.")
-		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다..."))
-		a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Main model prepared an edit proposal. Sending the diff to the review model before writing files.", "메인 모델이 수정안을 만들었습니다. 파일 쓰기 전에 diff를 리뷰 모델에 전달합니다."))
+		compactSingleModel := reviewAutoSingleModelSkipsImplicitModelReview(a)
+		if compactSingleModel {
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running single-model pre-write safety checks (deterministic gates + diff preview; implicit model self-review is skipped)...", "단일 모델 쓰기 전 안전 검사를 실행합니다(결정적 게이트 + diff preview; 암시적 모델 self-review는 생략)..."))
+		} else {
+			a.emitRepairWorkflowProgress(request, 3, "pre-write review", "쓰기 전 리뷰", "Review the proposed diff before any file write.", "파일에 쓰기 전에 제안 diff를 검토합니다.")
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다..."))
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Main model prepared an edit proposal. Sending the diff to the review model before writing files.", "메인 모델이 수정안을 만들었습니다. 파일 쓰기 전에 diff를 리뷰 모델에 전달합니다."))
+		}
 	}
 	rt := a.reviewHarnessRuntime(root)
 	reviewerGatePolicy := ""
@@ -242,7 +251,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	// and let the diff preview be the gate. A configured cross reviewer still blocks.
 	if preWriteUsesMainOnlyReviewerFallback(a.Session, crossReviewerConfigured, a.Workspace.PreviewEdit != nil) {
 		reviewerGatePolicy = reviewReviewerGatePolicyMainOnlyFallback
-		if a.EmitProgress != nil {
+		if a.EmitProgress != nil && !reviewAutoSingleModelSkipsImplicitModelReview(a) {
 			if crossReviewerConfigured {
 				a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "User approved main-model-only pre-write fallback. Cross-reviewer failure will be recorded, but it will not block this edit before diff preview.", "사용자가 메인 모델 기준 쓰기 전 리뷰 fallback을 승인했습니다. cross reviewer 실패는 기록하지만 이번 편집의 diff preview 진입을 막지는 않습니다."))
 			} else {
@@ -313,7 +322,11 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	if a.EmitProgress != nil {
 		a.emitPreWriteFinalVisibleReviewSummary(run, true)
 		a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, true))
-		a.emitRepairWorkflowProgress(request, 4, "diff preview and write", "diff preview와 쓰기", "Pre-write review passed. Opening diff preview or write confirmation next.", "쓰기 전 리뷰가 통과했습니다. 다음 단계는 diff preview 또는 쓰기 승인입니다.")
+		if !reviewAutoSingleModelSkipsImplicitModelReview(a) {
+			a.emitRepairWorkflowProgress(request, 4, "diff preview and write", "diff preview와 쓰기", "Pre-write review passed. Opening diff preview or write confirmation next.", "쓰기 전 리뷰가 통과했습니다. 다음 단계는 diff preview 또는 쓰기 승인입니다.")
+		} else {
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Pre-write safety checks passed. Opening diff preview or write confirmation next.", "쓰기 전 안전 검사가 통과했습니다. 다음 단계는 diff preview 또는 쓰기 승인입니다."))
+		}
 	}
 	return nil
 }
@@ -383,14 +396,54 @@ func preWriteGeneratedDocumentArtifactRequest(session *Session, preview EditPrev
 }
 
 func preWriteRequestLooksLikeGeneratedDocumentArtifact(request string) bool {
+	// Document authoring is enough on its own. Requiring local-code-work signals
+	// previously blocked README/doc refresh requests that mention "구현" only as
+	// the subject the document should describe, so pre/post review never skipped.
+	// Use the pure-document predicate so merely naming a .md path while asking to
+	// "implement the fix in the code" does not skip the code review gate.
+	return requestLooksLikePureDocumentAuthoring(request)
+}
+
+// requestLooksLikePureDocumentAuthoring reports document-only authoring (README
+// refresh, reports, write-ups) while excluding mixed "read the design doc and
+// fix the code" requests. looksLikeDocumentAuthoringIntent alone is too broad
+// because mentioning any ".md" path trips its document-output shortcut.
+func requestLooksLikePureDocumentAuthoring(request string) bool {
 	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(request)))
 	if lower == "" {
+		return false
+	}
+	if requestExplicitlyOrdersCodeFixAlongsideDocument(lower) {
 		return false
 	}
 	if looksLikeReviewArtifactAuthoringRequest(lower) {
 		return true
 	}
-	return looksLikeDocumentAuthoringIntent(lower) && requestLooksLikeLocalCodeWork(lower)
+	hasDocNoun := containsAny(lower,
+		"document", "documents", "doc", "markdown", "report", "reports", "write-up", "writeup", "notes", "spec", "specs",
+		"readme", "changelog", "license",
+		"문서", "문서들", "마크다운", "보고서", "초안", "명세", "스펙", "리드미",
+	)
+	if !hasDocNoun {
+		return false
+	}
+	return containsAny(lower,
+		"add ", "author ", "create ", "draft ", "generate ", "prepare ", "revise ", "update ", "write ", "refresh ",
+		"작성", "만들", "생성", "업데이트", "최신화", "정리", "초안", "추가",
+	)
+}
+
+func requestExplicitlyOrdersCodeFixAlongsideDocument(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"implement the", "implement a", "implement this", "implement it",
+		"fix the", "fix this", "fix it", "fix bugs", "fix any",
+		"in the code", "in code", "source code", "change the code", "edit the code", "modify the code",
+		"코드를", "코드에", "코드 수정", "소스를", "소스에", "구현해", "구현 해", "고쳐", "고치", "수정해", "패치해",
+	)
 }
 
 func preWritePreviewDocumentArtifactPaths(preview EditPreview) []string {
@@ -1190,7 +1243,12 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 		return false, nil
 	}
 	*lastFingerprint = fingerprint
-	if isGeneratedDocumentArtifactQualityFingerprint(fingerprint) && !needsRevision {
+	if isGeneratedDocumentArtifactQualityFingerprint(fingerprint) {
+		// Deterministic document-quality blockers are owned by the pre-final coding
+		// harness / synthesized blocked final. Do not spend post-change auto-repair
+		// rounds (or the exhausted nudge) on them — that path is for code-review
+		// findings, and burning it here can look like a full review loop on doc-only
+		// work and even consume a later scripted shell tool reply.
 		return false, nil
 	}
 	// Block the text-based downgrade only when a recorded verification outcome
@@ -1589,6 +1647,32 @@ func reviewHarnessCanUseAnyModel(a *Agent) bool {
 		return true
 	}
 	return postChangeReviewHasDedicatedModel(a)
+}
+
+// reviewAutoSingleModelSkipsImplicitModelReview reports whether auto-triggered
+// reviews on this agent will skip the model self-review (no independent
+// reviewer, and consent is not "always"). Callers use this to keep progress
+// honest: do not claim a review model will run, and prefer a compact safety
+// pipeline instead of the 6-step review UX.
+func reviewAutoSingleModelSkipsImplicitModelReview(a *Agent) bool {
+	if a == nil {
+		return false
+	}
+	if configModelReviewConsent(a.Config) == modelReviewConsentAlways {
+		return false
+	}
+	rt := &runtimeState{cfg: a.Config, agent: a}
+	return !reviewRuntimeHasDistinctCrossReviewer(rt)
+}
+
+func reviewHarnessShouldCompactSingleModelAutoPipeline(rt *runtimeState, opts ReviewHarnessOptions) bool {
+	if rt == nil || !opts.AutoTriggered || opts.NoModel {
+		return false
+	}
+	if configModelReviewConsent(rt.cfg) == modelReviewConsentAlways {
+		return false
+	}
+	return !reviewRuntimeHasDistinctCrossReviewer(rt)
 }
 
 var autoReviewDelegationChangedFiles = delegationChangedFiles

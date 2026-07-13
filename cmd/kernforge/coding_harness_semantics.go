@@ -183,6 +183,18 @@ func acceptanceContextPreservingControlRequest(text string) bool {
 	if looksLikeFinalAnswerFollowupPrompt(text) {
 		return true
 	}
+	lower := strings.ToLower(text)
+	if containsAny(lower,
+		"previous turn was blocked",
+		"previous turn stopped because",
+		"the previous turn stopped",
+		"이전 턴은",
+		"이전 턴은 harness",
+		"이전 턴은 같은 파일",
+		"이전 턴은 작업공간",
+	) {
+		return true
+	}
 	switch classifyTurnIntent(text) {
 	case TurnIntentContinueLastTask, TurnIntentExplainCurrentState:
 		return true
