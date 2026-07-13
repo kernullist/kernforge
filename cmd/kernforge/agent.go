@@ -1568,12 +1568,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
-			if explicitGitRequest && !explicitEditRequest && hasMutatingEditToolCalls(resp.Message.ToolCalls) {
+			if explicitGitRequest && requestLooksLikeGitOnlyMutation(latestUser) && hasMutatingEditToolCalls(resp.Message.ToolCalls) {
 				// This turn is a git-only request (e.g. "commit"), not an edit
 				// request. Do not let it silently turn into a new code edit plus a
 				// pre-write review -- the user asked to commit the current work, not
 				// to keep changing it. Redirect to the git action; if code genuinely
 				// must change first, the model must stop and ask rather than edit.
+				// Use requestLooksLikeGitOnlyMutation (not merely !explicitEditRequest)
+				// so "create .gitignore and commit" keeps write_file available.
 				gitOnlyEditRedirects++
 				if gitOnlyEditRedirects > 3 {
 					reply := localizedText(a.Config,
@@ -11469,6 +11471,16 @@ func (a *Agent) applyEditAuthorityToEnvelope(envelope *RequestEnvelope) {
 			envelope.RequiresVerification = true
 		}
 		envelope.AllowsFileMutation = true
+	}
+	// Full (bypass) mode also restores git tools when the request text itself is
+	// an explicit git ask or a mixed file+git ask. edit mode still requires the
+	// envelope's ExplicitGitRequest so casual edit turns do not expose git write.
+	if a.permissionModeIsFull() &&
+		(envelope.ExplicitGitRequest ||
+			looksLikeExplicitGitIntent(envelope.ExternalUserText) ||
+			requestLooksLikeMixedFileAndGitIntent(envelope.ExternalUserText)) {
+		envelope.AllowsGitMutation = true
+		envelope.ExplicitGitRequest = true
 	}
 }
 

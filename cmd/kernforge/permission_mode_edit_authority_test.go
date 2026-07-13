@@ -82,6 +82,34 @@ func TestApplyEditAuthorityToEnvelopeRespectsReadOnly(t *testing.T) {
 	}
 }
 
+func TestApplyEditAuthorityRestoresGitInFullModeForGitAsk(t *testing.T) {
+	mk := func(mode Mode) *Agent {
+		return &Agent{Workspace: Workspace{Perms: NewPermissionManager(mode, func(string) (bool, error) { return true, nil })}}
+	}
+	env := RequestEnvelope{
+		ExternalUserText:   "gitignore 작성하고 커밋하자",
+		AllowsFileMutation: false,
+		AllowsGitMutation:  false,
+		ReadOnlyAnalysis:   true,
+	}
+	mk(ModeBypass).applyEditAuthorityToEnvelope(&env)
+	if !env.AllowsFileMutation || !env.AllowsGitMutation {
+		t.Fatalf("full mode must restore file+git tools for an explicit file+git ask, got %#v", env)
+	}
+	editOnly := RequestEnvelope{
+		ExternalUserText:   "gitignore 작성하고 커밋하자",
+		AllowsFileMutation: false,
+		AllowsGitMutation:  false,
+	}
+	mk(ModeAcceptEdits).applyEditAuthorityToEnvelope(&editOnly)
+	if !editOnly.AllowsFileMutation {
+		t.Fatalf("edit mode must still grant file mutation, got %#v", editOnly)
+	}
+	if editOnly.AllowsGitMutation {
+		t.Fatalf("edit mode must not auto-grant git mutation without ExplicitGitRequest, got %#v", editOnly)
+	}
+}
+
 // TestEditAuthorityKeepsEditToolsExposedInEditMode locks INV-1: the permission
 // mode is the single authority for edit-tool EXPOSURE. A request the classifier
 // reads as read-only (here a Korean review-only request) keeps the edit tools

@@ -18108,3 +18108,81 @@ func TestGitOnlyCommitRequestDoesNotRunCodeEdits(t *testing.T) {
 		t.Fatalf("expected the edit to be redirected and the turn to continue, got %d requests", len(provider.requests))
 	}
 }
+
+func TestGitignoreWriteAndCommitRequestAllowsWriteFile(t *testing.T) {
+	request := "gitignore 작성하고 커밋하자"
+	if requestLooksLikeGitOnlyMutation(request) {
+		t.Fatalf("gitignore write + commit must not classify as git-only mutation")
+	}
+	envelope := buildRequestEnvelope(request)
+	if !envelope.AllowsFileMutation || !envelope.AllowsGitMutation || !envelope.ExplicitEditRequest {
+		t.Fatalf("expected file+git mutation for %q, got %#v", request, envelope)
+	}
+
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.PermissionMode = string(ModeBypass)
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	writeTool := NewWriteFileTool(ws)
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    ".gitignore",
+				"content": "__pycache__/\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "Created .gitignore. Review result: approved_with_warnings. Validation was not run. Remaining risks: none."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false), Review: ReviewHarnessConfig{AutoAfterChange: boolPtr(false)}},
+		Client:    provider,
+		Tools:     NewToolRegistry(writeTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+	if _, err := agent.Reply(context.Background(), request); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if err != nil {
+		t.Fatalf("expected write_file to create .gitignore: %v", err)
+	}
+	if !strings.Contains(string(content), "__pycache__") {
+		t.Fatalf("unexpected .gitignore contents: %q", string(content))
+	}
+}
+
+func TestRequestLooksLikeGitOnlyMutationIgnoresFileCreateAndCommit(t *testing.T) {
+	if !requestLooksLikeGitOnlyMutation("커밋하자") {
+		t.Fatalf("bare commit request must stay git-only")
+	}
+	if !requestLooksLikeGitOnlyMutation("커밋해줘") {
+		t.Fatalf("bare commit please must stay git-only")
+	}
+	for _, request := range []string{
+		"추가하고 커밋",
+		"스테이징하고 커밋",
+	} {
+		if !requestLooksLikeGitOnlyMutation(request) {
+			t.Fatalf("%q must stay git-only (stage/add + commit)", request)
+		}
+	}
+	for _, request := range []string{
+		"gitignore 작성하고 커밋하자",
+		"create a .gitignore and commit",
+		".gitignore 만들고 커밋해줘",
+		"write README.md and commit",
+		"파일 만들고 push",
+		"init and create README",
+		"README 작성하고 커밋해줘",
+	} {
+		if requestLooksLikeGitOnlyMutation(request) {
+			t.Fatalf("%q must not be git-only", request)
+		}
+		if !requestLooksLikeMixedFileAndGitIntent(request) {
+			t.Fatalf("%q must look like mixed file+git intent", request)
+		}
+	}
+}

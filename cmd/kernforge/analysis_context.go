@@ -1576,6 +1576,9 @@ func looksLikeExplicitGitIntent(text string) bool {
 		"clone the repo", "clone this repo", "clone the repository",
 		"git 초기화", "깃 초기화", "저장소 초기화", "레포 초기화", "리포 초기화", "리포지토리 초기화", "repo 초기화", "repository 초기화",
 		"git 저장소 초기화", "git 저장소 만들", "깃 저장소 만들", "저장소 복제", "레포 복제", "리포 복제",
+		// Repo bootstrap without the literal "git" prefix still asks to initialize.
+		"initialize the repo", "initialize the repository", "init the repo", "init the repository",
+		"init and create", "initialize and create", "init then create",
 		"stage these changes", "stage the changes", "stage this", "stage it", "stage everything", "stage all",
 		"commit these changes", "commit the changes", "commit the staged changes", "commit this", "commit it", "commit everything", "commit all",
 		"push this branch", "push the branch", "push these changes", "push it",
@@ -1586,6 +1589,15 @@ func looksLikeExplicitGitIntent(text string) bool {
 		"푸시해", "푸시해줘", "푸시해 줘", "푸시하고", "브랜치 푸시",
 		"pr 만들어", "pr 열어", "pull request 만들어", "pull request 열어", "풀 리퀘스트 만들어", "풀 리퀘스트 열어",
 	) {
+		return true
+	}
+	// Korean bare git action nouns with an action cue ("추가하고 커밋", "만들고 푸시").
+	// Negation/question forms are already filtered above.
+	if containsAny(lower, "커밋", "푸시") &&
+		containsAny(lower, "하고", "해서", "한 뒤", "한 후", " 후", "후 ", "하자", "해줘", "해 줘", "해라", "진행") {
+		return true
+	}
+	if containsAny(lower, "스테이징", "스테이지") && containsAny(lower, "커밋", "commit") {
 		return true
 	}
 	// Branch operations (rename/switch/create/use a branch) are explicit git
@@ -1616,7 +1628,38 @@ func looksLikeExplicitGitIntent(text string) bool {
 	if containsWord(lower, "git", "branch", "changes", "staged", "pr", "remote", "origin", "head", "everything") {
 		return true
 	}
+	// "create a .gitignore and commit" / "파일 만들고 push" have a bare commit/
+	// push verb without "git"/"changes", but the file-create cue makes the git
+	// request unambiguous.
+	if requestLooksLikeFileCreateOrUpdateAlongsideGit(lower) &&
+		(requestTextHasWord(lower, "commit") || requestTextHasWord(lower, "push") || containsAny(lower, "커밋", "푸시")) {
+		return true
+	}
+	// "init and create README" without the literal "git" prefix still asks to
+	// bootstrap a repository when paired with a document/file create cue.
+	if requestLooksLikeRepoBootstrapAlongsideFileCreate(lower) {
+		return true
+	}
 	return containsAny(lower, "변경사항", "변경분", "변경 사항", "브랜치", "스테이징", "원격")
+}
+
+// requestLooksLikeRepoBootstrapAlongsideFileCreate reports requests like
+// "init and create README" that bootstrap a repo and create a file in one ask.
+func requestLooksLikeRepoBootstrapAlongsideFileCreate(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	hasBootstrap := containsAny(lower,
+		"init ", " init", "initialize", "초기화",
+	)
+	if !hasBootstrap {
+		return false
+	}
+	return containsAny(lower,
+		"readme", "changelog", "license", ".gitignore", "파일", "문서",
+		"create ", "write ", "작성", "만들", "생성",
+	)
 }
 
 // looksLikeBranchMutationIntent reports whether the text asks to change the git

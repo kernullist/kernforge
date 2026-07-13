@@ -67,6 +67,17 @@ func TestRequestHandlingSafetyRegression(t *testing.T) {
 		// F5: git-only English is a git intent, not a source must_edit.
 		{name: "en commit staged and push", request: "commit the staged changes and push", wantFileMutation: false, wantGitMutation: true, forbidMustEdit: true, wantPrimary: RequestClassGit},
 
+		// File create + commit is NOT git-only: write_file must stay allowed.
+		{name: "ko gitignore write and commit", request: "gitignore 작성하고 커밋하자", wantFileMutation: true, wantGitMutation: true, wantExplicitEdit: boolPtr(true)},
+		{name: "en create gitignore and commit", request: "create a .gitignore and commit", wantFileMutation: true, wantGitMutation: true, wantExplicitEdit: boolPtr(true)},
+		{name: "ko write gitignore then commit", request: ".gitignore 만들고 커밋해줘", wantFileMutation: true, wantGitMutation: true, wantExplicitEdit: boolPtr(true)},
+		{name: "ko file create and push", request: "파일 만들고 push", wantFileMutation: true, wantGitMutation: true},
+		{name: "en init and create readme", request: "init and create README", wantFileMutation: true, wantGitMutation: true},
+		{name: "ko readme write and commit", request: "README 작성하고 커밋해줘", wantFileMutation: true, wantGitMutation: true},
+		// Stage/add + commit with no file deliverable stays git-only.
+		{name: "ko add and commit", request: "추가하고 커밋", wantFileMutation: false, wantGitMutation: true, forbidMustEdit: true, wantPrimary: RequestClassGit},
+		{name: "ko stage and commit", request: "스테이징하고 커밋", wantFileMutation: false, wantGitMutation: true, forbidMustEdit: true, wantPrimary: RequestClassGit},
+
 		// DO-NOT-BREAK invariants.
 		{name: "ko fix this bug", request: "이 버그를 고쳐줘", wantFileMutation: true, wantPrimary: RequestClassEdit, wantExplicitEdit: boolPtr(true)},
 		{name: "en fix the failing test", request: "fix the failing test", wantFileMutation: true, wantPrimary: RequestClassEdit, wantExplicitEdit: boolPtr(true)},

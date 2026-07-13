@@ -80,6 +80,11 @@ func buildRequestEnvelope(userText string) RequestEnvelope {
 			intent = mode.Intent
 		}
 	}
+	if requestLooksLikeGitStageAndCommitOnly(strings.ToLower(base)) {
+		mode.ExplicitEditRequest = false
+		mode.ReadOnlyAnalysis = false
+		explicitGit = true
+	}
 	freshExternal := shouldPrioritizeWebResearchInSystemPrompt(lower)
 	explicitWebResearch := requestExplicitlyAsksForWebResearch(lower)
 	reviewDecision := classifyAcceptanceContractRequestClassDecision(base, intent, mode.ReadOnlyAnalysis, mode.ExplicitEditRequest)
@@ -300,10 +305,97 @@ func requestLooksLikeGitOnlyMutation(text string) bool {
 	if looksLikeDocumentAuthoringIntent(lower) {
 		return false
 	}
+	// Staging/add + commit with no file-create cue is git-only even when the
+	// edit heuristic matches "추가하" inside "추가하고".
+	if requestLooksLikeGitStageAndCommitOnly(lower) {
+		return true
+	}
+	// "gitignore 작성하고 커밋하자" / "create .gitignore and commit" must keep
+	// file-mutation tools. Treating any commit cue as git-only previously blocked
+	// write_file even when the user explicitly asked to create or edit a file.
+	if looksLikeExplicitEditIntent(lower) {
+		return false
+	}
+	if requestLooksLikeFileCreateOrUpdateAlongsideGit(lower) {
+		return false
+	}
 	return !containsAny(lower,
 		"fix ", "patch ", "implement ", "modify ", "edit ", "refactor ", "repair ",
 		"fix하고", "fix하고", "fix 후", "patch하고", "implement하고",
 		"수정", "고쳐", "고치", "구현", "패치", "반영", "리팩터", "리팩토", "수리",
+	)
+}
+
+// requestLooksLikeMixedFileAndGitIntent reports requests that ask to create or
+// edit a workspace file and also perform a git write (commit/push/init) in the
+// same turn. These must keep both file and git tools, and must not be narrowed
+// to read-only by the semantic classifier.
+func requestLooksLikeMixedFileAndGitIntent(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	if requestLooksLikeGitStageAndCommitOnly(lower) {
+		return false
+	}
+	if !looksLikeExplicitGitIntent(lower) {
+		return false
+	}
+	return looksLikeExplicitEditIntent(lower) ||
+		looksLikeDocumentAuthoringIntent(lower) ||
+		requestLooksLikeFileCreateOrUpdateAlongsideGit(lower) ||
+		requestLooksLikeRepoBootstrapAlongsideFileCreate(lower)
+}
+
+// requestLooksLikeGitStageAndCommitOnly reports "추가하고 커밋" / "stage and
+// commit" style requests with no file-create deliverable. These are git-only.
+func requestLooksLikeGitStageAndCommitOnly(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	if requestLooksLikeFileCreateOrUpdateAlongsideGit(lower) || looksLikeDocumentAuthoringIntent(lower) {
+		return false
+	}
+	if containsAny(lower,
+		"작성", "만들", "생성", "고쳐", "수정해", "수정하", "write ", "create ", "fix ", "edit ", "implement ",
+	) {
+		return false
+	}
+	hasCommit := containsAny(lower, "커밋", "commit")
+	if !hasCommit {
+		return false
+	}
+	return containsAny(lower,
+		"추가하고", "추가한 뒤", "추가 후", "추가해서",
+		"스테이징", "스테이지",
+		"stage and", "stage then", "add and commit", "git add",
+	)
+}
+
+// requestLooksLikeFileCreateOrUpdateAlongsideGit reports requests that ask to
+// create or update a workspace file in the same turn as a git action. These are
+// not commit-only turns even when the edit-intent heuristic is incomplete.
+func requestLooksLikeFileCreateOrUpdateAlongsideGit(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	hasFileTarget := containsAny(lower,
+		".gitignore", ".gitattributes", ".editorconfig", ".env", "readme", "changelog", "license",
+		"파일", "소스", "코드", "문서",
+		"file ", "files ", "source ", "config", "script",
+		".go", ".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".json", ".yaml", ".yml", ".toml",
+	) || (strings.Contains(lower, ".") && containsAny(lower,
+		"작성", "만들", "생성", "추가", "써서", "써줘", "써 줘", "저장",
+		"write ", "create ", "add ", "update ", "generate ", "save ",
+	))
+	if !hasFileTarget {
+		return false
+	}
+	return containsAny(lower,
+		"작성", "만들", "생성", "추가", "써서", "써줘", "써 줘", "저장",
+		"write ", "create ", "add ", "update ", "generate ", "save ",
 	)
 }
 
@@ -325,6 +417,14 @@ func (e *RequestEnvelope) applyPolicy() {
 	}
 	e.AllowsGitMutation = e.ExplicitGitRequest
 	e.AllowsFileMutation = e.ExplicitEditRequest || e.DocumentAuthoring || requestEnvelopeReviewClassMutates(e.ReviewRequestClass)
+	// Mixed file+git requests must keep both capabilities even when one of the
+	// edit/document flags was incomplete (e.g. ".gitignore 만들고 커밋").
+	if requestLooksLikeMixedFileAndGitIntent(e.ExternalUserText) {
+		e.AllowsFileMutation = true
+		e.AllowsGitMutation = true
+		e.ExplicitGitRequest = true
+		e.ReadOnlyAnalysis = false
+	}
 	if e.GoalPromptDraftOnly {
 		e.AllowsFileMutation = false
 		e.AllowsGitMutation = false
@@ -341,7 +441,11 @@ func (e *RequestEnvelope) applyPolicy() {
 		e.Warnings = append(e.Warnings, "low confidence request classification; mutation defaults to read-only")
 	}
 	e.RequiresVerification = e.AllowsFileMutation || promptExplicitlyRequiresVerification(e.ExternalUserText)
-	if e.AllowsGitMutation {
+	if e.AllowsGitMutation && e.AllowsFileMutation {
+		// Prefer may_git for mixed turns so final-gate/git tooling stays available
+		// without forcing a source must_edit boundary.
+		e.Boundary = ActionBoundaryMayGit
+	} else if e.AllowsGitMutation {
 		e.Boundary = ActionBoundaryMayGit
 	} else if e.AllowsFileMutation {
 		// must_edit is the strongest mutating boundary. Grant it only when the

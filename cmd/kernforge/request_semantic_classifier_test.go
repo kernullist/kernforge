@@ -135,6 +135,33 @@ func TestSemanticClassifierDoesNotNarrowImperativeEdit(t *testing.T) {
 	}
 }
 
+func TestSemanticClassifierDoesNotNarrowFilePlusGitCombo(t *testing.T) {
+	for _, request := range []string{
+		"gitignore 작성하고 커밋하자",
+		"README 작성하고 커밋해줘",
+		"create a .gitignore and commit",
+	} {
+		envelope := buildRequestEnvelope(request)
+		if !envelope.AllowsFileMutation || !envelope.AllowsGitMutation {
+			t.Fatalf("baseline must allow file+git for %q, got %#v", request, envelope)
+		}
+		classification := RequestSemanticClassification{
+			PrimaryClass:     string(RequestClassQuestion),
+			ActionBoundary:   string(ActionBoundaryReadOnly),
+			ReadOnlyAnalysis: boolPtr(true),
+			Confidence:       0.99,
+			Reason:           "Wrongly tries to silence a file+git request.",
+		}
+		got := applySemanticRequestClassification(envelope, classification, RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeEnabled})
+		if got.ReadOnlyAnalysis || !got.AllowsFileMutation || !got.AllowsGitMutation {
+			t.Fatalf("file+git request %q must not be narrowed to read-only, got %#v", request, got)
+		}
+		if !requestSemanticClassifierCanSkip(envelope) {
+			t.Fatalf("file+git request %q should skip the semantic classifier", request)
+		}
+	}
+}
+
 func TestSemanticClassifierDoesNotNarrowMutationBelowOverrideConfidence(t *testing.T) {
 	// Above the base threshold but below the mutation-override bar: a mutation
 	// signal must NOT be flipped to read-only on a merely-acceptable verdict.

@@ -187,6 +187,7 @@ func TestRequestEnvelopeAllowsRepoBootstrapGitRequests(t *testing.T) {
 		"git init",
 		"저장소 초기화 해줘",
 		"clone the repository",
+		"init and create README",
 	} {
 		envelope := buildRequestEnvelope(request)
 		if !envelope.ExplicitGitRequest || !envelope.AllowsGitMutation {

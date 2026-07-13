@@ -306,12 +306,14 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 	}
 	// Narrowing to read-only is the safe (least-privilege) direction. Allow it
 	// even when the heuristic claimed a mutation, but only on a high-confidence
-	// verdict and never for an unambiguous imperative edit command -- that
-	// protects genuine "fix it / implement it" requests from being silenced
-	// while still letting the LLM correct heuristic mutation false positives
-	// (e.g. a status question whose verb stem matched an edit keyword).
+	// verdict and never for an unambiguous imperative edit command or a mixed
+	// file+git request -- that protects genuine "fix it / implement it" and
+	// "gitignore 작성하고 커밋하자" requests from being silenced while still
+	// letting the LLM correct heuristic mutation false positives (e.g. a status
+	// question whose verb stem matched an edit keyword).
 	mutationOverrideOK := classification.Confidence >= requestSemanticClassifierMutationOverrideConfidenceFor(cfg) &&
-		!looksLikeImperativeSourceEditCommand(envelope.ExternalUserText)
+		!looksLikeImperativeSourceEditCommand(envelope.ExternalUserText) &&
+		!requestLooksLikeMixedFileAndGitIntent(envelope.ExternalUserText)
 	narrowedToReadOnly := false
 	documentPromoted := false
 	// Incoming (deterministic, session-aware) mutation flags. applyPolicy below
@@ -528,6 +530,11 @@ func buildRequestSemanticClassifierUserPrompt(envelope RequestEnvelope) string {
 // still gets the LLM.
 func requestSemanticClassifierCanSkip(envelope RequestEnvelope) bool {
 	if looksLikeImperativeSourceEditCommand(envelope.ExternalUserText) {
+		return true
+	}
+	// Mixed file+git requests are already unambiguous: the classifier must not
+	// demote them to read-only or strip write_file / git_commit.
+	if requestLooksLikeMixedFileAndGitIntent(envelope.ExternalUserText) {
 		return true
 	}
 	return envelope.ReadOnlyAnalysis && !requestEnvelopeHasDeterministicMutation(envelope)
