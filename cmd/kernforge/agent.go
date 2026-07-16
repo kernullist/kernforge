@@ -191,6 +191,11 @@ const (
 var (
 	noProgressIterationFloor = 24
 	noProgressWallClockFloor = 8 * time.Minute
+	// Analysis exploration soft nudge only (Grok-style): never hard-cap how many
+	// new files may be read. After modest exploration, remind the model to answer;
+	// pure re-reads of already-seen paths are blocked, but new paths stay allowed.
+	analysisExplorationNudgePaths  = 8
+	analysisExplorationNudgeRounds = 5
 )
 
 var errVerificationFollowupBlocked = errors.New("verification follow-up blocked after verification was declined or skipped")
@@ -849,6 +854,153 @@ func compactHookPayload(a *Agent, event HookEvent, instructions string, trigger 
 	return payload
 }
 
+// countAnalysisExplorationPaths counts distinct non-harness paths seen during
+// an analysis turn. Used by the exploration budget that forces a final answer.
+func countAnalysisExplorationPaths(seen map[string]struct{}) int {
+	n := 0
+	for path := range seen {
+		if readChurnPathIsHarnessArtifact(path) {
+			continue
+		}
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func analysisExplorationNudgeGuidance(explored int) string {
+	return fmt.Sprintf(
+		"You have already inspected %d distinct workspace paths for this analysis/reporting request. Prefer finishing now from evidence already gathered (docs vs implementation, concrete gaps with file references). If the user asked for a document, create/update it with write_file or apply_patch. You may still open a path you have NOT read yet if one critical fact is missing. Do not re-read files you already opened, and do not claim a read budget blocked you — there is no hard file-read cap.",
+		explored,
+	)
+}
+
+func analysisDeliverableWriteNowGuidance(explored int, documentDeliverable bool) string {
+	if documentDeliverable {
+		return fmt.Sprintf(
+			"STOP re-reading. You already inspected about %d paths. The user asked for a document deliverable. Your next action must create/update the document with write_file or apply_patch (or write_file under docs/) summarizing: (1) what the docs claim, (2) what the implementation covers, (3) concrete gaps with file references you already saw, (4) optional next steps. Do not call read_file/list_files/grep again unless a single missing fact is required for one sentence — then write the document immediately. Do not claim tools failed or a read budget blocked you.",
+			explored,
+		)
+	}
+	return fmt.Sprintf(
+		"STOP re-reading. You already inspected about %d paths. Write the final analysis answer now from evidence already gathered. Do not re-open files you already read. There is no hard file-read cap — the problem is repeating the same reads without answering.",
+		explored,
+	)
+}
+
+// analysisExplorationShouldBlockRevisitBatch is true when the model is only
+// re-inspecting paths it already opened. New paths remain allowed (no hard budget).
+func analysisExplorationShouldBlockRevisitBatch(seen map[string]struct{}, calls []ToolCall) (bool, string) {
+	if len(seen) == 0 || len(calls) == 0 {
+		return false, ""
+	}
+	if analysisInspectionBatchOnlyRevisitsSeen(seen, calls) {
+		return true, "analysis inspection batch only re-reads already-seen paths"
+	}
+	return false, ""
+}
+
+func analysisExplorationRevisitBlockGuidance(explored int) string {
+	return fmt.Sprintf(
+		"Do not re-read files you already inspected (%d paths so far). Either open a path you have not read yet, or write the final analysis answer / document now from evidence already gathered. There is no hard limit on reading new files.",
+		explored,
+	)
+}
+
+// maybePushAnalysisDeliverableInsteadOfReadChurnAbort returns true when the
+// caller should continue the tool loop (with write guidance) instead of aborting
+// into a stall recovery card. Used once per turn for analysis/document work.
+func maybePushAnalysisDeliverableInsteadOfReadChurnAbort(
+	a *Agent,
+	analysisOnlyTurn bool,
+	documentDeliverableTurn bool,
+	pushed *bool,
+	seen map[string]struct{},
+	calls []ToolCall,
+	turnCount int,
+) bool {
+	if a == nil || pushed == nil || *pushed {
+		return false
+	}
+	if !analysisOnlyTurn && !documentDeliverableTurn {
+		return false
+	}
+	*pushed = true
+	explored := countAnalysisExplorationPaths(seen)
+	_ = calls
+	_ = turnCount
+	guidance := analysisDeliverableWriteNowGuidance(explored, documentDeliverableTurn || requestLooksLikeInspectThenDocumentTurn(sessionEffectiveUserRequestText(a.Session)))
+	if a.EmitProgress != nil {
+		a.EmitProgress(localizedText(a.Config,
+			"Enough re-reads — write the answer/document from what you already have.",
+			"재읽기가 반복되어, 이미 본 내용으로 답변/문서를 작성하도록 전환합니다."))
+	}
+	a.Session.AddMessage(internalUserMessage(guidance))
+	return true
+}
+
+func analysisInspectionBatchOnlyRevisitsSeen(seen map[string]struct{}, calls []ToolCall) bool {
+	if len(calls) == 0 || len(seen) == 0 {
+		return false
+	}
+	// Only pure inspection batches (read/list/grep). Edits/shell/etc. are not revisits.
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		switch name {
+		case "read_file", "list_files", "grep":
+		default:
+			if !toolCallNameLooksLikeWebResearch(name) {
+				return false
+			}
+		}
+	}
+	batchPaths, hasReads := readFileBatchPaths(calls)
+	if !hasReads || len(batchPaths) == 0 {
+		// list_files/grep without read_file: allow (new dirs/patterns are useful).
+		return false
+	}
+	// True only when every non-harness read path was already opened this turn.
+	sawRealPath := false
+	for _, path := range batchPaths {
+		if readChurnPathIsHarnessArtifact(path) {
+			continue
+		}
+		sawRealPath = true
+		if analysisPathAlreadySeen(seen, path) {
+			continue
+		}
+		return false
+	}
+	return sawRealPath
+}
+
+func analysisPathAlreadySeen(seen map[string]struct{}, path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	if _, ok := seen[path]; ok {
+		return true
+	}
+	key := preFixReviewRepairReadPathKey(path)
+	if key != "" {
+		if _, ok := seen[key]; ok {
+			return true
+		}
+	}
+	for existing := range seen {
+		if strings.EqualFold(existing, path) {
+			return true
+		}
+		if key != "" && preFixReviewRepairReadPathKey(existing) == key {
+			return true
+		}
+	}
+	return false
+}
+
 // readChurnPathIsHarnessArtifact reports whether a read targets the harness's
 // own .kernforge state tree (reviews, plans, evidence, ...). Re-reading our own
 // artifacts is never task-investigation progress -- the pre-write feedback even
@@ -1161,6 +1313,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastReviewedFinalAnswer := ""
 	falseAnalysisOnlyClaimRetries := 0
 	finalAnswerOnlyCorrection := false
+	// Soft analysis guidance only (no hard tool-disable budget). Pure re-reads of
+	// already-seen paths are blocked; new paths stay available like Grok Build.
+	analysisExplorationNudged := false
+	// One automatic "write the deliverable now" push when read-churn would otherwise
+	// open a repair-style recovery card on analysis/document turns.
+	analysisDeliverableWritePushed := false
+	analysisOnlyTurn := requestLooksLikeAnalysisOnlyTurn(latestUser)
+	documentDeliverableTurn := requestLooksLikeInspectThenDocumentTurn(latestUser)
 	serverModelWarningEmitted := false
 	modelVerificationEmitted := false
 	providerTurnState := &ProviderTurnState{}
@@ -1547,6 +1707,35 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return "", err
 				}
 				continue
+			}
+			// Grok-style: never hard-cap new file reads. Only block pure re-reads of
+			// paths already opened this turn so the model cannot spin without progress.
+			if analysisOnlyTurn {
+				if block, reason := analysisExplorationShouldBlockRevisitBatch(readChurnSeenPaths, resp.Message.ToolCalls); block {
+					explored := countAnalysisExplorationPaths(readChurnSeenPaths)
+					guidance := analysisExplorationRevisitBlockGuidance(explored)
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    reason,
+						Guidance:  guidance,
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     explored,
+						Iteration: turnCount,
+					})
+					if a.EmitProgress != nil {
+						a.EmitProgress(localizedText(a.Config,
+							"Skipping re-reads of files already opened; answer or open a new path.",
+							"이미 연 파일 재읽기를 건너뜁니다. 답하거나 아직 안 본 경로를 여세요."))
+					}
+					if err := addRedirectGuidance(
+						resp.Message.ToolCalls,
+						"NOT_EXECUTED: already inspected these paths; open a new path or write the final answer.",
+						guidance,
+					); err != nil {
+						return "", err
+					}
+					continue
+				}
 			}
 			if len(toolContractSyntheticResults) > 0 {
 				for _, item := range toolContractSyntheticResults {
@@ -1981,7 +2170,37 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if !readChurnDetectorActive {
 					readChurnNoNewPathTurns = 0
 				}
+				// Soft analysis nudge only — new paths remain fully allowed.
+				if analysisOnlyTurn && readChurnDetectorActive && !analysisExplorationNudged {
+					explored := countAnalysisExplorationPaths(readChurnSeenPaths)
+					if explored >= analysisExplorationNudgePaths || turnCount >= analysisExplorationNudgeRounds {
+						analysisExplorationNudged = true
+						guidance := analysisExplorationNudgeGuidance(explored)
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:      RuntimeInterventionRepeatedTool,
+							Reason:    "analysis exploration soft nudge; prefer final answer",
+							Guidance:  guidance,
+							ToolCalls: resp.Message.ToolCalls,
+							Count:     explored,
+							Iteration: turnCount,
+						})
+						a.Session.AddMessage(internalUserMessage(guidance))
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						// Fall through: do not skip the rest of the loop machinery, but
+						// tools already ran; the nudge shapes the next model turn.
+					}
+				}
 				if readChurnDetectorActive && readChurnNoNewPathTurns >= readChurnNoNewPathAbortTurns {
+					// Analysis/document turns: one automatic push to write the deliverable
+					// instead of dumping the user into a code-repair recovery card.
+					if maybePushAnalysisDeliverableInsteadOfReadChurnAbort(a, analysisOnlyTurn, documentDeliverableTurn, &analysisDeliverableWritePushed, readChurnSeenPaths, resp.Message.ToolCalls, turnCount) {
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
 					// Bounded-loop / escalate-to-user: rather than aborting with a bare
 					// error, return a useful clarification request so an under-specified
 					// task ends in a question, not a crash.
@@ -2056,6 +2275,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						turnRuntime.Counters.RepeatedReadSetRecoveryCount = 0
 					}
 					if multiPathReadRepeatTurns >= repeatedReadSetAbortTurns {
+						if maybePushAnalysisDeliverableInsteadOfReadChurnAbort(a, analysisOnlyTurn, documentDeliverableTurn, &analysisDeliverableWritePushed, readChurnSeenPaths, resp.Message.ToolCalls, turnCount) {
+							if err := a.Store.Save(a.Session); err != nil {
+								return "", err
+							}
+							continue
+						}
 						baseReply := a.multiPathReadChurnEscalationReply(distinct)
 						files := stallRecoveryFilesFromSeen(readChurnSeenPaths)
 						if len(files) == 0 {
@@ -3259,38 +3484,66 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				break
 			}
 			if editTargetMismatchRequiresReanchor && isEditTool(call.Name) {
-				editTargetMismatchReanchorBlocks++
-				result := editTargetMismatchReanchorRequiredResult(call)
-				toolMsg := Message{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					ToolName:   call.Name,
-					Text:       result.DisplayText,
-					ToolMeta:   result.Meta,
-					IsError:    true,
-				}
-				a.setToolExecutionResult(toolMsgIndex, toolMsg)
-				a.noteToolConversationBlockedResult(call, result, ErrEditTargetMismatch)
-				a.noteToolExecutionResultDetailed(call, result, ErrEditTargetMismatch)
-				sawToolResultThisTurn = true
-				if editTargetMismatchReanchorBlocks > maxEditTargetMismatchReanchorBlocks {
-					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit targeted stale or mismatched file contents and edit retries continued without re-anchoring.")
-					reply := formatEditTargetMismatchReanchorLoopLimitReply(a.Config, a.Session, turnAppliedEditPaths)
-					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+				// write_file is a whole-file rewrite: it does not depend on matching
+				// stale patch context, so it is the escape hatch after a mismatch.
+				// apply_patch/replace_in_file still require an explicit re-anchor.
+				if !editToolIsWholeFileRewrite(call.Name) {
+					editTargetMismatchReanchorBlocks++
+					result := editTargetMismatchReanchorRequiredResult(call)
+					toolMsg := Message{
+						Role:       "tool",
+						ToolCallID: call.ID,
+						ToolName:   call.Name,
+						Text:       result.DisplayText,
+						ToolMeta:   result.Meta,
+						IsError:    true,
+					}
+					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					a.noteToolConversationBlockedResult(call, result, ErrEditTargetMismatch)
+					a.noteToolExecutionResultDetailed(call, result, ErrEditTargetMismatch)
+					sawToolResultThisTurn = true
+					if editTargetMismatchReanchorBlocks > maxEditTargetMismatchReanchorBlocks {
+						// Document/analysis deliverable: one more push toward write_file
+						// instead of a hard stop that looks like total failure.
+						if (documentDeliverableTurn || analysisOnlyTurn) && !analysisDeliverableWritePushed {
+							analysisDeliverableWritePushed = true
+							disabledTools["apply_patch"] = true
+							disabledTools["replace_in_file"] = true
+							a.Session.AddMessage(internalUserMessage(editTargetMismatchDocumentWriteFileGuidance(a.Config, turnAppliedEditPaths)))
+							a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: context patches keep mismatching; use write_file with the complete final document content.")
+							if saveErr := a.Store.Save(a.Session); saveErr != nil {
+								return "", saveErr
+							}
+							lastToolError = ""
+							lastToolErrorCount = 0
+							editMismatchRetryQueued = true
+							break
+						}
+						a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit targeted stale or mismatched file contents and edit retries continued without re-anchoring.")
+						reply := formatEditTargetMismatchReanchorLoopLimitReply(a.Config, a.Session, turnAppliedEditPaths)
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						return reply, nil
+					}
+					// Prefer write_file for document deliverables after any mismatch.
+					if documentDeliverableTurn {
+						disabledTools["apply_patch"] = true
+						disabledTools["replace_in_file"] = true
+						a.Session.AddMessage(internalUserMessage(editTargetMismatchDocumentWriteFileGuidance(a.Config, turnAppliedEditPaths)))
+					} else {
+						a.Session.AddMessage(internalUserMessage(editTargetMismatchReanchorRequiredGuidance(a.Config)))
+					}
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit targeted stale or mismatched file contents; re-anchor on the current file or diff before issuing another edit, or use write_file for a whole-file rewrite.")
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
 					}
-					return reply, nil
+					lastToolError = ""
+					lastToolErrorCount = 0
+					editMismatchRetryQueued = true
+					break
 				}
-				a.Session.AddMessage(internalUserMessage(editTargetMismatchReanchorRequiredGuidance(a.Config)))
-				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit targeted stale or mismatched file contents; re-anchor on the current file or diff before issuing another edit.")
-				if saveErr := a.Store.Save(a.Session); saveErr != nil {
-					return "", saveErr
-				}
-				lastToolError = ""
-				lastToolErrorCount = 0
-				editMismatchRetryQueued = true
-				break
 			}
 			if preWriteReviewRepairBlocks > 0 && !isEditTool(call.Name) {
 				preWriteReviewRepairInspectTools++
@@ -3479,10 +3732,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				preWriteReviewRequiresReanchor = false
 				preWriteReviewReanchorBlocks = 0
 			}
-			if err == nil && editTargetMismatchRequiresReanchor && editTargetMismatchReanchorTool(call) {
+			if err == nil && editTargetMismatchRequiresReanchor &&
+				(editTargetMismatchReanchorTool(call) || editToolIsWholeFileRewrite(call.Name)) {
 				editTargetMismatchRequiresReanchor = false
 				editTargetMismatchReanchorBlocks = 0
 				delete(disabledTools, "replace_in_file")
+				// Document turns may have disabled apply_patch after mismatch; restore
+				// once the workspace was re-anchored or fully rewritten.
+				if editToolIsWholeFileRewrite(call.Name) {
+					delete(disabledTools, "apply_patch")
+				}
 			}
 			if saveErr := a.Store.Save(a.Session); saveErr != nil {
 				return "", saveErr
@@ -3847,6 +4106,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if readOnlyInspectionToolName(call.Name) {
 					a.Session.AddMessage(internalUserMessage("The last read-only inspection tool was blocked by editable ownership routing. This is not a stale patch problem. Retry the same local inspection without owner_node_id, or inspect the main workspace path directly with read_file, list_files, grep, git_status, or git_diff. Do not switch to web research, do not create a replacement report from partial evidence, and do not attempt an edit until local evidence reads succeed."))
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a read-only lookup was blocked by editable ownership routing; retry local inspection without owner_node_id from the next model turn.")
+				} else if documentDeliverableTurn {
+					// Documents change underfoot when the first patch lands; further
+					// context patches almost always mismatch. Force whole-file rewrite.
+					disabledTools["apply_patch"] = true
+					disabledTools["replace_in_file"] = true
+					a.Session.AddMessage(internalUserMessage(editTargetMismatchDocumentWriteFileGuidance(a.Config, turnAppliedEditPaths)))
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: document context patch mismatched; use write_file with the complete final content.")
 				} else {
 					disabledTools["replace_in_file"] = true
 					a.Session.AddMessage(internalUserMessage("Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. After that re-anchor, build a cohesive standalone apply_patch against the current workspace state. The patch may include multiple related hunks or files when that is the smallest complete repair for the root cause; do not split only because the previous attempt mismatched. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing. If the edit's goal is to rewrite most or all of the file, prefer write_file with the complete final content over another context patch; it does not depend on matching stale context and passes the same review gates."))
@@ -4151,6 +4417,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		if err := ctx.Err(); err != nil {
 			return "", err
+		}
+		// Soft analysis nudge by tool-round count (no tool disable).
+		if analysisOnlyTurn && !analysisExplorationNudged && turnCount >= analysisExplorationNudgeRounds {
+			explored := countAnalysisExplorationPaths(readChurnSeenPaths)
+			analysisExplorationNudged = true
+			guidance := analysisExplorationNudgeGuidance(explored)
+			a.Session.AddMessage(internalUserMessage(guidance))
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			// Do not continue early: fall through so the normal loop proceeds to
+			// the next model request with tools still available.
 		}
 		// D-E: global no-progress guard. Detect a turn that keeps issuing tool
 		// calls while never mutating the workspace and never gathering new
@@ -6804,6 +7082,9 @@ func shouldTrackRepeatedToolCallSignature(calls []ToolCall) bool {
 	if len(calls) == 0 {
 		return false
 	}
+	// Pure read_file batches are handled by the multi-path read-churn detectors.
+	// Mixed inspection batches (read+grep, list+grep, etc.) must still be tracked
+	// so identical "README + TODO search" loops trip the signature guard.
 	for _, call := range calls {
 		if strings.TrimSpace(call.Name) != "read_file" {
 			return true
@@ -8167,16 +8448,25 @@ func formatEditTargetMismatchReanchorLoopLimitReply(cfg Config, session *Session
 		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
 	}
 	var b strings.Builder
+	partialDoc := len(normalizeTaskStateList(appliedPaths, 8)) > 0
 	if korean {
 		b.WriteString("edit target mismatch 이후 현재 파일/경로를 다시 고정하지 않은 edit 재시도가 반복되어 중단했습니다.")
 		b.WriteString(formatEditTargetMismatchAppliedResultLine(appliedPaths, true))
 		b.WriteString("\n- 원인: 이전 patch는 stale/mismatched 상태였고, 그 뒤 read_file, grep, list_files, git_status, git_diff 같은 재확인 없이 또 edit tool이 호출되었습니다.")
-		b.WriteString("\n- 다음 조건: 현재 파일 또는 diff를 먼저 다시 확인해 경로와 내용을 고정한 뒤, 근본 수정에 필요한 완전한 standalone apply_patch를 제출해야 합니다. 여러 hunk/파일은 같은 근본 수정에 필요한 경우 허용됩니다. 파일 대부분 또는 전체를 재작성하는 편집이면 write_file로 최종 전체 내용을 제출하는 쪽이 안전합니다.")
+		if partialDoc {
+			b.WriteString("\n- 다음 조건: 이미 적용된 문서가 있으면, apply_patch 대신 write_file로 최종 전체 내용을 한 번에 제출해 마무리하세요. write_file은 context 일치가 필요 없습니다.")
+		} else {
+			b.WriteString("\n- 다음 조건: 현재 파일 또는 diff를 먼저 다시 확인해 경로와 내용을 고정한 뒤, 근본 수정에 필요한 완전한 standalone apply_patch를 제출해야 합니다. 여러 hunk/파일은 같은 근본 수정에 필요한 경우 허용됩니다. 파일 대부분 또는 전체를 재작성하는 편집이면 write_file로 최종 전체 내용을 제출하는 쪽이 안전합니다.")
+		}
 	} else {
 		b.WriteString("Edit retries continued after an edit target mismatch without re-anchoring the current file/path state, so I stopped instead of guessing.")
 		b.WriteString(formatEditTargetMismatchAppliedResultLine(appliedPaths, false))
 		b.WriteString("\n- Cause: the previous patch was stale or mismatched, and another edit tool was issued before read_file, grep, list_files, git_status, or git_diff re-anchored the current workspace state.")
-		b.WriteString("\n- Next condition: re-read the current file or diff, lock the path and contents, then submit a complete standalone apply_patch for the root repair. Multiple hunks/files are allowed when required for the same repair. If the edit rewrites most or all of the file, submitting the complete final content with write_file is the safer route.")
+		if partialDoc {
+			b.WriteString("\n- Next condition: if a document was already partially applied, finish with write_file using the complete final content instead of another apply_patch. write_file does not need matching patch context.")
+		} else {
+			b.WriteString("\n- Next condition: re-read the current file or diff, lock the path and contents, then submit a complete standalone apply_patch for the root repair. Multiple hunks/files are allowed when required for the same repair. If the edit rewrites most or all of the file, submitting the complete final content with write_file is the safer route.")
+		}
 	}
 	if session != nil && session.LastReviewRun != nil {
 		reviewText := strings.TrimSpace(formatLatestPreWriteReviewForUserDecision(cfg, session))
@@ -9222,6 +9512,26 @@ func editTargetMismatchReanchorTool(call ToolCall) bool {
 	default:
 		return false
 	}
+}
+
+// editToolIsWholeFileRewrite reports tools that replace whole file content and
+// therefore do not require matching stale apply_patch context after a mismatch.
+func editToolIsWholeFileRewrite(name string) bool {
+	return strings.TrimSpace(name) == "write_file"
+}
+
+func editTargetMismatchDocumentWriteFileGuidance(cfg Config, appliedPaths []string) string {
+	applied := normalizeTaskStateList(appliedPaths, 8)
+	appliedNote := ""
+	if len(applied) > 0 {
+		appliedNote = localizedText(cfg,
+			fmt.Sprintf(" Edits already applied this turn: %s.", strings.Join(applied, ", ")),
+			fmt.Sprintf(" 이번 턴에 이미 적용된 편집: %s.", strings.Join(applied, ", ")))
+	}
+	return localizedText(cfg,
+		"A context patch (apply_patch/replace_in_file) mismatched the current file contents."+appliedNote+" For document deliverables, stop using apply_patch. Call write_file once with the COMPLETE final markdown for the target path (for example docs/IMPLEMENTATION_GAPS.md). write_file overwrites the whole file, does not need matching patch context, and still goes through the normal review/preview gates. Optionally read_file the target once first if you need the latest on-disk text, then write_file the full document.",
+		"context patch(apply_patch/replace_in_file)가 현재 파일 내용과 맞지 않았습니다."+appliedNote+" 문서 산출물 작업에서는 apply_patch를 더 이상 쓰지 마세요. 대상 경로(예: docs/IMPLEMENTATION_GAPS.md)에 대해 write_file로 최종 마크다운 전체 내용을 한 번에 제출하세요. write_file은 파일 전체를 덮어쓰므로 patch context 일치가 필요 없고, 동일한 리뷰/미리보기 게이트를 거칩니다. 필요하면 대상 파일을 read_file로 한 번 확인한 뒤 write_file로 전체 문서를 쓰세요.",
+	)
 }
 
 // editTargetMismatchWriteFileEscalationGuidance is injected when exactly one

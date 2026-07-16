@@ -847,11 +847,11 @@ func buildStallBlockedRecoveryWithMode(cfg Config, cause string, summary string,
 		recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
 			ID:       "answer-findings",
 			Command:  "/continue",
-			ChatHint: localizedText(cfg, `say "answer with what you found"`, `「지금까지 찾은 걸로 답해」라고 입력`),
-			TitleEN:  "Answer with findings so far",
-			TitleKO:  "지금까지 근거로 답변",
-			ReasonEN: "Stop re-reading and write the analysis answer from evidence already gathered.",
-			ReasonKO: "반복 읽기를 멈추고 이미 모은 근거로 분석 답변을 작성합니다.",
+			ChatHint: localizedText(cfg, `say "write it up from what you found"`, `「지금까지 찾은 걸로 작성해」라고 입력`),
+			TitleEN:  "Write the deliverable now",
+			TitleKO:  "지금까지 근거로 문서/답변 작성",
+			ReasonEN: "Stop re-reading and write the analysis answer or document from evidence already gathered.",
+			ReasonKO: "반복 읽기를 멈추고 이미 모은 근거로 분석 답변 또는 문서를 작성합니다.",
 			Kind:     harnessRecoveryActionAnswer,
 		})
 		recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
@@ -901,8 +901,49 @@ func buildStallBlockedRecoveryWithMode(cfg Config, cause string, summary string,
 	return recovery
 }
 
-// requestLooksLikeAnalysisOnlyTurn reports answer/analysis work that should not
-// be steered into a repair continue card when the read loop stalls.
+// requestLooksLikeInspectThenDocumentTurn reports "read/inspect then write a
+// document/report" work. That is NOT a code-repair turn: stall recovery must
+// offer "write the document" / answer paths, never "continue repairing code".
+func requestLooksLikeInspectThenDocumentTurn(text string) bool {
+	base := strings.TrimSpace(baseUserQueryText(text))
+	if base == "" {
+		base = strings.TrimSpace(text)
+	}
+	if base == "" {
+		return false
+	}
+	lower := strings.ToLower(base)
+	hasDocDeliverable := containsAny(lower,
+		"문서로 작성", "문서 작성", "문서를 작성", "문서를 만들", "문서로 정리", "문서로 남겨",
+		"문서를 써", "문서를 써줘", "문서로 써", "보고서를 작성", "보고서 작성", "보고서를 만들",
+		"write a document", "write a report", "write documentation", "write the doc",
+		"create a document", "create a report", "draft a document", "draft a report",
+		"write it up", "write-up", "writeup",
+	)
+	if !hasDocDeliverable {
+		// "작성해줘" alone is ambiguous; require a document noun.
+		if containsAny(lower, "작성해", "작성해줘", "작성해 줘", "write ", "create ") &&
+			containsAny(lower, "문서", "document", "report", "보고서", ".md", "docs/") {
+			hasDocDeliverable = true
+		}
+	}
+	if !hasDocDeliverable {
+		return false
+	}
+	// Prefer inspect/gap context so plain "문서를 작성해" without research still
+	// counts when @path or 부족/구현 language is present.
+	if requestLooksLikeLocalWorkspaceInspection(lower) {
+		return true
+	}
+	return containsAny(lower,
+		"읽", "read", "찾", "find", "부족", "gap", "missing", "구현", "implementation",
+		"분석", "analyze", "검토", "review", "비교", "compare",
+	)
+}
+
+// requestLooksLikeAnalysisOnlyTurn reports answer/analysis (or inspect→document)
+// work that should not be steered into a code-repair continue card when the
+// read loop stalls.
 func requestLooksLikeAnalysisOnlyTurn(text string) bool {
 	base := strings.TrimSpace(baseUserQueryText(text))
 	if base == "" {
@@ -914,19 +955,31 @@ func requestLooksLikeAnalysisOnlyTurn(text string) bool {
 	if looksLikeOperatorRecoveryContinuePrompt(base) {
 		return false
 	}
+	// Inspect-then-document is non-repair deliverable work.
+	if requestLooksLikeInspectThenDocumentTurn(base) {
+		return true
+	}
 	lower := strings.ToLower(base)
-	// Explicit source edits are never analysis-only.
+	// Explicit source-code edits are never analysis-only. Document "작성해줘" is
+	// handled above and must not be treated as a code repair verb here.
 	if looksLikeImperativeSourceEditCommand(base) ||
 		containsAny(lower,
-			"수정해", "고쳐", "패치해", "구현해", "적용해", "만들어줘", "작성해줘", "작성해 줘",
-			"fix it", "patch it", "implement it", "apply the", "write the code", "create the file",
+			"수정해", "고쳐", "패치해", "구현해", "적용해",
+			"fix it", "patch it", "implement it", "apply the", "write the code",
 		) {
-		return false
+		// "만들어줘" / "작성해줘" without document context can still be code work.
+		if containsAny(lower, "만들어줘", "작성해줘", "작성해 줘", "create the file") &&
+			!containsAny(lower, "문서", "document", "report", "보고서", ".md") {
+			return false
+		}
+		if !containsAny(lower, "만들어줘", "작성해줘", "작성해 줘", "create the file") {
+			return false
+		}
 	}
 	// Strong local read+report phrasing (the failure case that was mis-routed to
 	// "continue repairing"). Checked before envelope mutation flags because
 	// "문서를 읽고 … 알려줘" can trip document-authoring heuristics without being
-	// an edit request.
+	// a code edit request.
 	if requestLooksLikeLocalWorkspaceInspection(lower) &&
 		containsAny(lower,
 			"알려", "tell", "explain", "what", "find", "찾", "부족", "gap", "missing",
@@ -935,10 +988,13 @@ func requestLooksLikeAnalysisOnlyTurn(text string) bool {
 		return true
 	}
 	envelope := buildRequestEnvelope(base)
-	if envelope.ExplicitEditRequest || envelope.AllowsFileMutation {
+	if envelope.DocumentAuthoring && !envelope.ExplicitEditRequest {
+		return true
+	}
+	if envelope.ExplicitEditRequest && !envelope.DocumentAuthoring {
 		return false
 	}
-	if requestEnvelopeAllowsRepairContinuation(envelope) {
+	if requestEnvelopeAllowsRepairContinuation(envelope) && !envelope.DocumentAuthoring {
 		return false
 	}
 	if envelope.ReadOnlyAnalysis {
