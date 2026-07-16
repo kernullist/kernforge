@@ -689,7 +689,7 @@ Operational notes:
 3. Use quotes for paths that contain spaces, for example `/verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
 4. Model request timeout is configurable through `request_timeout_seconds`, while `max_request_retries` and `request_retry_delay_ms` control retries for timed-out or transient provider failures.
 5. For long-running local validation, prefer `run_shell_background` plus `check_shell_job` so the agent can reuse one expensive build or test job across multiple turns.
-6. When a setup, formatter, or generator command is genuinely safer than a manual patch, the agent can use `run_shell` with scoped workspace writes by declaring `allow_workspace_writes=true` and a narrow `write_paths` list. Hand-authored shell writes such as `Set-Content`, `Out-File`, redirection, or a PowerShell here-string followed by `Set-Content` remain blocked before shell permission prompts; use edit tools for those.
+6. Shell workspace writes follow the permission mode (Grok-aligned): under `plan`/`edit`, hand-authored shell writes (`Set-Content`, `Out-File`, redirection, etc.) stay blocked — use `write_file` / `apply_patch` / `replace_in_file`. Tool-style writes such as `gofmt -w` prompt under `edit` via a separate shell-write approval. Under `full`, shell workspace writes are allowed (config deny rules and hooks still apply).
 7. In interactive shell mode, use `!cd ..` freely to move back up within the workspace after drilling into a subdirectory. Kernforge rejects only the step that would leave the workspace or active worktree boundary.
 
 ### 2.3 Evidence Store

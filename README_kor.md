@@ -854,7 +854,7 @@ cross review route, analysis worker/reviewer, task-owner의 `base_url`은 선택
 - 일반 구현/수정/실행 요청은 self-driving work loop로 승격된다. Kernforge는 inspect -> implement -> verify -> summarize 기본 흐름을 task graph에 시드하고, reviewer/planner가 있으면 그 preflight plan을 우선 사용한다.
 - 자동 verification이 실패하면 self-driving task는 `recovery` phase로 남고, 검증 문제가 해소되거나 명확한 fallback이 정리되면 최종 답변과 함께 plan을 완료 처리한다.
 - task-graph node는 retry budget과 최근 failure context를 함께 가진다. 같은 node에서 실패가 반복되면 그 node를 명시적으로 `blocked`로 올려서, executor가 같은 실패를 무한 반복하지 않고 다른 recovery path를 더 강하게 선택하게 만든다.
-- `run_shell`은 이제 `allow_workspace_writes=true`와 `write_paths`를 함께 주면 제한된 workspace shell mutation을 허용한다. formatter, codegen, setup처럼 수동 패치보다 실제 명령 실행이 더 안전한 경우를 위한 경로다.
+- `run_shell` 워크스페이스 쓰기는 권한 모드를 따른다. `plan`/`edit`에서는 수동 shell 파일 쓰기(Set-Content, 리다이렉션 등)가 차단되며 edit 도구를 써야 한다. formatter 같은 tool-style 쓰기는 `edit`에서 shell-write 승인을 받는다. `full`에서는 Grok bypassPermissions와 같이 shell 워크스페이스 쓰기가 허용되며, config deny 규칙과 hook은 모든 모드에서 적용된다.
 - `Set-Content`, `Out-File`, redirection 계열 파일 쓰기, PowerShell here-string 뒤의 `Set-Content` 같은 수동 shell 파일 쓰기는 shell 승인 질문 전에 차단된다. 사람이 작성한 파일 본문은 edit tool 경로를 사용해야 한다.
 - 오래 걸리는 build, test, verification 명령은 `run_shell_background`와 `check_shell_job`으로 돌려서 같은 비싼 명령을 다시 시작하지 않고 기존 job을 polling할 수 있다. 동일한 running job이 있으면 자동으로 재사용한다.
 - 서로 독립적인 긴 검증 명령은 `run_shell_bundle_background`와 `check_shell_bundle`로 여러 background job을 병렬로 시작하고 함께 polling할 수 있다. bundle 메타데이터도 세션에 저장되므로, compact 이후에도 `bundle_id=\"latest\"`로 이어서 polling할 수 있다.
@@ -1436,9 +1436,11 @@ Windows에서는 `/diff`, `/diff-selection`이 내부 WebView2 diff viewer를 �
 
 | 모드 | 의미 |
 | --- | --- |
-| `plan` (기본) | 읽기 전용: 분석/계획만, 파일 수정·셸·git 불가 |
-| `edit` | 워크스페이스 파일은 자동 편집, 워크스페이스 밖 쓰기나 위험 작업(셸, git)은 확인 필요 |
-| `full` | 모든 작업을 무확인 자동 허용 |
+| `plan` (기본) | 읽기 전용: 분석/계획만, 파일 수정·shell 쓰기·git·network 불가 |
+| `edit` | 워크스페이스 파일 편집 자동 허용; shell/git/network·워크스페이스 밖 경로는 확인 |
+| `full` | 도구 자동 승인(shell 워크스페이스 쓰기 포함); config deny 규칙과 hook은 계속 적용 |
+
+인가 순서는 Grok Build와 같다: hooks → config rules (`deny` > `ask` > `allow`) → 기억된 승인 → 모드 정책.
 
 새 세션은 `plan`(기본 읽기 전용)으로 시작하고, `edit`/`full`은 명시적으로 전환합니다.
 

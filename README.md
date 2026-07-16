@@ -876,8 +876,7 @@ On startup and `/reload`, Kernforge migrates config files that still hold the ol
 - The interactive runtime now keeps both a structured `TaskState` and a persisted `TaskGraph`, so goals, plan progress, pending checks, background ownership, and high-value events survive compaction more reliably than transcript-only state.
 - The interactive runtime also persists an edit-loop ledger for apply/verify/retry/final-review state. It records changed paths, worker evidence, patch transaction ids, verification bundle/job/log evidence, retry decisions, reviewer verdict, and remaining risk, then exposes that ledger to the system prompt, final reviewer, `/status`, session export, and pre-final coding harness.
 - Task-graph nodes now track retry budgets and recent failure context. Repeated failures on the same node can block that node explicitly, which pushes the executor toward a materially different recovery path instead of repeating the same failing step forever.
-- `run_shell` now supports scoped workspace writes when the agent provides `allow_workspace_writes=true` together with `write_paths`. This path is intended for formatters, code generators, or setup commands that are safer to run than re-creating the change by hand.
-- Manual shell file writes such as `Set-Content`, `Out-File`, redirection-style writes, or PowerShell here-string followed by `Set-Content` are still blocked before shell permission prompts; use edit tools for hand-authored file content.
+- `run_shell` workspace writes follow the permission mode: blocked under `plan`/`edit` for hand-authored content (use edit tools); tool-style writes such as formatters prompt under `edit`; under `full`, shell workspace writes are allowed like Grok `bypassPermissions` (config deny rules and hooks still apply).
 - Long-running build, test, and verification commands can use `run_shell_background` and `check_shell_job` so the agent can poll an existing job instead of restarting the same expensive command. Matching running jobs are reused automatically.
 - Independent long-running verification commands can also use `run_shell_bundle_background` and `check_shell_bundle` to run and poll several background jobs in parallel. Bundle metadata is persisted in the session, so the agent can resume polling with `bundle_id="latest"` even after compaction.
 - `/session jobs status|check|bundle|cancel|cancel-bundle` exposes those persisted background jobs and bundles to the terminal, so a human or a `-command` runner can poll or cancel long work without waiting for a model turn.
@@ -1451,9 +1450,11 @@ The permission mode is the single authority for whether the agent *may* edit —
 
 | Mode | Meaning |
 | --- | --- |
-| `plan` (default) | Read-only: analyze and plan; no file edits, shell, or git |
-| `edit` | Edit workspace files automatically; out-of-workspace writes and dangerous ops (shell, git) require confirmation |
-| `full` | Everything auto-approved, no prompts |
+| `plan` (default) | Read-only: analyze and plan; no file edits, shell writes, git, or network |
+| `edit` | Auto-approve workspace file edits; shell/git/network and out-of-workspace paths prompt |
+| `full` | Auto-approve tools (including shell workspace writes); config deny rules and hooks still apply |
+
+Authorization order matches Grok Build: hooks → config rules (`deny` > `ask` > `allow`) → remembered grants → mode policy.
 
 New sessions start in `plan` (read-only by default); opt into `edit`/`full` explicitly.
 

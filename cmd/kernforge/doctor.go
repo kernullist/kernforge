@@ -156,7 +156,7 @@ func applyKernforgeDoctorOverrides(cfg *Config, opts kernforgeDoctorOptions) {
 		cfg.PermissionMode = strings.TrimSpace(opts.PermissionOverride)
 	}
 	if opts.ForceBypass {
-		cfg.PermissionMode = string(ModeBypass)
+		cfg.PermissionMode = permissionModeDisplayName(ModeBypass)
 	}
 	if opts.BypassHookTrust {
 		cfg.BypassHookTrust = true

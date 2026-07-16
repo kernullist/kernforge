@@ -3676,7 +3676,7 @@ Provider And Models:
 - Permission prompts use the same keys: y allows once, a allows for the current session, n denies, and Esc cancels.
 - Diff preview and automatic verification use the same shape: y runs once, a enables the matching session auto-action, n skips, and Esc cancels.
 - Shell, write, and git approvals are tracked separately for the current session.
-- Kernforge does not allow run_shell to modify workspace files. File edits must go through apply_patch, write_file, or replace_in_file so diff preview and write approval rules can still apply.
+- Under plan/edit, run_shell cannot perform manual workspace file writes (Set-Content, redirection, etc.); use apply_patch, write_file, or replace_in_file. In full mode, shell workspace writes are allowed (Grok bypassPermissions parity). Config deny rules still apply in every mode.
 - Use /status to inspect the current session approval state for writes, diff previews, shell access, and git actions.
 - Use /config to inspect effective settings such as provider, token limits, progress display, hooks, and verification defaults.
 
@@ -4118,8 +4118,9 @@ Provider and model commands control which model is active and how planning/revie
 - When model selection through /model, /provider, or route-specific model commands selects an effort-capable model while that target's effort is undefined, Kernforge defaults that target to low. Use /effort to change or clear it.
 
 /permissions [mode]
-- Show or change permissions. Modes: plan (read-only), edit (workspace edits; ask for out-of-workspace or dangerous shell/git), full (everything, no prompts). Default: plan.
-- Legacy mode names (default, acceptEdits, bypassPermissions) and Codex profile ids (:read-only, :workspace, :danger-full-access) are accepted as aliases.
+- Show or change permissions. Modes: plan (read-only), edit (workspace file edits auto; shell/git/network prompt), full (auto-approve tools; config deny rules and hooks still apply). Default: plan.
+- Authorization order matches Grok Build: hooks -> config rules (deny>ask>allow) -> remembered grants -> mode policy.
+- Legacy mode names (default, acceptEdits, bypassPermissions) and Codex profile ids (:read-only, :workspace, :danger-full-access) are accepted as aliases and normalize to plan/edit/full.
 
 /progress-display [auto|compact|stream]
 - Show or change in-flight progress visibility.
@@ -4865,7 +4866,8 @@ type PermissionManager struct {
 func ParseMode(value string) Mode {
 	mode, ok := ParseModeStrict(value)
 	if !ok {
-		return ModeDefault
+		// Unknown values fall back to the safe read-only default.
+		return ModePlan
 	}
 	return mode
 }
@@ -4873,12 +4875,11 @@ func ParseMode(value string) Mode {
 func ParseModeStrict(value string) (Mode, bool) {
 	switch strings.TrimSpace(value) {
 	case "":
-		// New default: an unspecified permission mode is the read-only plan mode.
+		// Unspecified permission mode is the read-only plan mode.
 		return ModePlan, true
 	case string(ModeDefault):
-		// Legacy "default" (prompt-on-write) is no longer a canonical tier. Migrate
-		// it to the SAFER read-only plan rather than the more-permissive edit, so a
-		// persisted "default" never silently becomes auto-write. Users opt into edit
+		// Legacy "default" migrates to the safer read-only plan so a persisted
+		// "default" never silently becomes auto-write. Users opt into edit/full
 		// explicitly.
 		return ModePlan, true
 	case "edit", string(ModeAcceptEdits):
@@ -4890,11 +4891,10 @@ func ParseModeStrict(value string) (Mode, bool) {
 		// "full" is the canonical name; bypassPermissions is the legacy alias.
 		return ModeBypass, true
 	case "workspace":
-		// "workspace" is the honest display name for the prompt-on-write
-		// ModeDefault tier (read auto, write/shell/git prompt). It round-trips
-		// from permissionModeDisplayName so a persisted "workspace" reloads to the
-		// same behavior instead of masquerading as the auto-write "edit" tier.
-		return ModeDefault, true
+		// Legacy prompt-on-write tier collapses into edit (acceptEdits). The
+		// user-facing model is only plan/edit/full; "workspace" remains an
+		// input alias so older configs keep loading.
+		return ModeAcceptEdits, true
 	default:
 		return modeForBuiltInActivePermissionProfileID(value)
 	}
@@ -4905,11 +4905,12 @@ func modeForBuiltInActivePermissionProfileID(value string) (Mode, bool) {
 	case builtInPermissionProfileReadOnly:
 		return ModePlan, true
 	case builtInPermissionProfileWorkspace:
-		return ModeDefault, true
+		// Codex :workspace maps to the edit tier (auto in-workspace writes).
+		return ModeAcceptEdits, true
 	case builtInPermissionProfileDangerFullAccess:
 		return ModeBypass, true
 	default:
-		return ModeDefault, false
+		return ModePlan, false
 	}
 }
 
@@ -4932,14 +4933,16 @@ func invalidPermissionModeError(field string, value string) error {
 }
 
 func validPermissionModes() string {
+	// Lead with the canonical plan/edit/full triad; legacy names and Codex
+	// profile ids remain accepted as input aliases.
 	return strings.Join([]string{
 		string(ModePlan),
 		"edit",
 		"full",
-		"workspace",
 		string(ModeDefault),
 		string(ModeAcceptEdits),
 		string(ModeBypass),
+		"workspace",
 		builtInPermissionProfileReadOnly,
 		builtInPermissionProfileWorkspace,
 		builtInPermissionProfileDangerFullAccess,
@@ -4968,17 +4971,14 @@ func activePermissionProfileIDForModeString(value string) string {
 }
 
 // permissionModeDisplayName maps an internal mode to its user-facing name.
-// permission_sandbox-7: ModeDefault is prompt-on-write (read auto, write/shell/
-// git prompt), which is NOT the auto-write "edit" tier, so it renders as
-// "workspace" to match its actual behavior instead of misreporting as "edit".
+// Canonical surface is only plan/edit/full. ModeDefault is a legacy internal
+// value and surfaces as "edit" so status/config never show a fourth tier.
 func permissionModeDisplayName(mode Mode) string {
 	switch mode {
 	case ModePlan:
 		return "plan"
-	case ModeAcceptEdits:
+	case ModeAcceptEdits, ModeDefault:
 		return "edit"
-	case ModeDefault:
-		return "workspace"
 	case ModeBypass:
 		return "full"
 	default:
@@ -5168,35 +5168,14 @@ func (m *PermissionManager) allowWithoutPrompt(action Action) (bool, bool, error
 	return m.allowWithoutPromptDetail(action, "")
 }
 
+// allowWithoutPromptDetail implements the Grok-aligned authorization pipeline
+// after hooks (hooks are evaluated by the caller):
+//  1. config rules (deny > ask > allow) — deny/ask still apply in full mode
+//  2. remembered / session-wide grants
+//  3. mode policy (plan deny, edit auto-write, full auto-approve)
 func (m *PermissionManager) allowWithoutPromptDetail(action Action, detail string) (bool, bool, error) {
-	switch m.mode {
-	case ModeBypass:
-		return true, true, nil
-	case ModePlan:
-		if action == ActionRead {
-			if effect := m.pathRuleEffect(action, detail); effect == permissionRuleDeny {
-				return false, true, fmt.Errorf("permission denied: read of %q is denied by configured rule", detail)
-			}
-			return true, true, nil
-		}
-		return false, true, fmt.Errorf("permission denied: %s is disabled in plan mode", action)
-	case ModeAcceptEdits:
-		if action == ActionRead || action == ActionWrite {
-			if effect := m.pathRuleEffect(action, detail); effect == permissionRuleDeny {
-				return false, true, fmt.Errorf("permission denied: %s of %q is denied by configured rule", action, detail)
-			}
-			return true, true, nil
-		}
-	case ModeDefault:
-		if action == ActionRead {
-			if effect := m.pathRuleEffect(action, detail); effect == permissionRuleDeny {
-				return false, true, fmt.Errorf("permission denied: read of %q is denied by configured rule", detail)
-			}
-			return true, true, nil
-		}
-	}
-	// Config-driven rules take precedence over remembered approvals: a deny is a
-	// hard block and an ask always re-prompts (cannot be silently remembered).
+	// 1) Config-driven rules first. deny wins over every mode, including full
+	// (ModeBypass / Grok bypassPermissions). ask forces a prompt even in full.
 	switch action {
 	case ActionShell, ActionShellWrite:
 		switch m.shellRuleEffect(detail) {
@@ -5226,14 +5205,16 @@ func (m *PermissionManager) allowWithoutPromptDetail(action Action, detail strin
 			return false, false, nil
 		}
 	}
+
+	// 2) Session-wide opt-ins and remembered exact/pattern grants.
 	switch action {
 	case ActionShell:
 		if m.shellAllowed || m.commandRemembered(ActionShell, detail) {
 			return true, true, nil
 		}
 	case ActionShellWrite:
-		// permission_sandbox-6: ActionShellWrite has its OWN session opt-in and
-		// remembered set. Plain shell approval must not silently cover it.
+		// ActionShellWrite has its OWN session opt-in and remembered set. Plain
+		// shell approval must not silently cover it.
 		if m.shellWriteAllowed || m.commandRemembered(ActionShellWrite, detail) {
 			return true, true, nil
 		}
@@ -5246,7 +5227,35 @@ func (m *PermissionManager) allowWithoutPromptDetail(action Action, detail strin
 			return true, true, nil
 		}
 	}
-	return false, false, nil
+
+	// 3) Mode policy.
+	switch m.mode {
+	case ModeBypass:
+		// full: auto-approve after rules/remembered (deny/ask already handled).
+		return true, true, nil
+	case ModePlan:
+		if action == ActionRead {
+			return true, true, nil
+		}
+		return false, true, fmt.Errorf("permission denied: %s is disabled in plan mode", action)
+	case ModeAcceptEdits:
+		// edit: in-workspace file edits auto; shell/git/network prompt.
+		if action == ActionRead || action == ActionWrite {
+			return true, true, nil
+		}
+		return false, false, nil
+	case ModeDefault:
+		// Legacy prompt-on-write (no longer produced by ParseModeStrict).
+		if action == ActionRead {
+			return true, true, nil
+		}
+		return false, false, nil
+	default:
+		if action == ActionRead {
+			return true, true, nil
+		}
+		return false, false, nil
+	}
 }
 
 // commandRemembered reports whether the given command was remembered for the

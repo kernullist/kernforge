@@ -2197,7 +2197,10 @@ func (w Workspace) EnsureWrite(path string) error {
 }
 
 func (w Workspace) EnsureWriteWithContext(ctx context.Context, path string) error {
-	if err := w.CheckEditBoundary(path); err != nil {
+	// External-directory approval (auto in full mode) lives on EnsureEditableTarget.
+	// Always route writes through it so full mode can leave the workspace root when
+	// the user/mode allows, while symlink escapes and protected worktrees stay blocked.
+	if err := w.EnsureEditableTarget(ctx, path); err != nil {
 		return err
 	}
 	if w.Perms == nil {
@@ -2423,16 +2426,32 @@ func (w Workspace) EnsureShell(command string) error {
 }
 
 func (w Workspace) EnsureShellWithContext(ctx context.Context, command string) error {
+	return w.ensureShellActionWithContext(ctx, ActionShell, command)
+}
+
+// EnsureShellWriteWithContext gates a shell command that mutates workspace files
+// under ActionShellWrite (separate session opt-in from plain ActionShell).
+func (w Workspace) EnsureShellWriteWithContext(ctx context.Context, command string) error {
+	return w.ensureShellActionWithContext(ctx, ActionShellWrite, command)
+}
+
+func (w Workspace) ensureShellActionWithContext(ctx context.Context, action Action, command string) error {
+	if action != ActionShell && action != ActionShellWrite {
+		action = ActionShell
+	}
 	if w.Perms == nil {
 		return nil
 	}
-	if allowed, decided, message, err := w.permissionRequestHook(ctx, ActionShell, command, HookPayload{
+	if allowed, decided, message, err := w.permissionRequestHook(ctx, action, command, HookPayload{
 		"command":   command,
 		"risk_tags": hookCommandRiskTags(command),
 	}); err != nil {
 		return err
 	} else if decided {
 		if allowed {
+			if shellCommandLooksNetworked(command) {
+				return w.EnsureNetworkWithContext(ctx, "shell: "+summarizeShellCommand(command))
+			}
 			return nil
 		}
 		if strings.TrimSpace(message) != "" {
@@ -2440,7 +2459,7 @@ func (w Workspace) EnsureShellWithContext(ctx context.Context, command string) e
 		}
 		return fmt.Errorf("shell permission denied by hook")
 	}
-	ok, err := w.Perms.Allow(ActionShell, command)
+	ok, err := w.Perms.Allow(action, command)
 	if err != nil {
 		return err
 	}
@@ -2457,6 +2476,56 @@ func (w Workspace) EnsureShellWithContext(ctx context.Context, command string) e
 		}
 	}
 	return nil
+}
+
+// activePermissionMode returns the live permission mode, or ModePlan when no
+// manager is attached so missing perms stay fail-closed for write-side policy.
+func (w Workspace) activePermissionMode() Mode {
+	if w.Perms == nil {
+		return ModePlan
+	}
+	return w.Perms.Mode()
+}
+
+// enforceShellWorkspaceWritePolicy applies mode-aware policy for shell commands
+// that would mutate workspace files:
+//   - plan: hard deny (use edit tools)
+//   - edit: manual hand-authored writes hard deny; tool-style writes prompt via ActionShellWrite
+//   - full: allow (Grok bypassPermissions parity); normal shell gate still runs
+//
+// Returns (skipPlainShellGate, err). When skipPlainShellGate is true the caller
+// already cleared ActionShellWrite and should not call EnsureShell again.
+func (w Workspace) enforceShellWorkspaceWritePolicy(ctx context.Context, toolName string, command string, assessment shellCommandAssessment) (bool, error) {
+	manualReason := shellCommandManualWorkspaceWriteReason(command)
+	isWorkspaceWrite := assessment.Class == shellMutationWorkspaceWrite || manualReason != ""
+	if !isWorkspaceWrite {
+		return false, nil
+	}
+	reason := assessment.Reason
+	if reason == "" {
+		reason = manualReason
+	}
+	switch w.activePermissionMode() {
+	case ModeBypass:
+		// full mode: allow shell workspace writes (Grok bypassPermissions parity).
+		w.Progress(toolName + " is modifying workspace files under full permission mode (no edit-tool review gate).")
+		return false, nil
+	case ModeAcceptEdits, ModeDefault:
+		if manualReason != "" {
+			return false, fmt.Errorf("%s cannot perform manual workspace file writes; use write_file, apply_patch, or replace_in_file so edits stay reviewable (%s)", toolName, manualReason)
+		}
+		// Tool-style writes (gofmt -w, npm install, etc.) need ActionShellWrite.
+		if err := w.EnsureShellWriteWithContext(ctx, command); err != nil {
+			return false, err
+		}
+		return true, nil
+	default:
+		// plan (and unknown): hard deny workspace shell writes.
+		if manualReason != "" {
+			return false, fmt.Errorf("%s cannot perform manual workspace file writes; use write_file, apply_patch, or replace_in_file so edits stay reviewable (%s)", toolName, manualReason)
+		}
+		return false, fmt.Errorf("%s cannot modify workspace files because shell writes bypass the diff preview and review gate; use write_file, apply_patch, or replace_in_file instead (%s)", toolName, reason)
+	}
 }
 
 // shellCommandLooksNetworked reports whether a shell command obviously performs
@@ -5389,11 +5458,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			return guidance, fmt.Errorf("run_shell command should use a dedicated workspace tool")
 		}
 	}
-	if assessment.Class == shellMutationWorkspaceWrite {
-		if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
-			return "", fmt.Errorf("run_shell cannot perform manual workspace file writes; use write_file, apply_patch, or replace_in_file so edits stay reviewable (%s)", reason)
-		}
-		return "", fmt.Errorf("run_shell cannot modify workspace files because shell writes bypass the diff preview and review gate; use write_file, apply_patch, or replace_in_file instead (%s)", assessment.Reason)
+	shellWriteGateDone, writePolicyErr := t.ws.enforceShellWorkspaceWritePolicy(ctx, "run_shell", command, assessment)
+	if writePolicyErr != nil {
+		return "", writePolicyErr
 	}
 	if assessment.Class == shellMutationVerificationArtifacts {
 		t.ws.Progress("run_shell recognized a verification/build command that may write workspace build artifacts. Source edits are still blocked.")
@@ -5424,8 +5491,10 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		}
 		workspaceBeforeShell = snapshot
 	}
-	if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
-		return "", err
+	if !shellWriteGateDone {
+		if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
+			return "", err
+		}
 	}
 	timeout := t.ws.defaultShellTimeout()
 	if timeoutMs := intValue(args, "timeout_ms", 0); timeoutMs > 0 {

@@ -302,7 +302,7 @@ func (o mcpServerConfigOverrides) apply(cfg *Config) error {
 		cfg.PermissionMode = strings.TrimSpace(o.PermissionMode)
 	}
 	if o.ForceBypass {
-		cfg.PermissionMode = string(ModeBypass)
+		cfg.PermissionMode = permissionModeDisplayName(ModeBypass)
 	}
 	if o.BypassHookTrust {
 		cfg.BypassHookTrust = true

@@ -693,7 +693,7 @@ Pattern pack 운영:
 4. 예: `/verify tools set msbuild "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`
 5. 모델 요청 timeout은 `request_timeout_seconds`로 조정할 수 있고, `max_request_retries`와 `request_retry_delay_ms`로 timeout 또는 transient provider error 재시도를 제어한다.
 6. interactive shell mode에서는 하위 directory로 깊게 들어간 뒤 `!cd ..`로 workspace 내부 상위 directory를 자유롭게 이동할 수 있다. Kernforge는 workspace 또는 active worktree 경계를 벗어나는 순간만 거부한다.
-7. `Set-Content`, `Out-File`, redirection, PowerShell here-string 뒤의 `Set-Content`처럼 사람이 작성한 본문을 shell로 쓰는 형태는 shell 승인 질문 전에 차단된다. 이런 파일 본문은 edit tool 경로로 작성한다.
+7. shell 워크스페이스 쓰기는 권한 모드를 따른다. `plan`/`edit`에서는 `Set-Content`, `Out-File`, redirection 같은 수동 shell 파일 쓰기가 차단되며 edit tool을 써야 한다. formatter(`gofmt -w` 등) 같은 tool-style 쓰기는 `edit`에서 shell-write 승인을 받는다. `full`에서는 Grok bypassPermissions와 같이 shell 워크스페이스 쓰기가 허용되며, config deny 규칙과 hook은 모든 모드에서 적용된다.
 
 ### 2.3 Evidence Store
 

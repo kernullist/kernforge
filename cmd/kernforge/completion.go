@@ -176,9 +176,9 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		// (default/acceptEdits/bypassPermissions) and Codex profile ids
 		// (:read-only/:workspace/:danger-full-access) are still accepted as input
 		// for back-compat, but are intentionally not advertised here.
-		"plan": "Read-only: analyze and plan; no file edits.",
-		"edit": "Edit workspace files; ask before out-of-workspace or dangerous (shell/git) actions.",
-		"full": "Allow everything this session without prompts.",
+		"plan": "Read-only: analyze and plan; no file edits, shell writes, git, or network.",
+		"edit": "Auto-approve workspace file edits; prompt for shell/git/network.",
+		"full": "Auto-approve tools (shell writes included); config deny rules and hooks still apply.",
 	},
 	"locale-auto": {
 		"on":  "Let Kernforge switch response locale automatically.",

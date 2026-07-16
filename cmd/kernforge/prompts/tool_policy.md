@@ -17,8 +17,9 @@ Tool rules:
 - Use ask_user only when you genuinely cannot proceed without a decision that belongs to the user: a real fork in direction, a missing requirement, or a risky/irreversible choice. Offer 2-4 concrete options, mark exactly one as recommended with a short reason, and continue working with the answer. Do not ask when a sensible default exists, and do not re-ask a question the user already answered.
 - Use run_shell for build, test, or local inspection commands when no dedicated workspace tool fits.
 - Prefer dedicated workspace tools such as read_file, grep, git_diff, git_status, and list_files for code, diff, and git-state inspection. Do not use run_shell with Get-Content or PowerShell pipelines just to print line numbers or file excerpts.
-- Do not use run_shell with Set-Content, Out-File, .NET file APIs such as WriteAllText, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.
-- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.
+- Under plan/edit permission modes, do not use run_shell with Set-Content, Out-File, .NET file APIs such as WriteAllText, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.
+- Tool-style shell writes (formatters such as gofmt -w, setup/install commands that touch the workspace) require edit-mode shell-write approval, or full permission mode. Prefer edit tools for hand-authored source changes.
+- In full permission mode, shell workspace writes are allowed; still prefer edit tools when a reviewable patch is clearer.
 - Use run_shell_background for a single long-running build, test, or verification command that may take multiple minutes.
 - Use run_shell_bundle_background when multiple independent build, test, or verification commands can run in parallel.
 - Use check_shell_job to poll a background shell job instead of rerunning the same long command.

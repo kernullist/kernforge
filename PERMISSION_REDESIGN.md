@@ -131,10 +131,27 @@ and main_profile_persistence_test expectations were updated to the canonical str
 
 ## Status: redesign complete (Slices 1-4 done).
 
+## Follow-up: Grok pipeline align (2026-07-17) — DONE
+
+See `docs/plan/2026-07-17-permission-grok-align.md`.
+
+Summary of deltas on top of plan/edit/full:
+
+1. Authorization order matches Grok Build: rules before mode short-circuit, so
+   full still honors config deny/ask rules.
+2. full allows shell workspace writes (Grok bypassPermissions parity).
+3. edit keeps hard-deny for hand-authored shell writes; tool-style writes use
+   ActionShellWrite prompts.
+4. `EnsureWrite` routes through `EnsureEditableTarget` so full can auto-approve
+   external directories.
+5. `:workspace` / `workspace` inputs normalize to **edit** (not a fourth tier).
+6. `/permissions` and config always persist `plan|edit|full`.
+
 ## Risks / invariants to preserve
 
 - Do not weaken: out-of-workspace writes, shell, and git still require approval in
   edit mode; full is the only no-prompt mode and must be explicitly chosen.
+- Config deny rules still apply in full (Grok parity).
 - Persisted sessions/configs with legacy mode strings must still load.
 - Never leave the tree between slices with a permission gate that allows more than
   the chosen mode intends (a half-migration is a security hole) - keep each slice

@@ -297,10 +297,10 @@ func run(args []string) error {
 		if !ok {
 			return invalidPermissionModeError("permission-mode", permissionFlag)
 		}
-		cfg.PermissionMode = string(mode)
+		cfg.PermissionMode = permissionModeDisplayName(mode)
 	}
 	if yesFlag {
-		cfg.PermissionMode = string(ModeBypass)
+		cfg.PermissionMode = permissionModeDisplayName(ModeBypass)
 	}
 	if bypassHookTrust {
 		cfg.BypassHookTrust = true
@@ -3514,6 +3514,20 @@ func analysisDirectoryCandidateReasonLabel(reason string) string {
 }
 
 func (rt *runtimeState) autoApproveConfirmation(question string) bool {
+	// Full mode auto-approves tool gates (Grok bypassPermissions). Config deny
+	// rules are enforced earlier in PermissionManager; these confirm() paths are
+	// the interactive prompt layer only.
+	if rt.permissionModeIsFull() {
+		if isShellApprovalQuestion(question) ||
+			isWriteApprovalQuestion(question) ||
+			isDiffPreviewQuestion(question) ||
+			isAutoVerificationQuestion(question) ||
+			isModelReviewQuestion(question) ||
+			isGitApprovalQuestion(question) ||
+			isPermissionApprovalQuestion(question) {
+			return true
+		}
+	}
 	if isShellApprovalQuestion(question) {
 		if rt.perms == nil {
 			return false
@@ -3538,7 +3552,7 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 		return rt.alwaysApproveModelReview || rt.permissionModeIsFull()
 	}
 	if isGitApprovalQuestion(question) {
-		return rt.perms != nil && rt.perms.IsGitAllowed()
+		return rt.perms != nil && (rt.perms.IsGitAllowed() || rt.permissionModeIsFull())
 	}
 	return false
 }
@@ -8377,14 +8391,17 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if !ok {
 			return false, invalidPermissionModeError("permission mode", cmd.Args)
 		}
+		// Persist the canonical plan/edit/full name so session and config stay
+		// consistent with display and reload paths.
+		canonical := permissionModeDisplayName(mode)
 		rt.perms.SetMode(mode)
-		rt.session.PermissionMode = string(mode)
-		rt.cfg.PermissionMode = string(mode)
+		rt.session.PermissionMode = canonical
+		rt.cfg.PermissionMode = canonical
 		_ = rt.store.Save(rt.session)
 		if err := rt.saveUserConfig(); err != nil {
 			return false, err
 		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Permissions set to "+permissionModeDisplayName(mode)))
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Permissions set to "+canonical))
 	case "set-max-tool-iterations":
 		if cmd.Args == "" {
 			fmt.Fprintln(rt.writer, rt.ui.infoLine("max_tool_iterations: "+formatMaxToolIterations(configMaxToolIterations(rt.cfg))))

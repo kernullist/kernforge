@@ -816,8 +816,13 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 		if assessment.Class == shellMutationUnsupported {
 			return ToolExecutionResult{}, shellCommandUnsupportedSyntaxError("run_shell_bundle_background", assessment)
 		}
-		if assessment.Class == shellMutationWorkspaceWrite {
-			return ToolExecutionResult{}, fmt.Errorf("run_shell_bundle_background only supports read-only, verification/build, cache-only, or external-install commands")
+		shellWriteGateDone, writePolicyErr := t.ws.enforceShellWorkspaceWritePolicy(ctx, "run_shell_bundle_background", command, assessment)
+		if writePolicyErr != nil {
+			// Background bundle keeps a narrower default message for plan/edit denies.
+			if t.ws.activePermissionMode() != ModeBypass {
+				return ToolExecutionResult{}, fmt.Errorf("run_shell_bundle_background only supports read-only, verification/build, cache-only, or external-install commands under plan/edit mode; switch to full for workspace shell writes")
+			}
+			return ToolExecutionResult{}, writePolicyErr
 		}
 		if assessment.Class == shellMutationVerificationArtifacts {
 			ok, confirmErr := t.ws.ConfirmVerificationPlanWithContext(ctx, VerificationPlan{
@@ -837,8 +842,10 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 				continue
 			}
 		}
-		if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
-			return ToolExecutionResult{}, err
+		if !shellWriteGateDone {
+			if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
+				return ToolExecutionResult{}, err
+			}
 		}
 		if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, workDir); ok {
 			if effectiveOwnerNodeID != "" && reusable.OwnerNodeID == "" {
@@ -988,8 +995,12 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	if assessment.Class == shellMutationUnsupported {
 		return ToolExecutionResult{}, shellCommandUnsupportedSyntaxError("run_shell_background", assessment)
 	}
-	if assessment.Class == shellMutationWorkspaceWrite {
-		return ToolExecutionResult{}, fmt.Errorf("run_shell_background only supports read-only, verification/build, cache-only, or external-install commands")
+	shellWriteGateDone, writePolicyErr := t.ws.enforceShellWorkspaceWritePolicy(ctx, "run_shell_background", command, assessment)
+	if writePolicyErr != nil {
+		if t.ws.activePermissionMode() != ModeBypass {
+			return ToolExecutionResult{}, fmt.Errorf("run_shell_background only supports read-only, verification/build, cache-only, or external-install commands under plan/edit mode; switch to full for workspace shell writes")
+		}
+		return ToolExecutionResult{}, writePolicyErr
 	}
 	if assessment.Class == shellMutationVerificationArtifacts {
 		ok, confirmErr := t.ws.ConfirmVerificationPlanWithContext(ctx, VerificationPlan{
@@ -1024,8 +1035,10 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 			}, nil
 		}
 	}
-	if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
-		return ToolExecutionResult{}, err
+	if !shellWriteGateDone {
+		if err := t.ws.EnsureShellWithContext(ctx, command); err != nil {
+			return ToolExecutionResult{}, err
+		}
 	}
 	if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, workDir); ok {
 		if effectiveOwnerNodeID != "" && reusable.OwnerNodeID == "" {

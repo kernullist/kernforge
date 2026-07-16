@@ -731,7 +731,7 @@ func TestActivePermissionProfileIDForModeMirrorsCodexBuiltIns(t *testing.T) {
 func TestPermissionModeAcceptsCodexBuiltInActiveProfileAliases(t *testing.T) {
 	cases := map[string]Mode{
 		builtInPermissionProfileReadOnly:         ModePlan,
-		builtInPermissionProfileWorkspace:        ModeDefault,
+		builtInPermissionProfileWorkspace:        ModeAcceptEdits,
 		builtInPermissionProfileDangerFullAccess: ModeBypass,
 	}
 	for input, wantMode := range cases {

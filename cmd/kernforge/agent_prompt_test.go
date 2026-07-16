@@ -1023,7 +1023,7 @@ func TestSystemPromptIncludesNarrowPatchPayloadGuidance(t *testing.T) {
 	}
 }
 
-func TestSystemPromptDocumentsScopedMutatingShellContract(t *testing.T) {
+func TestSystemPromptDocumentsModeAwareShellWriteContract(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.AddMessage(Message{Role: "user", Text: "@Sample.cpp 버그를 수정해줘"})
@@ -1034,12 +1034,20 @@ func TestSystemPromptDocumentsScopedMutatingShellContract(t *testing.T) {
 
 	prompt := agent.systemPrompt()
 	for _, want := range []string{
-		"allow_workspace_writes=true",
-		"write_paths",
-		"formatter, code generator, or setup command",
+		"plan/edit permission modes",
+		"full permission mode",
+		"gofmt -w",
 	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected scoped mutating shell contract %q in system prompt, got %q", want, prompt)
+			t.Fatalf("expected mode-aware shell write contract %q in system prompt, got %q", want, prompt)
+		}
+	}
+	for _, banned := range []string{
+		"allow_workspace_writes=true",
+		"write_paths",
+	} {
+		if strings.Contains(prompt, banned) {
+			t.Fatalf("system prompt must not advertise retired %q contract", banned)
 		}
 	}
 }

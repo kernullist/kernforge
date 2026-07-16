@@ -13,8 +13,9 @@ func TestParseModeCanonicalAndAliases(t *testing.T) {
 		"default":             ModePlan,        // legacy default migrates to read-only plan (safe)
 		"acceptEdits":         ModeAcceptEdits, // legacy alias
 		"bypassPermissions":   ModeBypass,      // legacy alias
+		"workspace":           ModeAcceptEdits, // legacy prompt tier collapses into edit
 		":read-only":          ModePlan,
-		":workspace":          ModeDefault,
+		":workspace":          ModeAcceptEdits,
 		":danger-full-access": ModeBypass,
 	}
 	for input, want := range cases {
