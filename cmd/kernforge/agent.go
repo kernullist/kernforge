@@ -891,6 +891,7 @@ func (a *Agent) readChurnEscalationReply(seen map[string]struct{}) string {
 		files = append(files[:8:8], fmt.Sprintf("(+%d more)", len(files)-8))
 	}
 	request := a.stallEscalationRequestText()
+	analysisOnly := requestLooksLikeAnalysisOnlyTurn(request)
 	evidence := collectRecentRepairEvidence(a.Session, 24)
 	var b strings.Builder
 	b.WriteString(localizedText(cfg,
@@ -902,7 +903,11 @@ func (a *Agent) readChurnEscalationReply(seen map[string]struct{}) string {
 	if len(files) > 0 {
 		fmt.Fprintf(&b, "\n\n%s\n- %s", localizedText(cfg, "Files I kept re-reading:", "반복해서 읽은 파일:"), strings.Join(files, "\n- "))
 	}
-	if !evidence.empty() && evidence.Detail != "" {
+	if analysisOnly {
+		fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
+			"This looks like analysis/reporting work. Choose answer-with-findings below (or tell me what to focus on) instead of starting an unrelated code repair.",
+			"분석/보고 요청으로 보입니다. 아래에서 '지금까지 근거로 답변'을 고르거나 집중할 범위를 알려 주세요. 관련 없는 코드 수정으로 전환하지 마세요."))
+	} else if !evidence.empty() && evidence.Detail != "" {
 		fmt.Fprintf(&b, "\n\n%s\n%s", localizedText(cfg, "Concrete defect already observed:", "이미 확인된 구체적 결함:"), evidence.Detail)
 		fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
 			"Choose continue below to fix that defect with an edit. Do not ask for a broader product clarification until the recorded compile/syntax failure is repaired.",
@@ -922,6 +927,7 @@ func (a *Agent) singleFileReadChurnEscalationReply(path string) string {
 	}
 	path = strings.TrimSpace(path)
 	request := a.stallEscalationRequestText()
+	analysisOnly := requestLooksLikeAnalysisOnlyTurn(request)
 	evidence := collectRecentRepairEvidence(a.Session, 24)
 	var b strings.Builder
 	b.WriteString(localizedText(cfg,
@@ -933,7 +939,11 @@ func (a *Agent) singleFileReadChurnEscalationReply(path string) string {
 	if path != "" {
 		fmt.Fprintf(&b, "\n\n%s\n- %s", localizedText(cfg, "File I kept re-reading:", "반복해서 읽은 파일:"), path)
 	}
-	if !evidence.empty() && evidence.Detail != "" {
+	if analysisOnly {
+		fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
+			"This looks like analysis/reporting work. Answer with what you already know, or name the missing section still required.",
+			"분석/보고 요청으로 보입니다. 이미 아는 내용으로 답하거나, 아직 필요한 구간만 구체적으로 지정해 주세요."))
+	} else if !evidence.empty() && evidence.Detail != "" {
 		fmt.Fprintf(&b, "\n\n%s\n%s", localizedText(cfg, "Concrete defect already observed:", "이미 확인된 구체적 결함:"), evidence.Detail)
 		fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
 			"Choose continue below to fix that defect with an edit.",
@@ -9391,13 +9401,16 @@ func documentAuthoringIntentForToolTurn(session *Session) string {
 	return ""
 }
 
+// webResearchIntentForToolTurn returns the active request text only when the
+// user EXPLICITLY asked for web/external research. Soft keyword hints must not
+// drive hard tool-pipeline decisions (industry-style thin gate).
 func webResearchIntentForToolTurn(session *Session) string {
 	if session == nil {
 		return ""
 	}
 	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(session.Messages)))
 	if latestUser != "" {
-		if shouldPrioritizeWebResearchInSystemPrompt(strings.ToLower(latestUser)) {
+		if requestExplicitlyAsksForWebResearch(strings.ToLower(latestUser)) {
 			return latestUser
 		}
 		if !controlRequestContinuesCurrentWorkContext(latestUser) {
@@ -9405,18 +9418,26 @@ func webResearchIntentForToolTurn(session *Session) string {
 		}
 	}
 	effective := strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session)))
-	if shouldPrioritizeWebResearchInSystemPrompt(strings.ToLower(effective)) {
+	if requestExplicitlyAsksForWebResearch(strings.ToLower(effective)) {
 		return effective
 	}
 	return ""
 }
 
+// shouldBlockLocalToolCallsBeforeWebResearch hard-defers local inspection only
+// for explicit web/external research requests that have not yet gathered any
+// web result. Soft "prefer web" system-prompt hints never block read_file.
 func shouldBlockLocalToolCallsBeforeWebResearch(calls []ToolCall, session *Session, mcp *MCPManager) bool {
 	if session == nil || mcp == nil || !mcp.HasWebResearchCapability() {
 		return false
 	}
 	researchIntent := webResearchIntentForToolTurn(session)
 	if researchIntent == "" {
+		return false
+	}
+	// Local @path / workspace inspection always stays available even during an
+	// explicit web task so the model can still open attached files.
+	if requestLooksLikeLocalWorkspaceInspection(strings.ToLower(researchIntent)) {
 		return false
 	}
 	if sessionHasWebResearchToolResult(session, mcp) || toolCallsIncludeWebResearch(calls, mcp) {
@@ -12405,22 +12426,77 @@ func requestExplicitlyAsksForPersistentMemory(lowerLatestUser string) bool {
 	)
 }
 
+// shouldPrioritizeWebResearchInSystemPrompt is a soft system-prompt hint only.
+// It must NEVER alone hard-block local tools (see shouldBlockLocalToolCallsBeforeWebResearch).
+// Bare words like "현재"/"current"/"now"/"search" do not qualify — that false-positive
+// forced local README gap analysis onto a web-research pipeline.
 func shouldPrioritizeWebResearchInSystemPrompt(lowerLatestUser string) bool {
 	if strings.TrimSpace(lowerLatestUser) == "" {
 		return false
 	}
-	if requestLooksLikeLocalCodeWork(lowerLatestUser) && !requestExplicitlyAsksForWebResearch(lowerLatestUser) {
+	if requestLooksLikeLocalWorkspaceInspection(lowerLatestUser) && !requestExplicitlyAsksForWebResearch(lowerLatestUser) {
+		return false
+	}
+	if requestExplicitlyAsksForWebResearch(lowerLatestUser) {
+		return true
+	}
+	return softExternalResearchPriority(lowerLatestUser)
+}
+
+// softExternalResearchPriority is a narrow soft hint for system-prompt tone.
+// It requires clear external-info signals and never fires on bare recency words.
+func softExternalResearchPriority(lowerLatestUser string) bool {
+	lowerLatestUser = strings.ToLower(strings.TrimSpace(lowerLatestUser))
+	if lowerLatestUser == "" {
 		return false
 	}
 	if containsAny(lowerLatestUser,
-		"latest", "recent", "current", "today", "now", "news", "trend", "trends",
-		"web", "search", "browse", "browser", "citation", "citations",
-		"research", "survey", "state of the art", "look up", "find sources",
-		"최신", "최근", "현재", "뉴스", "동향", "웹", "검색", "출처", "자료", "리서치", "조사", "논문",
+		"state of the art", "sota", "news", "trend", "trends",
+		"citation", "citations", "find sources", "look up online",
+		"뉴스", "동향", "논문", "출처를", "외부 자료",
 	) {
 		return true
 	}
+	// Recency alone is not enough ("현재 구현", "current code"). Pair with an
+	// external-topic marker and no local workspace inspection.
+	if containsAny(lowerLatestUser, "latest", "recent", "최신", "최근") &&
+		containsAny(lowerLatestUser,
+			"api", "sdk", "library", "framework", "changelog", "release notes",
+			"documentation online", "upstream", "ecosystem",
+			"라이브러리", "프레임워크", "릴리스", "체인지로그", "업스트림",
+		) {
+		return true
+	}
 	return false
+}
+
+// requestLooksLikeLocalWorkspaceInspection reports local-first work: @paths,
+// repo docs, implementation gap analysis, code review — anything peer agents
+// would handle with read_file/grep without a web detour.
+func requestLooksLikeLocalWorkspaceInspection(lowerLatestUser string) bool {
+	lowerLatestUser = strings.ToLower(strings.TrimSpace(lowerLatestUser))
+	if lowerLatestUser == "" {
+		return false
+	}
+	if requestLooksLikeLocalCodeWork(lowerLatestUser) {
+		return true
+	}
+	// @-mention is a strong local-first signal in every coding agent.
+	if strings.Contains(lowerLatestUser, "@") {
+		return true
+	}
+	hasLocalArtifact := containsAny(lowerLatestUser,
+		".md", "readme", "changelog", "license",
+		"문서", "구현", "implementation", "codebase", "repository", "repo",
+		"workspace", "워크스페이스", "프로젝트", "project",
+	)
+	hasInspect := containsAny(lowerLatestUser,
+		"read", "읽", "inspect", "review", "analyze", "analyse", "analysis", "audit",
+		"compare", "find", "tell", "explain", "summar", "list",
+		"알려", "찾", "부족", "missing", "gap", "비교", "분석", "검토", "리뷰", "요약",
+		"부족한", "부족한 부분", "구현에",
+	)
+	return hasLocalArtifact && hasInspect
 }
 
 func requestLooksLikeLocalCodeWork(lowerLatestUser string) bool {
@@ -12440,18 +12516,22 @@ func requestLooksLikeLocalCodeWork(lowerLatestUser string) bool {
 		containsAny(lowerLatestUser,
 			".go", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hxx",
 			".cs", ".rs", ".py", ".js", ".ts", ".tsx", ".jsx", ".java",
-			".kt", ".swift", ".sln", ".vcxproj", "read_file", "apply_patch",
+			".kt", ".swift", ".sln", ".vcxproj", ".md",
+			"read_file", "apply_patch",
 			"git_diff", "source/", "src/", "cmd/", "internal/", "plugins/",
+			"readme",
 		)
 	hasCodeIntent := containsAny(lowerLatestUser,
 		"code", "source", "file", "path", "review", "inspect", "audit", "fix", "bug", "patch",
+		"implement", "implementation", "document", "docs",
 		"코드", "소스", "파일", "경로", "검토", "리뷰", "수정", "버그", "패치",
+		"구현", "문서",
 	)
-	hasCodeAnalysisIntent := containsAny(lowerLatestUser, "code", "source code", "코드", "소스") &&
-		containsAny(lowerLatestUser, "analyze", "analyse", "analysis", "review", "inspect", "audit", "fix", "bug", "분석", "검토", "리뷰", "수정", "버그")
-	hasWorkspaceFileAuditIntent := containsAny(lowerLatestUser, "file", "files", "파일", "파일들") &&
-		containsAny(lowerLatestUser, "analyze", "analyse", "analysis", "review", "inspect", "audit", "problem", "problems", "issue", "issues", "bug", "bugs", "분석", "검토", "리뷰", "문제", "문제점", "버그") &&
-		containsAny(lowerLatestUser, "document", "report", "write-up", "writeup", "문서", "보고서", "정리")
+	hasCodeAnalysisIntent := containsAny(lowerLatestUser, "code", "source code", "코드", "소스", "구현", "implementation") &&
+		containsAny(lowerLatestUser, "analyze", "analyse", "analysis", "review", "inspect", "audit", "fix", "bug", "부족", "missing", "gap", "분석", "검토", "리뷰", "수정", "버그")
+	hasWorkspaceFileAuditIntent := containsAny(lowerLatestUser, "file", "files", "파일", "파일들", "문서") &&
+		containsAny(lowerLatestUser, "analyze", "analyse", "analysis", "review", "inspect", "audit", "problem", "problems", "issue", "issues", "bug", "bugs", "부족", "missing", "gap", "분석", "검토", "리뷰", "문제", "문제점", "버그") &&
+		containsAny(lowerLatestUser, "document", "report", "write-up", "writeup", "문서", "보고서", "정리", "알려")
 	return (hasPathOrCodeToken && hasCodeIntent) || hasCodeAnalysisIntent || hasWorkspaceFileAuditIntent
 }
 

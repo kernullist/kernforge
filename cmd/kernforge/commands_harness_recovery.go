@@ -436,6 +436,18 @@ func (rt *runtimeState) executeHarnessRecoveryAction(ctx context.Context, action
 		return localizedText(rt.cfg,
 			"Status details printed above. Choose another recovery option when ready.",
 			"위쪽에 상태 상세를 출력했습니다. 준비가 되면 다른 복구 옵션을 고르세요."), nil
+	case harnessRecoveryActionAnswer:
+		cause := ""
+		if rt.session.PendingHarnessBlockedRecovery != nil {
+			cause = rt.session.PendingHarnessBlockedRecovery.Cause
+		}
+		// Analysis/reporting resume: never force write_file-first edit bias.
+		rt.session.StallContinueEditBias = false
+		prompt := buildStallContinueRecoveryPromptForAction(rt.cfg, rt.session, cause, harnessRecoveryActionAnswer)
+		fmt.Fprintln(rt.writer, rt.ui.infoLine(localizedText(rt.cfg,
+			"Resuming with an answer from evidence already gathered...",
+			"이미 모은 근거로 답변을 이어갑니다...")))
+		return rt.runAgentReplyWithImagesManagedCancel(ctx, prompt, nil, false)
 	case harnessRecoveryActionRepair, "":
 		cause := ""
 		if rt.session.PendingHarnessBlockedRecovery != nil {
@@ -445,10 +457,20 @@ func (rt *runtimeState) executeHarnessRecoveryAction(ctx context.Context, action
 		infoEN := "Resuming repair for remaining blockers..."
 		infoKO := "남은 blocker 수정을 재개합니다..."
 		if cause != "" && cause != harnessRecoveryCauseHarness {
-			prompt = buildStallContinueRecoveryPrompt(rt.cfg, rt.session, cause)
-			rt.session.StallContinueEditBias = true
-			infoEN = "Resuming the original task with focused edits..."
-			infoKO = "원래 작업을 focused 수정으로 재개합니다..."
+			// If the stalled turn was analysis-only, keep the thin-agent path even
+			// when the operator picks a generic continue (legacy primary /continue).
+			kind := harnessRecoveryActionRepair
+			if requestLooksLikeAnalysisOnlyTurn(preservableSessionAcceptancePrompt(rt.session)) {
+				kind = harnessRecoveryActionAnswer
+				rt.session.StallContinueEditBias = false
+				infoEN = "Resuming the original analysis task..."
+				infoKO = "원래 분석 작업을 재개합니다..."
+			} else {
+				rt.session.StallContinueEditBias = true
+				infoEN = "Resuming the original task with focused edits..."
+				infoKO = "원래 작업을 focused 수정으로 재개합니다..."
+			}
+			prompt = buildStallContinueRecoveryPromptForAction(rt.cfg, rt.session, cause, kind)
 		}
 		fmt.Fprintln(rt.writer, rt.ui.infoLine(localizedText(rt.cfg, infoEN, infoKO)))
 		return rt.runAgentReplyWithImagesManagedCancel(ctx, prompt, nil, false)

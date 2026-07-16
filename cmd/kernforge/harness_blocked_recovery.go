@@ -16,6 +16,7 @@ const (
 	harnessRecoveryActionRetryVerify = "retry_verify"
 	harnessRecoveryActionReview      = "review"
 	harnessRecoveryActionRepair      = "repair"
+	harnessRecoveryActionAnswer      = "answer"
 	harnessRecoveryActionWaive       = "waive"
 	harnessRecoveryActionModel       = "model"
 	harnessRecoveryActionStatus      = "status"
@@ -594,6 +595,27 @@ func looksLikeCompileOrSyntaxFailure(text string) bool {
 	return false
 }
 
+// toolTextIsPolicyNotExecuted reports harness policy deferrals/blocks that are
+// NOT concrete code defects. Treating them as repair evidence caused analysis
+// turns to show "fix that defect" after NOT_EXECUTED: local tools deferred...
+func toolTextIsPolicyNotExecuted(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "not_executed:") {
+		return true
+	}
+	return containsAny(lower,
+		"deferred until",
+		"blocked for this local",
+		"read-only analysis",
+		"disabled in plan mode",
+		"permission denied",
+		"tool exposure blocked",
+	)
+}
+
 func collectRecentRepairEvidence(session *Session, limit int) stallRepairEvidence {
 	if session == nil || limit <= 0 {
 		return stallRepairEvidence{}
@@ -622,6 +644,10 @@ func collectRecentRepairEvidence(session *Session, limit int) stallRepairEvidenc
 		limit--
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
+			continue
+		}
+		// Policy blocks are harness routing, not defects to "fix with an edit".
+		if toolTextIsPolicyNotExecuted(text) {
 			continue
 		}
 		if msg.IsError || looksLikeCompileOrSyntaxFailure(text) {
@@ -764,17 +790,33 @@ func stallContinueRecoveryPrompt(cfg Config, cause string) string {
 }
 
 func buildStallContinueRecoveryPrompt(cfg Config, session *Session, cause string) string {
-	prompt := stallContinueRecoveryPrompt(cfg, cause)
+	return buildStallContinueRecoveryPromptForAction(cfg, session, cause, harnessRecoveryActionRepair)
+}
+
+// buildStallContinueRecoveryPromptForAction biases the continue injection by
+// recovery kind. Analysis answer mode must NOT force write_file-first edit bias.
+func buildStallContinueRecoveryPromptForAction(cfg Config, session *Session, cause string, actionKind string) string {
+	original := preservableSessionAcceptancePrompt(session)
+	analysisOnly := requestLooksLikeAnalysisOnlyTurn(original) ||
+		actionKind == harnessRecoveryActionAnswer ||
+		actionKind == harnessRecoveryActionReview
 	evidence := collectRecentRepairEvidence(session, 24)
 	files := evidence.Files
 	if session != nil && session.PendingHarnessBlockedRecovery != nil {
 		files = normalizeTaskStateList(append(append([]string{}, files...), session.PendingHarnessBlockedRecovery.BlockerTitles...), 8)
 	}
 	var b strings.Builder
-	b.WriteString(prompt)
-	b.WriteString("\n\n")
-	b.WriteString(stallContinueEditBiasGuidance(cfg, evidence, files))
-	if original := preservableSessionAcceptancePrompt(session); original != "" {
+	if analysisOnly {
+		b.WriteString(localizedText(cfg,
+			"The previous turn stopped after unproductive re-reads. Continue the user's original analysis/reporting task. Prefer a final answer from evidence already gathered. If one missing fact remains, inspect a different path once — do not re-read the same file set, and do not start unrelated code repairs.",
+			"이전 턴은 진전 없는 반복 읽기 후 중단되었습니다. 사용자의 원래 분석/보고 작업을 이어가세요. 이미 모은 근거로 최종 답변을 우선하세요. 정말 빠진 사실 하나가 있으면 다른 경로를 한 번만 보고, 같은 파일 집합을 다시 읽거나 관련 없는 코드 수정으로 전환하지 마세요.",
+		))
+	} else {
+		b.WriteString(stallContinueRecoveryPrompt(cfg, cause))
+		b.WriteString("\n\n")
+		b.WriteString(stallContinueEditBiasGuidance(cfg, evidence, files))
+	}
+	if original != "" {
 		b.WriteString("\n\n")
 		b.WriteString(localizedText(cfg,
 			"Original user request to continue:\n"+original,
@@ -784,6 +826,13 @@ func buildStallContinueRecoveryPrompt(cfg Config, session *Session, cause string
 }
 
 func buildStallBlockedRecovery(cfg Config, cause string, summary string, files []string) HarnessBlockedRecovery {
+	return buildStallBlockedRecoveryWithMode(cfg, cause, summary, files, false)
+}
+
+// buildStallBlockedRecoveryWithMode builds operator choices after a stall.
+// analysisOnly matches industry agents: analysis/read turns offer "answer with
+// findings" first, not "continue repairing".
+func buildStallBlockedRecoveryWithMode(cfg Config, cause string, summary string, files []string, analysisOnly bool) HarnessBlockedRecovery {
 	cause = strings.TrimSpace(cause)
 	if cause == "" {
 		cause = harnessRecoveryCauseNoProgress
@@ -794,16 +843,40 @@ func buildStallBlockedRecovery(cfg Config, cause string, summary string, files [
 		CandidateReply: strings.TrimSpace(summary),
 		BlockerTitles:  normalizeTaskStateList(files, 8),
 	}
-	recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
-		ID:       "continue-repair",
-		Command:  "/continue",
-		ChatHint: localizedText(cfg, `say "continue fixing"`, `「이어서 수정해」라고 입력`),
-		TitleEN:  "Continue repairing now",
-		TitleKO:  "지금 이어서 수정",
-		ReasonEN: "Resume with focused edits instead of more re-reads.",
-		ReasonKO: "반복 읽기 대신 focused 수정으로 재개합니다.",
-		Kind:     harnessRecoveryActionRepair,
-	})
+	if analysisOnly {
+		recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
+			ID:       "answer-findings",
+			Command:  "/continue",
+			ChatHint: localizedText(cfg, `say "answer with what you found"`, `「지금까지 찾은 걸로 답해」라고 입력`),
+			TitleEN:  "Answer with findings so far",
+			TitleKO:  "지금까지 근거로 답변",
+			ReasonEN: "Stop re-reading and write the analysis answer from evidence already gathered.",
+			ReasonKO: "반복 읽기를 멈추고 이미 모은 근거로 분석 답변을 작성합니다.",
+			Kind:     harnessRecoveryActionAnswer,
+		})
+		recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
+			ID:       "continue-inspect",
+			Command:  "/continue",
+			ChatHint: localizedText(cfg, `say "keep investigating"`, `「더 조사해」라고 입력`),
+			TitleEN:  "Keep investigating",
+			TitleKO:  "조사 계속",
+			ReasonEN: "Resume local inspection with a different file or tool, not more re-reads of the same set.",
+			ReasonKO: "같은 파일을 다시 읽기보다 다른 파일/도구로 조사를 이어갑니다.",
+			// Same continue path as answer (no /review harness), but prompt allows one more inspect step.
+			Kind: harnessRecoveryActionAnswer,
+		})
+	} else {
+		recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
+			ID:       "continue-repair",
+			Command:  "/continue",
+			ChatHint: localizedText(cfg, `say "continue fixing"`, `「이어서 수정해」라고 입력`),
+			TitleEN:  "Continue repairing now",
+			TitleKO:  "지금 이어서 수정",
+			ReasonEN: "Resume with focused edits instead of more re-reads.",
+			ReasonKO: "반복 읽기 대신 focused 수정으로 재개합니다.",
+			Kind:     harnessRecoveryActionRepair,
+		})
+	}
 	recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
 		ID:       "switch-model",
 		Command:  "/model",
@@ -828,8 +901,66 @@ func buildStallBlockedRecovery(cfg Config, cause string, summary string, files [
 	return recovery
 }
 
+// requestLooksLikeAnalysisOnlyTurn reports answer/analysis work that should not
+// be steered into a repair continue card when the read loop stalls.
+func requestLooksLikeAnalysisOnlyTurn(text string) bool {
+	base := strings.TrimSpace(baseUserQueryText(text))
+	if base == "" {
+		base = strings.TrimSpace(text)
+	}
+	if base == "" {
+		return false
+	}
+	if looksLikeOperatorRecoveryContinuePrompt(base) {
+		return false
+	}
+	lower := strings.ToLower(base)
+	// Explicit source edits are never analysis-only.
+	if looksLikeImperativeSourceEditCommand(base) ||
+		containsAny(lower,
+			"수정해", "고쳐", "패치해", "구현해", "적용해", "만들어줘", "작성해줘", "작성해 줘",
+			"fix it", "patch it", "implement it", "apply the", "write the code", "create the file",
+		) {
+		return false
+	}
+	// Strong local read+report phrasing (the failure case that was mis-routed to
+	// "continue repairing"). Checked before envelope mutation flags because
+	// "문서를 읽고 … 알려줘" can trip document-authoring heuristics without being
+	// an edit request.
+	if requestLooksLikeLocalWorkspaceInspection(lower) &&
+		containsAny(lower,
+			"알려", "tell", "explain", "what", "find", "찾", "부족", "gap", "missing",
+			"compare", "분석", "검토", "read", "읽", "summar", "요약", "list gaps",
+		) {
+		return true
+	}
+	envelope := buildRequestEnvelope(base)
+	if envelope.ExplicitEditRequest || envelope.AllowsFileMutation {
+		return false
+	}
+	if requestEnvelopeAllowsRepairContinuation(envelope) {
+		return false
+	}
+	if envelope.ReadOnlyAnalysis {
+		return true
+	}
+	switch envelope.Intent {
+	case TurnIntentReviewCode, TurnIntentAskProjectKnowledge, TurnIntentPlanOrDesign, TurnIntentExplainCurrentState:
+		return true
+	}
+	return false
+}
+
 func (a *Agent) recordStallBlockedRecovery(cause string, summary string, files []string) HarnessBlockedRecovery {
-	recovery := buildStallBlockedRecovery(a.Config, cause, summary, files)
+	cfg := Config{}
+	analysisOnly := false
+	if a != nil {
+		cfg = a.Config
+		if a.Session != nil {
+			analysisOnly = requestLooksLikeAnalysisOnlyTurn(sessionEffectiveUserRequestText(a.Session))
+		}
+	}
+	recovery := buildStallBlockedRecoveryWithMode(cfg, cause, summary, files, analysisOnly)
 	if a != nil && a.Session != nil {
 		a.Session.PendingHarnessBlockedRecovery = &recovery
 		if a.Session.LastFinalAnswerCorrection != nil && a.Session.LastFinalAnswerCorrection.Contract != nil {
