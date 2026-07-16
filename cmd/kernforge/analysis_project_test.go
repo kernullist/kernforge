@@ -811,34 +811,46 @@ func TestFormatProgressEventMessageIncludesAnalysisStageAndShard(t *testing.T) {
 	if !strings.HasPrefix(message, "worker runtime:") {
 		t.Fatalf("expected stage and shard prefix, got %q", message)
 	}
-	if !strings.Contains(message, "DeepSeek / deepseek-chat") {
-		t.Fatalf("expected provider/model target, got %q", message)
+	// Provider/model ids are no longer pasted into every wait line (Grok-style).
+	if !strings.Contains(message, "thinking") && !strings.Contains(message, "Thinking") &&
+		!strings.Contains(message, "생각") {
+		t.Fatalf("expected natural thinking wait message, got %q", message)
+	}
+	if strings.Contains(message, "deepseek-chat") {
+		t.Fatalf("wait line must not expose raw model id: %q", message)
 	}
 }
 
-func TestFormatProgressEventMessageUsesProviderDisplayLabel(t *testing.T) {
+func TestFormatProgressEventMessageUsesNaturalThinkingStart(t *testing.T) {
 	message := formatProgressEventMessage(Config{}, ProgressEvent{
 		Kind:     progressKindModelRequestStart,
 		Provider: "openai-codex",
 		Model:    "gpt-5.5",
 	})
-	if !strings.Contains(message, "openai-codex-subscription / gpt-5.5") {
-		t.Fatalf("expected display provider label, got %q", message)
+	if !strings.Contains(message, "Thinking") && !strings.Contains(message, "생각") {
+		t.Fatalf("expected natural thinking start, got %q", message)
+	}
+	if strings.Contains(message, "gpt-5.5") || strings.Contains(message, "openai-codex") {
+		t.Fatalf("start line must not expose provider/model ids: %q", message)
 	}
 }
 
 func TestFormatProgressEventMessageDoesNotPrefixToolMessageWithStage(t *testing.T) {
 	message := formatProgressEventMessage(Config{}, ProgressEvent{
-		Kind:     progressKindToolStarted,
-		ToolName: "run_shell",
-		Stage:    "workspace",
-		Shard:    "runtime",
+		Kind:             progressKindToolStarted,
+		ToolName:         "run_shell",
+		ArgumentsPreview: "command=go test ./...",
+		Stage:            "workspace",
+		Shard:            "runtime",
 	})
 	if strings.HasPrefix(message, "workspace runtime:") {
 		t.Fatalf("expected non-model tool progress to avoid stage/shard prefix, got %q", message)
 	}
-	if !strings.Contains(message, "run_shell") {
-		t.Fatalf("expected tool progress message, got %q", message)
+	if strings.Contains(message, "run_shell") {
+		t.Fatalf("tool progress must not expose raw tool id, got %q", message)
+	}
+	if !strings.Contains(message, "Running:") && !strings.Contains(message, "실행") {
+		t.Fatalf("expected natural shell progress message, got %q", message)
 	}
 }
 

@@ -53,51 +53,33 @@ func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
 	if strings.TrimSpace(event.Message) != "" {
 		return formatProgressEventMessageWithContext(cfg, event, humanizeProgressMessage(cfg, strings.TrimSpace(event.Message)))
 	}
-	target := formatProgressEventTarget(event)
 	switch strings.TrimSpace(event.Kind) {
 	case progressKindModelRequestStart:
-		if target == "" {
-			return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Sent the request to the model.", "모델에 요청을 보냈습니다."))
-		}
-		return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Sent the request to %s.", "%s에 요청을 보냈습니다."), target))
+		// Industry-style: do not spam provider/model ids on every turn.
+		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Thinking...", "생각 중..."))
 	case progressKindModelRequestWait:
-		if target == "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Waiting for the model answer (%s elapsed).", "모델 답변을 기다리는 중입니다(%s 경과)."), formatProgressElapsed(event.Elapsed)))
-		}
-		return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Waiting for %s to answer (%s elapsed).", "%s 답변을 기다리는 중입니다(%s 경과)."), target, formatProgressElapsed(event.Elapsed)))
+		return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg,
+			"Still thinking (%s elapsed)...",
+			"계속 생각 중... (%s 경과)"), formatProgressElapsed(event.Elapsed)))
 	case progressKindModelRequestDone:
 		return formatProgressEventMessageWithContext(cfg, event, formatProgressModelDoneMessage(cfg, event.Status, event.Elapsed))
 	case progressKindModelRouteWait:
 		if strings.TrimSpace(event.RouteLabel) != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Waiting for this model slot: %s.", "이 모델의 실행 순서를 기다리는 중입니다: %s."), event.RouteLabel))
+			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Waiting for a free model slot: %s.", "모델 실행 순서를 기다리는 중: %s."), event.RouteLabel))
 		}
-		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Waiting for an available model slot.", "사용 가능한 모델 실행 순서를 기다리는 중입니다."))
+		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Waiting for a free model slot...", "모델 실행 순서를 기다리는 중..."))
 	case progressKindModelRouteAcquired:
-		if event.Elapsed > 0 && strings.TrimSpace(event.RouteLabel) != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Model slot is ready: %s (waited %s).", "모델 실행 순서가 준비되었습니다: %s(%s 대기)."), event.RouteLabel, formatProgressElapsed(event.Elapsed)))
+		if event.Elapsed > 0 {
+			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Model slot ready (waited %s).", "모델 실행 준비 완료 (%s 대기)."), formatProgressElapsed(event.Elapsed)))
 		}
-		if strings.TrimSpace(event.RouteLabel) != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Model slot is ready: %s.", "모델 실행 순서가 준비되었습니다: %s."), event.RouteLabel))
-		}
-		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Model slot is ready.", "모델 실행 순서가 준비되었습니다."))
-	case progressKindModelStreamToolCall:
-		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Model is choosing a tool: %s.", "모델이 사용할 도구를 고르는 중입니다: %s."), event.ToolName))
-		}
-		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Model is choosing a tool.", "모델이 사용할 도구를 고르는 중입니다."))
-	case progressKindModelStreamToolArgs:
-		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Model is preparing inputs for %s.", "모델이 %s 입력값을 준비 중입니다."), event.ToolName))
-		}
-		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Model is preparing tool inputs.", "모델이 도구 입력값을 준비 중입니다."))
+		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Model slot ready.", "모델 실행 준비 완료."))
+	case progressKindModelStreamToolCall, progressKindModelStreamToolArgs:
+		// Suppress intermediate streaming noise (tool name pick / arg streaming).
+		// Users see a natural action line when the tool actually starts.
+		return ""
 	case progressKindModelStreamToolReady:
-		if event.ToolName != "" && event.ArgumentsPreview != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Tool request is ready: %s (%s).", "도구 요청이 준비되었습니다: %s(%s)."), event.ToolName, event.ArgumentsPreview))
-		}
-		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Tool request is ready: %s.", "도구 요청이 준비되었습니다: %s."), event.ToolName))
-		}
-		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Tool request is ready.", "도구 요청이 준비되었습니다."))
+		// Also quiet: toolStarted follows immediately with a better natural line.
+		return ""
 	case progressKindModelReroute:
 		if event.Model != "" && event.Status != "" {
 			if localePrefersKorean(cfg) {
@@ -112,19 +94,16 @@ func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
 		}
 		return formatProgressEventMessageWithContext(cfg, event, localizedText(cfg, "Model identity check received.", "모델 확인 정보를 받았습니다."))
 	case progressKindToolStarted:
-		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Running tool: %s.", "도구 실행 중: %s."), event.ToolName))
+		if msg := humanizeToolProgressLine(cfg, event.ToolName, "started", event.ArgumentsPreview, ""); msg != "" {
+			return formatProgressEventMessageWithContext(cfg, event, msg)
 		}
 	case progressKindToolCompleted:
-		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Tool finished: %s.", "도구 완료: %s."), event.ToolName))
+		if msg := humanizeToolProgressLine(cfg, event.ToolName, "completed", event.ArgumentsPreview, event.Status); msg != "" {
+			return formatProgressEventMessageWithContext(cfg, event, msg)
 		}
 	case progressKindToolFailed:
-		if event.ToolName != "" && event.Status != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Tool failed: %s (%s).", "도구 실패: %s(%s)."), event.ToolName, event.Status))
-		}
-		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(cfg, event, fmt.Sprintf(localizedText(cfg, "Tool failed: %s.", "도구 실패: %s."), event.ToolName))
+		if msg := humanizeToolProgressLine(cfg, event.ToolName, "failed", event.ArgumentsPreview, event.Status); msg != "" {
+			return formatProgressEventMessageWithContext(cfg, event, msg)
 		}
 	case progressKindRuntimeIntervention:
 		if event.RuntimeIntervention != "" {
@@ -209,10 +188,11 @@ func humanizeProgressStage(value string, korean bool) string {
 		}
 		return "review"
 	case "semantic_classifier", "classifier":
+		// Soft label — avoid sounding like an internal subsystem.
 		if korean {
-			return "요청 분류"
+			return "요청 이해"
 		}
-		return "request classification"
+		return "understanding request"
 	default:
 		return humanizeEnumFallback(stage)
 	}
@@ -281,21 +261,265 @@ func formatProgressModelDoneMessage(cfg Config, status string, elapsed time.Dura
 		elapsedText := formatProgressElapsed(elapsed)
 		switch status {
 		case "failed", "failure", "error":
-			return fmt.Sprintf(localizedText(cfg, "Model answer failed after %s.", "모델 답변이 실패했습니다(%s)."), elapsedText)
+			return fmt.Sprintf(localizedText(cfg, "Thinking failed after %s.", "생각 중 오류 (%s)."), elapsedText)
 		case "cancelled", "canceled", "cancel":
-			return fmt.Sprintf(localizedText(cfg, "Model answer was canceled after %s.", "모델 답변이 취소되었습니다(%s)."), elapsedText)
+			return fmt.Sprintf(localizedText(cfg, "Thinking canceled after %s.", "생각 취소됨 (%s)."), elapsedText)
 		default:
-			return fmt.Sprintf(localizedText(cfg, "Model answer completed after %s.", "모델 답변이 완료되었습니다(%s)."), elapsedText)
+			// Quiet completion: the next tool/answer line is what users care about.
+			if elapsed < 5*time.Second {
+				return ""
+			}
+			return fmt.Sprintf(localizedText(cfg, "Finished thinking (%s).", "생각 정리 완료 (%s)."), elapsedText)
 		}
 	}
 	switch status {
 	case "failed", "failure", "error":
-		return localizedText(cfg, "Model answer failed.", "모델 답변이 실패했습니다.")
+		return localizedText(cfg, "Thinking failed.", "생각 중 오류.")
 	case "cancelled", "canceled", "cancel":
-		return localizedText(cfg, "Model answer was canceled.", "모델 답변이 취소되었습니다.")
+		return localizedText(cfg, "Thinking canceled.", "생각 취소됨.")
 	default:
-		return localizedText(cfg, "Model answer completed.", "모델 답변이 완료되었습니다.")
+		return ""
 	}
+}
+
+// humanizeToolProgressLine turns internal tool ids into Grok-style action lines.
+// phase is started|completed|failed. detail is optional result count/error text.
+// argsPreview is either a path/command snippet or a "key=value" preview string.
+func humanizeToolProgressLine(cfg Config, toolName string, phase string, argsPreview string, detail string) string {
+	name := strings.TrimSpace(toolName)
+	if name == "" {
+		return ""
+	}
+	phase = strings.ToLower(strings.TrimSpace(phase))
+	path, pattern, command, query := parseToolProgressArgs(argsPreview)
+	base := strings.ToLower(name)
+	if idx := strings.LastIndex(base, "__"); idx >= 0 {
+		base = base[idx+2:]
+	}
+
+	switch {
+	case base == "read_file" || base == "read" || strings.HasSuffix(base, "read_file"):
+		target := firstNonBlankString(path, "")
+		switch phase {
+		case "started":
+			if target != "" {
+				return fmt.Sprintf(localizedText(cfg, "Reading %s...", "%s 읽는 중..."), target)
+			}
+			return localizedText(cfg, "Reading a file...", "파일 읽는 중...")
+		case "completed":
+			if target != "" && strings.TrimSpace(detail) != "" {
+				return fmt.Sprintf(localizedText(cfg, "Read %s (%s).", "%s 읽음 (%s)."), target, detail)
+			}
+			if target != "" {
+				return fmt.Sprintf(localizedText(cfg, "Read %s.", "%s 읽음."), target)
+			}
+			return localizedText(cfg, "Finished reading.", "읽기 완료.")
+		case "failed":
+			return formatHumanToolFailure(cfg, localizedText(cfg, "Could not read the file", "파일을 읽지 못함"), detail)
+		}
+	case base == "list_files" || base == "list_dir" || base == "glob" || base == "list":
+		target := firstNonBlankString(path, ".")
+		switch phase {
+		case "started":
+			return fmt.Sprintf(localizedText(cfg, "Browsing %s...", "%s 살펴보는 중..."), target)
+		case "completed":
+			if strings.TrimSpace(detail) != "" {
+				return fmt.Sprintf(localizedText(cfg, "Listed %s (%s).", "%s 목록 확인 (%s)."), target, detail)
+			}
+			return fmt.Sprintf(localizedText(cfg, "Listed %s.", "%s 목록 확인."), target)
+		case "failed":
+			return formatHumanToolFailure(cfg, localizedText(cfg, "Could not list files", "목록을 가져오지 못함"), detail)
+		}
+	case base == "grep" || base == "search" || base == "rg":
+		pat := firstNonBlankString(pattern, query)
+		switch phase {
+		case "started":
+			if pat != "" {
+				return fmt.Sprintf(localizedText(cfg, "Searching for %q...", "%q 검색 중..."), truncateStatusSnippet(pat, 48))
+			}
+			return localizedText(cfg, "Searching the codebase...", "코드 검색 중...")
+		case "completed":
+			if pat != "" && strings.TrimSpace(detail) != "" {
+				return fmt.Sprintf(localizedText(cfg, "Search for %q found %s.", "%q 검색 결과: %s."), truncateStatusSnippet(pat, 40), detail)
+			}
+			if pat != "" {
+				return fmt.Sprintf(localizedText(cfg, "Finished search for %q.", "%q 검색 완료."), truncateStatusSnippet(pat, 48))
+			}
+			return localizedText(cfg, "Search finished.", "검색 완료.")
+		case "failed":
+			return formatHumanToolFailure(cfg, localizedText(cfg, "Search failed", "검색 실패"), detail)
+		}
+	case base == "run_shell" || base == "bash" || base == "shell":
+		cmd := firstNonBlankString(command, "")
+		switch phase {
+		case "started":
+			if cmd != "" {
+				return fmt.Sprintf(localizedText(cfg, "Running: %s", "실행 중: %s"), truncateStatusSnippet(cmd, 72))
+			}
+			return localizedText(cfg, "Running a command...", "명령 실행 중...")
+		case "completed":
+			if strings.TrimSpace(detail) != "" {
+				return fmt.Sprintf(localizedText(cfg, "Command finished: %s", "명령 완료: %s"), truncateStatusSnippet(detail, 80))
+			}
+			return localizedText(cfg, "Command finished.", "명령 완료.")
+		case "failed":
+			return formatHumanToolFailure(cfg, localizedText(cfg, "Command failed", "명령 실패"), detail)
+		}
+	case strings.HasPrefix(base, "run_shell") || strings.Contains(base, "shell_job") || strings.Contains(base, "shell_bundle"):
+		switch phase {
+		case "started":
+			return localizedText(cfg, "Working with background commands...", "백그라운드 명령 처리 중...")
+		case "completed":
+			return localizedText(cfg, "Background command update received.", "백그라운드 명령 상태 갱신.")
+		case "failed":
+			return formatHumanToolFailure(cfg, localizedText(cfg, "Background command failed", "백그라운드 명령 실패"), detail)
+		}
+	case base == "apply_patch" || base == "write_file" || base == "replace_in_file" || base == "search_replace" || base == "edit":
+		target := firstNonBlankString(path, "")
+		switch phase {
+		case "started":
+			if target != "" {
+				return fmt.Sprintf(localizedText(cfg, "Editing %s...", "%s 수정 중..."), target)
+			}
+			return localizedText(cfg, "Applying an edit...", "수정 적용 중...")
+		case "completed":
+			if target != "" {
+				return fmt.Sprintf(localizedText(cfg, "Updated %s.", "%s 수정 완료."), target)
+			}
+			return localizedText(cfg, "Edit applied.", "수정 적용 완료.")
+		case "failed":
+			return formatHumanToolFailure(cfg, localizedText(cfg, "Edit failed", "수정 실패"), detail)
+		}
+	case strings.HasPrefix(base, "git_"):
+		action := strings.TrimPrefix(base, "git_")
+		switch phase {
+		case "started":
+			return fmt.Sprintf(localizedText(cfg, "Running git %s...", "git %s 실행 중..."), action)
+		case "completed":
+			return fmt.Sprintf(localizedText(cfg, "git %s finished.", "git %s 완료."), action)
+		case "failed":
+			return formatHumanToolFailure(cfg, fmt.Sprintf(localizedText(cfg, "git %s failed", "git %s 실패"), action), detail)
+		}
+	case toolCallNameLooksLikeWebResearch(name):
+		switch phase {
+		case "started":
+			if query != "" {
+				return fmt.Sprintf(localizedText(cfg, "Searching the web: %s", "웹 검색: %s"), truncateStatusSnippet(query, 64))
+			}
+			return localizedText(cfg, "Searching the web...", "웹 검색 중...")
+		case "completed":
+			return localizedText(cfg, "Web research finished.", "웹 검색 완료.")
+		case "failed":
+			return formatHumanToolFailure(cfg, localizedText(cfg, "Web research failed", "웹 검색 실패"), detail)
+		}
+	}
+
+	// Generic fallback: never dump opaque tool ids when we can say "working".
+	label := humanizeToolDisplayName(name)
+	switch phase {
+	case "started":
+		return fmt.Sprintf(localizedText(cfg, "Working: %s...", "작업 중: %s..."), label)
+	case "completed":
+		return fmt.Sprintf(localizedText(cfg, "Finished: %s.", "완료: %s."), label)
+	case "failed":
+		return formatHumanToolFailure(cfg, fmt.Sprintf(localizedText(cfg, "Failed: %s", "실패: %s"), label), detail)
+	default:
+		return label
+	}
+}
+
+func formatHumanToolFailure(cfg Config, head string, detail string) string {
+	head = strings.TrimSpace(head)
+	detail = truncateStatusSnippet(strings.TrimSpace(detail), 96)
+	if head == "" {
+		return detail
+	}
+	if detail == "" {
+		return head + "."
+	}
+	return head + ": " + detail
+}
+
+// humanizeToolDisplayName maps a raw tool id to a short plain label without
+// leaking mcp__ prefixes.
+func humanizeToolDisplayName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "task"
+	}
+	if strings.HasPrefix(name, "mcp__") {
+		parts := strings.Split(name, "__")
+		if len(parts) >= 3 {
+			return humanizeEnumFallback(parts[len(parts)-1])
+		}
+	}
+	return humanizeEnumFallback(name)
+}
+
+// parseToolProgressArgs accepts either a raw path/command snippet or a
+// "path=... pattern=... command=..." preview produced by summarizeToolArgumentsPreview.
+// Values may contain spaces (e.g. command=rg -n foo bar), so we do not split on
+// whitespace — we scan for the next known " key=" boundary instead.
+func parseToolProgressArgs(preview string) (path, pattern, command, query string) {
+	preview = strings.TrimSpace(preview)
+	if preview == "" {
+		return "", "", "", ""
+	}
+	if strings.Contains(preview, "=") {
+		lower := strings.ToLower(preview)
+		keys := []string{"path", "file", "pattern", "query", "url", "command"}
+		for _, key := range keys {
+			prefix := key + "="
+			idx := strings.Index(lower, prefix)
+			if idx < 0 {
+				continue
+			}
+			// Only accept key at start or after whitespace so "file=..." inside a
+			// path does not steal the value.
+			if idx > 0 && preview[idx-1] != ' ' && preview[idx-1] != '\t' {
+				continue
+			}
+			rest := preview[idx+len(prefix):]
+			restLower := strings.ToLower(rest)
+			end := len(rest)
+			for _, other := range keys {
+				marker := " " + other + "="
+				if p := strings.Index(restLower, marker); p >= 0 && p < end {
+					end = p
+				}
+			}
+			value := strings.TrimSpace(rest[:end])
+			if value == "" {
+				continue
+			}
+			switch key {
+			case "path", "file":
+				if path == "" {
+					path = value
+				}
+			case "pattern":
+				if pattern == "" {
+					pattern = value
+				}
+			case "command":
+				if command == "" {
+					command = value
+				}
+			case "query", "url":
+				if query == "" {
+					query = value
+				}
+			}
+		}
+		if path != "" || pattern != "" || command != "" || query != "" {
+			return path, pattern, command, query
+		}
+	}
+	// Bare path-like preview
+	if strings.ContainsAny(preview, `/\`) || strings.Contains(preview, ".") {
+		return preview, "", "", ""
+	}
+	return "", "", preview, ""
 }
 
 func humanizeProgressMessage(cfg Config, text string) string {

@@ -2967,9 +2967,11 @@ func TestSummarizeToolInvocationReadFileIncludesPathAndRange(t *testing.T) {
 	}
 
 	got := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, call)
-	want := "Using read_file on SampleApp/Common/ETWConsumer.cpp:10-42..."
-	if got != want {
-		t.Fatalf("unexpected summary: got %q want %q", got, want)
+	if !strings.Contains(got, "Reading") || !strings.Contains(got, "SampleApp/Common/ETWConsumer.cpp") {
+		t.Fatalf("unexpected summary: got %q", got)
+	}
+	if strings.Contains(got, "read_file") {
+		t.Fatalf("progress must not expose raw tool id: %q", got)
 	}
 }
 
@@ -2980,8 +2982,11 @@ func TestSummarizeToolInvocationRunShellIncludesCommand(t *testing.T) {
 	}
 
 	got := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, call)
-	if !strings.Contains(got, "Running shell: rg -n") {
+	if !strings.Contains(got, "Running:") || !strings.Contains(got, "rg") {
 		t.Fatalf("unexpected shell summary: %q", got)
+	}
+	if strings.Contains(got, "run_shell") {
+		t.Fatalf("progress must not expose raw tool id: %q", got)
 	}
 }
 
@@ -2991,10 +2996,10 @@ func TestSummarizeToolInvocationVerificationRequestsApprovalNotExecution(t *test
 		Arguments: `{"command":"go test ./cmd/kernforge"}`,
 	}
 	shellSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, shellCall)
-	if !strings.Contains(shellSummary, "Requesting verification command approval") {
+	if !strings.Contains(shellSummary, "verification") && !strings.Contains(shellSummary, "Asking to run") {
 		t.Fatalf("expected verification approval summary, got %q", shellSummary)
 	}
-	if strings.Contains(shellSummary, "Running shell") {
+	if strings.Contains(shellSummary, "Running: go test") {
 		t.Fatalf("verification summary must not claim execution before approval: %q", shellSummary)
 	}
 
@@ -3003,10 +3008,11 @@ func TestSummarizeToolInvocationVerificationRequestsApprovalNotExecution(t *test
 		Arguments: `{"command":"msbuild SampleApp.sln /m"}`,
 	}
 	backgroundSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, backgroundCall)
-	if !strings.Contains(backgroundSummary, "Requesting background verification approval") {
+	if !strings.Contains(strings.ToLower(backgroundSummary), "verification") &&
+		!strings.Contains(backgroundSummary, "Asking to run") {
 		t.Fatalf("expected background verification approval summary, got %q", backgroundSummary)
 	}
-	if strings.Contains(backgroundSummary, "Starting background shell") {
+	if strings.Contains(backgroundSummary, "Starting background") {
 		t.Fatalf("background verification summary must not claim job start before approval: %q", backgroundSummary)
 	}
 
@@ -3015,7 +3021,8 @@ func TestSummarizeToolInvocationVerificationRequestsApprovalNotExecution(t *test
 		Arguments: `{"commands":["go test ./cmd/kernforge","rg -n \"foo\" cmd/kernforge"]}`,
 	}
 	bundleSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, bundleCall)
-	if !strings.Contains(bundleSummary, "Requesting background verification bundle approval") {
+	if !strings.Contains(strings.ToLower(bundleSummary), "verification") &&
+		!strings.Contains(bundleSummary, "Asking to run") {
 		t.Fatalf("expected bundle verification approval summary, got %q", bundleSummary)
 	}
 	if strings.Contains(bundleSummary, "Starting") {
@@ -3047,7 +3054,7 @@ func TestSummarizeToolInvocationWebResearchIncludesIntent(t *testing.T) {
 		Arguments: `{"query":"Microsoft Learn GetVolumePathNamesForVolumeName ERROR_MORE_DATA returnCch"}`,
 	}
 	searchSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, searchCall)
-	if !strings.Contains(searchSummary, "Web research requested:") ||
+	if !strings.Contains(searchSummary, "Searching the web") ||
 		!strings.Contains(searchSummary, "GetVolumePathNamesForVolumeName") {
 		t.Fatalf("expected web search intent in summary, got %q", searchSummary)
 	}
@@ -3057,9 +3064,11 @@ func TestSummarizeToolInvocationWebResearchIncludesIntent(t *testing.T) {
 		Arguments: `{"url":"https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamesforvolumenamew"}`,
 	}
 	fetchSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, fetchCall)
-	if !strings.Contains(fetchSummary, "Web research requested:") ||
-		!strings.Contains(fetchSummary, "learn.microsoft.com") {
-		t.Fatalf("expected web fetch intent in summary, got %q", fetchSummary)
+	if !strings.Contains(fetchSummary, "Searching the web") && !strings.Contains(fetchSummary, "web") {
+		t.Fatalf("expected web fetch progress, got %q", fetchSummary)
+	}
+	if !strings.Contains(fetchSummary, "learn.microsoft.com") {
+		t.Fatalf("expected web fetch URL in summary, got %q", fetchSummary)
 	}
 }
 

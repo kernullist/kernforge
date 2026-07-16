@@ -403,8 +403,8 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	a.rememberRequestEnvelope(requestEnvelope)
 	a.emitProgressEvent(ProgressEvent{
 		Message: localizedText(a.Config,
-			"Preparing the main turn...",
-			"본 turn을 준비하는 중입니다..."),
+			"Getting ready...",
+			"준비 중..."),
 	})
 	requestMode := requestEnvelope.agentRequestMode()
 	intent := requestMode.Intent
@@ -8634,113 +8634,53 @@ func summarizeToolInvocation(cfg Config, call ToolCall) string {
 		_ = json.Unmarshal([]byte(call.Arguments), &args)
 	}
 
+	// Verification approvals keep a dedicated approval-oriented line.
 	switch name {
-	case "read_file":
-		path := strings.TrimSpace(stringValue(args, "path"))
-		if path == "" {
-			return localizedText(cfg, "Using read_file...", "read_file 확인 중 ...")
+	case "run_shell":
+		if shellToolArgsLookLikeVerification(args) {
+			command := strings.TrimSpace(stringValue(args, "command"))
+			if command == "" {
+				return localizedText(cfg, "Asking to run a verification command...", "검증 명령 실행 승인 요청 중...")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Asking to run verification: %s", "검증 실행 승인 요청: %s"), truncateStatusSnippet(command, 72))
 		}
+	case "run_shell_background":
+		if shellToolArgsLookLikeVerification(args) {
+			command := strings.TrimSpace(stringValue(args, "command"))
+			if command == "" {
+				return localizedText(cfg, "Asking to run background verification...", "백그라운드 검증 승인 요청 중...")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Asking to run background verification: %s", "백그라운드 검증 승인 요청: %s"), truncateStatusSnippet(command, 72))
+		}
+	case "run_shell_bundle_background":
+		if shellBundleArgsLookLikeVerification(args) {
+			commands := stringSliceValue(args, "commands")
+			if len(commands) == 0 {
+				return localizedText(cfg, "Asking to run a verification bundle...", "검증 묶음 승인 요청 중...")
+			}
+			return fmt.Sprintf(localizedText(cfg, "Asking to run %d verification command(s)...", "검증 명령 %d개 승인 요청 중..."), len(commands))
+		}
+	case "apply_patch", "write_file", "replace_in_file":
+		// Edit tools keep the diff preview as the primary UX.
+		return ""
+	}
+
+	preview := summarizeToolArgumentsPreview(call.Arguments)
+	// Prefer path:line-range for read_file when available.
+	if name == "read_file" {
+		path := strings.TrimSpace(stringValue(args, "path"))
 		start := intValue(args, "start_line", 0)
 		end := intValue(args, "end_line", 0)
-		if start > 0 && end >= start {
-			return fmt.Sprintf(localizedText(cfg, "Using read_file on %s:%d-%d...", "read_file 확인 중 ... %s:%d-%d"), path, start, end)
+		if path != "" && start > 0 && end >= start {
+			preview = fmt.Sprintf("path=%s:%d-%d", path, start, end)
 		}
-		return fmt.Sprintf(localizedText(cfg, "Using read_file on %s...", "read_file 확인 중 ... %s"), path)
-	case "grep":
-		pattern := strings.TrimSpace(stringValue(args, "pattern"))
-		if len(pattern) > 48 {
-			pattern = pattern[:45] + "..."
-		}
-		if pattern == "" {
-			return localizedText(cfg, "Using grep...", "grep 검색 중 ...")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Using grep for %q...", "grep 검색 중 ... %q"), pattern)
-	case "list_files":
-		path := strings.TrimSpace(stringValue(args, "path"))
-		if path == "" {
-			return localizedText(cfg, "Using list_files...", "list_files 확인 중 ...")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Using list_files in %s...", "list_files 확인 중 ... %s"), path)
-	case "run_shell":
-		command := strings.TrimSpace(stringValue(args, "command"))
-		if len(command) > 72 {
-			command = command[:69] + "..."
-		}
-		if shellToolArgsLookLikeVerification(args) {
-			if command == "" {
-				return localizedText(cfg, "Requesting verification command approval...", "검증 명령 승인 확인 중 ...")
-			}
-			return fmt.Sprintf(localizedText(cfg, "Requesting verification command approval: %s", "검증 명령 승인 확인 중 ... %s"), command)
-		}
-		if command == "" {
-			return localizedText(cfg, "Using run_shell...", "shell 실행 중 ...")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Running shell: %s", "shell 실행 중 ... %s"), command)
-	case "run_shell_background":
-		command := strings.TrimSpace(stringValue(args, "command"))
-		if len(command) > 72 {
-			command = command[:69] + "..."
-		}
-		if shellToolArgsLookLikeVerification(args) {
-			if command == "" {
-				return localizedText(cfg, "Requesting background verification approval...", "백그라운드 검증 승인 확인 중 ...")
-			}
-			return fmt.Sprintf(localizedText(cfg, "Requesting background verification approval: %s", "백그라운드 검증 승인 확인 중 ... %s"), command)
-		}
-		if command == "" {
-			return localizedText(cfg, "Starting background shell...", "백그라운드 shell 시작 중 ...")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Starting background shell: %s", "백그라운드 shell 시작 중 ... %s"), command)
-	case "run_shell_bundle_background":
-		commands := stringSliceValue(args, "commands")
-		if shellBundleArgsLookLikeVerification(args) {
-			if len(commands) == 0 {
-				return localizedText(cfg, "Requesting background verification bundle approval...", "백그라운드 검증 묶음 승인 확인 중 ...")
-			}
-			return fmt.Sprintf(localizedText(cfg, "Requesting background verification bundle approval for %d command(s)...", "백그라운드 검증 묶음 %d개 승인 확인 중 ..."), len(commands))
-		}
-		if len(commands) == 0 {
-			return localizedText(cfg, "Starting background shell bundle...", "백그라운드 shell 묶음 시작 중 ...")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Starting %d background shell command(s)...", "백그라운드 shell %d개 시작 중 ..."), len(commands))
-	case "check_shell_job":
-		jobID := strings.TrimSpace(stringValue(args, "job_id"))
-		if jobID == "" {
-			jobID = "latest"
-		}
-		return fmt.Sprintf(localizedText(cfg, "Checking shell job %s...", "shell job 확인 중 ... %s"), jobID)
-	case "check_shell_bundle":
-		jobIDs := stringSliceValue(args, "job_ids")
-		if len(jobIDs) == 0 {
-			return localizedText(cfg, "Checking shell bundle...", "shell 묶음 확인 중 ...")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Checking %d shell job(s)...", "shell job %d개 확인 중 ..."), len(jobIDs))
-	case "cancel_shell_job":
-		jobID := strings.TrimSpace(stringValue(args, "job_id"))
-		if jobID == "" {
-			jobID = "latest"
-		}
-		return fmt.Sprintf(localizedText(cfg, "Canceling shell job %s...", "shell job 중단 중 ... %s"), jobID)
-	case "cancel_shell_bundle":
-		bundleID := strings.TrimSpace(stringValue(args, "bundle_id"))
-		if bundleID == "" {
-			bundleID = "latest"
-		}
-		return fmt.Sprintf(localizedText(cfg, "Canceling shell bundle %s...", "shell 묶음 중단 중 ... %s"), bundleID)
-	case "git_status", "git_diff", "git_add", "git_commit", "git_push", "git_create_pr":
-		return fmt.Sprintf(localizedText(cfg, "Using %s...", "%s 실행 중 ..."), name)
-	case "apply_patch", "write_file", "replace_in_file":
-		return ""
-	default:
-		if toolCallNameLooksLikeWebResearch(name) {
-			intent := webResearchCallIntent(call)
-			if intent != "" {
-				return fmt.Sprintf(localizedText(cfg, "Web research requested: %s", "웹 리서치 요청: %s"), intent)
-			}
-			return localizedText(cfg, "Web research requested.", "웹 리서치 요청.")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Using %s...", "%s 실행 중 ..."), name)
 	}
+	if toolCallNameLooksLikeWebResearch(name) {
+		if intent := webResearchCallIntent(call); intent != "" {
+			return fmt.Sprintf(localizedText(cfg, "Searching the web: %s", "웹 검색: %s"), truncateStatusSnippet(intent, 64))
+		}
+	}
+	return humanizeToolProgressLine(cfg, name, "started", preview, "")
 }
 
 func shellToolArgsLookLikeVerification(args map[string]any) bool {
@@ -8778,96 +8718,77 @@ func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 	}
 
 	switch name {
-	case "read_file":
-		path := strings.TrimSpace(stringValue(args, "path"))
-		lineCount := countNonEmptyLines(out)
-		if path == "" {
-			if lineCount > 0 {
-				return fmt.Sprintf(localizedText(cfg, "read_file loaded %d line(s).", "read_file 완료 (%d줄)."), lineCount)
-			}
-			return localizedText(cfg, "read_file completed.", "read_file 완료.")
-		}
-		if lineCount > 0 {
-			return fmt.Sprintf(localizedText(cfg, "read_file loaded %s (%d line(s)).", "read_file 완료 %s (%d줄)."), path, lineCount)
-		}
-		return fmt.Sprintf(localizedText(cfg, "read_file loaded %s.", "read_file 완료 %s."), path)
-	case "grep":
-		pattern := truncateStatusSnippet(strings.TrimSpace(stringValue(args, "pattern")), 48)
-		matchCount := countNonEmptyLines(out)
-		if pattern == "" {
-			return fmt.Sprintf(localizedText(cfg, "grep returned %d line(s).", "grep 완료 (%d줄)."), matchCount)
-		}
-		return fmt.Sprintf(localizedText(cfg, "grep returned %[1]d line(s) for %[2]q.", "grep 완료 %[2]q (%[1]d줄)."), matchCount, pattern)
-	case "list_files":
-		path := strings.TrimSpace(stringValue(args, "path"))
-		if path == "" {
-			path = "."
-		}
-		itemCount := countNonEmptyLines(out)
-		return fmt.Sprintf(localizedText(cfg, "list_files returned %[1]d item(s) from %[2]s.", "list_files 완료 %[2]s (%[1]d개)."), itemCount, path)
+	case "apply_patch", "write_file", "replace_in_file":
+		return ""
 	case "run_shell":
-		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
 		if runShellOutputLooksLikeSkippedVerification(out) {
+			snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
 			if snippet == "" {
 				return localizedText(cfg, "Verification command skipped.", "검증 명령 생략됨.")
 			}
 			return fmt.Sprintf(localizedText(cfg, "Verification command skipped: %s", "검증 명령 생략됨: %s"), snippet)
 		}
-		if snippet == "" || runShellDisplayTextRepresentsNoOutput(out) {
-			return localizedText(cfg, "run_shell completed with no output.", "shell 완료: 출력 없음.")
-		}
-		lineCount := countNonEmptyLines(out)
-		if lineCount > 0 {
-			return fmt.Sprintf(localizedText(cfg, "run_shell completed (%d line(s)): %s", "shell 완료 (%d줄): %s"), lineCount, snippet)
-		}
-		return fmt.Sprintf(localizedText(cfg, "run_shell completed: %s", "shell 완료: %s"), snippet)
 	case "run_shell_background":
-		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
 		if runShellOutputLooksLikeSkippedVerification(out) || strings.Contains(strings.ToLower(out), "no background jobs started") {
+			snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
 			if snippet == "" {
 				return localizedText(cfg, "Background verification skipped.", "백그라운드 검증 생략됨.")
 			}
 			return fmt.Sprintf(localizedText(cfg, "Background verification skipped: %s", "백그라운드 검증 생략됨: %s"), snippet)
 		}
-		if snippet == "" {
-			return localizedText(cfg, "Background shell job started.", "백그라운드 shell 시작됨.")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Background shell started: %s", "백그라운드 shell 시작: %s"), snippet)
 	case "run_shell_bundle_background":
-		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
 		if runShellOutputLooksLikeSkippedVerification(out) || strings.Contains(strings.ToLower(out), "no background jobs started") {
+			snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
 			if snippet == "" {
 				return localizedText(cfg, "Background verification bundle skipped.", "백그라운드 검증 묶음 생략됨.")
 			}
 			return fmt.Sprintf(localizedText(cfg, "Background verification bundle skipped: %s", "백그라운드 검증 묶음 생략됨: %s"), snippet)
 		}
-		if snippet == "" {
-			return localizedText(cfg, "Background shell bundle started.", "백그라운드 shell 묶음 시작됨.")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Background shell bundle started: %s", "백그라운드 shell 묶음 시작: %s"), snippet)
-	case "check_shell_job":
-		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
-		if snippet == "" {
-			return localizedText(cfg, "Shell job status loaded.", "shell job 상태 확인 완료.")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Shell job status: %s", "shell job 상태: %s"), snippet)
-	case "check_shell_bundle":
-		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
-		if snippet == "" {
-			return localizedText(cfg, "Shell bundle status loaded.", "shell 묶음 상태 확인 완료.")
-		}
-		return fmt.Sprintf(localizedText(cfg, "Shell bundle status: %s", "shell 묶음 상태: %s"), snippet)
-	case "cancel_shell_job":
-		return localizedText(cfg, "Background shell job canceled.", "백그라운드 shell job 중단 완료.")
-	case "cancel_shell_bundle":
-		return localizedText(cfg, "Background shell bundle canceled.", "백그라운드 shell 묶음 중단 완료.")
-	case "git_status", "git_diff", "git_add", "git_commit", "git_push", "git_create_pr":
-		return fmt.Sprintf(localizedText(cfg, "%s completed.", "%s 완료."), name)
-	case "apply_patch", "write_file", "replace_in_file":
-		return ""
-	default:
-		return fmt.Sprintf(localizedText(cfg, "%s completed.", "%s 완료."), name)
 	}
+
+	preview := summarizeToolArgumentsPreview(call.Arguments)
+	detail := toolCompletionDetail(cfg, name, args, out)
+	return humanizeToolProgressLine(cfg, name, "completed", preview, detail)
+}
+
+// toolCompletionDetail is a short count/snippet for natural completion lines
+// (e.g. "146 lines", "38 items") without exposing tool ids.
+func toolCompletionDetail(cfg Config, name string, args map[string]any, out string) string {
+	switch strings.TrimSpace(name) {
+	case "read_file":
+		lineCount := countNonEmptyLines(out)
+		if lineCount > 0 {
+			return fmt.Sprintf(localizedText(cfg, "%d lines", "%d줄"), lineCount)
+		}
+	case "list_files":
+		itemCount := countNonEmptyLines(out)
+		if itemCount > 0 {
+			return fmt.Sprintf(localizedText(cfg, "%d items", "%d개"), itemCount)
+		}
+	case "grep":
+		matchCount := countNonEmptyLines(out)
+		if matchCount > 0 {
+			return fmt.Sprintf(localizedText(cfg, "%d matches", "%d건"), matchCount)
+		}
+	case "run_shell":
+		if runShellDisplayTextRepresentsNoOutput(out) || strings.TrimSpace(out) == "" {
+			return localizedText(cfg, "no output", "출력 없음")
+		}
+		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 72)
+		lineCount := countNonEmptyLines(out)
+		if lineCount > 1 && snippet != "" {
+			return fmt.Sprintf(localizedText(cfg, "%d lines — %s", "%d줄 — %s"), lineCount, snippet)
+		}
+		return snippet
+	case "run_shell_background", "run_shell_bundle_background", "check_shell_job", "check_shell_bundle":
+		return truncateStatusSnippet(firstNonEmptyLine(out), 80)
+	case "cancel_shell_job":
+		return localizedText(cfg, "canceled", "중단됨")
+	case "cancel_shell_bundle":
+		return localizedText(cfg, "bundle canceled", "묶음 중단됨")
+	}
+	_ = args
+	return truncateStatusSnippet(firstNonEmptyLine(out), 80)
 }
 
 // countUnifiedDiffLines counts added/removed content lines in a unified diff,
@@ -8934,7 +8855,11 @@ func summarizeToolFailure(cfg Config, call ToolCall, err error) string {
 	if reason == "" {
 		reason = localizedText(cfg, "unknown error", "알 수 없는 오류")
 	}
-	return fmt.Sprintf(localizedText(cfg, "%s failed: %s", "%s 실패: %s"), name, reason)
+	preview := summarizeToolArgumentsPreview(call.Arguments)
+	if msg := humanizeToolProgressLine(cfg, name, "failed", preview, reason); msg != "" {
+		return msg
+	}
+	return fmt.Sprintf(localizedText(cfg, "Failed: %s", "실패: %s"), reason)
 }
 
 func countNonEmptyLines(text string) int {

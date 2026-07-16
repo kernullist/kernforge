@@ -29,10 +29,13 @@ func TestSummarizeToolCompletionWithMetaRoutesEdit(t *testing.T) {
 	if got := summarizeToolCompletionWithMeta(cfg, ToolCall{Name: "replace_in_file"}, "updated x.go", meta); !strings.Contains(got, "x.go") {
 		t.Fatalf("edit tool must route to the edit summary, got %q", got)
 	}
-	// A non-edit tool falls through to the existing output-based summarizer.
+	// A non-edit tool falls through to the natural output-based summarizer.
 	got := summarizeToolCompletionWithMeta(cfg, ToolCall{Name: "read_file", Arguments: `{"path":"y.go"}`}, "l1\nl2\n", nil)
-	if !strings.Contains(got, "read_file") {
-		t.Fatalf("non-edit tool must use the existing summary, got %q", got)
+	if !strings.Contains(got, "Read y.go") && !strings.Contains(got, "y.go") {
+		t.Fatalf("non-edit tool must use natural summary, got %q", got)
+	}
+	if strings.Contains(got, "read_file") {
+		t.Fatalf("non-edit tool summary must not expose raw tool id: %q", got)
 	}
 }
 

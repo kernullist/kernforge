@@ -442,7 +442,7 @@ func TestShouldAnimateThinkingStatusKeepsGenericThinkingAnimated(t *testing.T) {
 }
 
 func TestShouldAnimateThinkingStatusFreezesSpecificToolProgress(t *testing.T) {
-	if shouldAnimateThinkingStatus("Using read_file on SampleWorkerCore.cpp:1-200...") {
+	if shouldAnimateThinkingStatus("Reading SampleWorkerCore.cpp:1-200...") {
 		t.Fatalf("expected specific tool progress to stop spinner animation")
 	}
 	if shouldAnimateThinkingStatus("read_file 확인 중 ... SampleWorkerCore.cpp") {

@@ -1205,8 +1205,11 @@ func TestSummarizeToolCompletionForReadFile(t *testing.T) {
 		Arguments: `{"path":"main.go","start_line":1,"end_line":3}`,
 	}, "line1\nline2\nline3\n")
 
-	if summary != "read_file loaded main.go (3 line(s))." {
+	if !strings.Contains(summary, "Read main.go") || !strings.Contains(summary, "3") {
 		t.Fatalf("unexpected read_file summary: %q", summary)
+	}
+	if strings.Contains(summary, "read_file") {
+		t.Fatalf("summary must not expose raw tool id: %q", summary)
 	}
 }
 
@@ -1216,8 +1219,11 @@ func TestSummarizeToolCompletionForRunShellUsesFirstOutputLine(t *testing.T) {
 		Arguments: `{"command":"go test ./..."}`,
 	}, "\nPASS\nok   kernforge  0.123s\n")
 
-	if summary != "run_shell completed (2 line(s)): PASS" {
+	if !strings.Contains(summary, "Command finished") || !strings.Contains(summary, "PASS") {
 		t.Fatalf("unexpected run_shell summary: %q", summary)
+	}
+	if strings.Contains(summary, "run_shell") {
+		t.Fatalf("summary must not expose raw tool id: %q", summary)
 	}
 }
 
@@ -1227,7 +1233,7 @@ func TestSummarizeToolCompletionForRunShellNoOutputSentinel(t *testing.T) {
 		Arguments: `{"command":"true"}`,
 	}, "(no output)")
 
-	if summary != "run_shell completed with no output." {
+	if !strings.Contains(summary, "Command finished") || !strings.Contains(summary, "no output") {
 		t.Fatalf("unexpected run_shell no-output summary: %q", summary)
 	}
 }
@@ -1238,8 +1244,11 @@ func TestSummarizeToolCompletionForListFiles(t *testing.T) {
 		Arguments: `{"path":"./anti-cheat-research/analysis"}`,
 	}, "analysis/testing.md\n")
 
-	if summary != "list_files returned 1 item(s) from ./anti-cheat-research/analysis." {
+	if !strings.Contains(summary, "Listed") || !strings.Contains(summary, "anti-cheat-research/analysis") {
 		t.Fatalf("unexpected list_files summary: %q", summary)
+	}
+	if strings.Contains(summary, "list_files") {
+		t.Fatalf("summary must not expose raw tool id: %q", summary)
 	}
 }
 
@@ -1263,10 +1272,13 @@ func TestSummarizeToolFailureTruncatesError(t *testing.T) {
 		Name: "apply_patch",
 	}, assertErrString("search text not found in main.go while trying to update a stale block with old line numbers"))
 
-	if !strings.HasPrefix(err, "apply_patch failed: ") {
-		t.Fatalf("expected failure prefix, got %q", err)
+	if !strings.Contains(err, "Edit failed") && !strings.Contains(err, "search text not found") {
+		t.Fatalf("expected natural edit failure, got %q", err)
 	}
-	if len(err) > 130 {
+	if strings.Contains(err, "apply_patch") {
+		t.Fatalf("failure must not expose raw tool id: %q", err)
+	}
+	if len(err) > 160 {
 		t.Fatalf("expected truncated failure summary, got %q", err)
 	}
 }

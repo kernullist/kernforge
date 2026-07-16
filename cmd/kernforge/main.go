@@ -2538,14 +2538,22 @@ func compactThinkingStatus(cfg Config, text string) string {
 		return localizedText(cfg, "Verification finished.", "검증 완료.")
 	case strings.Contains(lower, "waiting for the model to summarize"):
 		return localizedText(cfg, "Finalizing reply...", "답변 정리 중 ...")
+	case strings.HasPrefix(lower, "reading ") || strings.HasPrefix(trimmed, "읽는 중") ||
+		strings.Contains(trimmed, " 읽는 중"):
+		return truncateDisplayTextAtBoundary(trimmed, 72)
+	case strings.HasPrefix(lower, "browsing ") || strings.Contains(trimmed, "살펴보는 중"):
+		return truncateDisplayTextAtBoundary(trimmed, 72)
+	case strings.HasPrefix(lower, "searching ") || strings.Contains(trimmed, "검색 중"):
+		return truncateDisplayTextAtBoundary(trimmed, 72)
+	case strings.HasPrefix(lower, "running:") || strings.HasPrefix(trimmed, "실행 중:"):
+		return truncateDisplayTextAtBoundary(trimmed, 72)
+	case strings.HasPrefix(lower, "thinking") || strings.HasPrefix(trimmed, "생각 중") ||
+		strings.HasPrefix(trimmed, "계속 생각"):
+		return truncateDisplayTextAtBoundary(trimmed, 72)
 	case strings.HasPrefix(lower, "tool request is ready:") ||
 		strings.HasPrefix(trimmed, "도구 요청이 준비되었습니다:"):
-		// Keep the trailing tool identifier; drop the long argument preview that
-		// would otherwise be cut mid-token.
-		if tool := compactThinkingTrailingIdentifier(trimmed); tool != "" {
-			return localizedText(cfg, "Tool request ready: ", "도구 요청 준비: ") + tool
-		}
-		return localizedText(cfg, "Tool request ready.", "도구 요청 준비.")
+		// Legacy stream wording (suppressed in new formatter, keep for old sessions).
+		return localizedText(cfg, "Preparing next step...", "다음 단계 준비 중...")
 	case strings.HasPrefix(lower, "server used ") ||
 		strings.Contains(trimmed, "서버가 요청 모델"):
 		// Model reroute: keep the trailing model name intact via boundary-aware
