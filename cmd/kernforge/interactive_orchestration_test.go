@@ -24,7 +24,7 @@ func TestShouldPrimeInteractivePlanSkipsLatestWebResearchRequests(t *testing.T) 
 		Goal: "최근 3개월 이내의 Anti-Cheat 관련 최신 기술내용을 검색해줘",
 	}
 
-	if shouldPrimeInteractivePlan(state, true, false, false) {
+	if shouldPrimeInteractivePlan(state, true, false, false, false) {
 		t.Fatalf("expected latest web research request to skip interactive preflight planning")
 	}
 }
@@ -109,7 +109,7 @@ func TestShouldPrimeInteractivePlanSkipsAnalysisOnlyStructureQuestions(t *testin
 		Goal: "@SampleKernel/SampleKernel/ 드라이버 프로젝트 전체 구조를 자세히 설명해줘",
 	}
 
-	if shouldPrimeInteractivePlan(state, true, false, false) {
+	if shouldPrimeInteractivePlan(state, true, false, false, false) {
 		t.Fatalf("expected analysis-only structure question to skip interactive preflight planning")
 	}
 }
@@ -124,7 +124,7 @@ func TestShouldPrimeInteractivePlanSkipsAnswerOnlyComparisonQuestions(t *testing
 	if !mode.ReadOnlyAnalysis || mode.ExplicitEditRequest {
 		t.Fatalf("expected read-only comparison request mode, got %#v", mode)
 	}
-	if shouldPrimeInteractivePlan(state, mode.ReadOnlyAnalysis, mode.ExplicitEditRequest, false) {
+	if shouldPrimeInteractivePlan(state, mode.ReadOnlyAnalysis, mode.ExplicitEditRequest, false, false) {
 		t.Fatalf("expected answer-only comparison question to skip interactive preflight planning")
 	}
 }
@@ -211,7 +211,7 @@ func TestShouldPrimeInteractivePlanKeepsNormalCodingTasks(t *testing.T) {
 		Goal: "Fix the duplicated provider retry logic and verify the result",
 	}
 
-	if !shouldPrimeInteractivePlan(state, false, true, false) {
+	if !shouldPrimeInteractivePlan(state, false, true, false, false) {
 		t.Fatalf("expected normal coding task to keep interactive preflight planning")
 	}
 }
@@ -221,7 +221,7 @@ func TestShouldPrimeInteractivePlanSkipsPureVerificationCommands(t *testing.T) {
 		Goal: "검증 명령을 실행해줘",
 	}
 
-	if shouldPrimeInteractivePlan(state, false, true, false) {
+	if shouldPrimeInteractivePlan(state, false, true, false, false) {
 		t.Fatalf("expected pure verification command to skip interactive preflight planning")
 	}
 }
@@ -231,7 +231,7 @@ func TestShouldPrimeInteractivePlanSkipsFocusedBugFixSelection(t *testing.T) {
 		Goal: "@SampleApp/SampleWorker/SampleUpdManager.cpp:250-322 버그를 찾아서 수정해",
 	}
 
-	if shouldPrimeInteractivePlan(state, false, true, false) {
+	if shouldPrimeInteractivePlan(state, false, true, false, false) {
 		t.Fatalf("expected focused bug-fix selection to skip slow interactive preflight planning")
 	}
 }
@@ -241,7 +241,7 @@ func TestShouldPrimeInteractivePlanSkipsBroadBugFindAndFix(t *testing.T) {
 		Goal: "SampleWorker 서비스 설치/시작 과정에 버그를 찾고 수정해",
 	}
 
-	if shouldPrimeInteractivePlan(state, false, true, false) {
+	if shouldPrimeInteractivePlan(state, false, true, false, false) {
 		t.Fatalf("expected broad bug-find-and-fix request to skip slow interactive preflight planning")
 	}
 }
@@ -251,7 +251,7 @@ func TestShouldPrimeInteractivePlanSkipsSourceReviewDocumentArtifact(t *testing.
 		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해",
 	}
 
-	if shouldPrimeInteractivePlan(state, false, true, false) {
+	if shouldPrimeInteractivePlan(state, false, true, false, true) {
 		t.Fatalf("expected source-review document artifact task to skip hidden preflight planning")
 	}
 }
@@ -261,7 +261,7 @@ func TestShouldPrimeInteractivePlanSkipsEnglishSourceReviewReportArtifact(t *tes
 		Goal: "Review each source code file for bugs and create a separate report document",
 	}
 
-	if shouldPrimeInteractivePlan(state, false, true, false) {
+	if shouldPrimeInteractivePlan(state, false, true, false, true) {
 		t.Fatalf("expected English source-review report artifact task to skip hidden preflight planning")
 	}
 }
@@ -389,7 +389,7 @@ func TestMaybePrimeInteractivePlanDoesNotEmitProgressWithoutReviewer(t *testing.
 		},
 	}
 
-	if err := agent.maybePrimeInteractivePlan(context.Background(), false, true, false); err != nil {
+	if err := agent.maybePrimeInteractivePlan(context.Background(), false, true, false, false); err != nil {
 		t.Fatalf("maybePrimeInteractivePlan: %v", err)
 	}
 }

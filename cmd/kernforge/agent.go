@@ -1185,7 +1185,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	latestUserExplicitWebResearch := requestEnvelope.AllowsWebResearch
 	intent := requestEnvelope.Intent
 	_ = a.primeSelfDrivingWorkLoop(latestUser, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
-	if err := a.maybePrimeInteractivePlan(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest); err != nil {
+	if err := a.maybePrimeInteractivePlan(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest, requestEnvelope.DocumentAuthoring); err != nil {
 		return "", err
 	}
 	localCodeToolPolicyForTurn := !latestUserExplicitWebResearch && shouldUseLocalCodeToolPolicy(a.Session)

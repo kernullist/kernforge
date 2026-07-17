@@ -141,6 +141,12 @@ func TestRenderPromptSnapshotStableBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden snapshot %s: %v", path, err)
 	}
+	if os.Getenv("KERNFORGE_UPDATE_GOLDEN") != "" {
+		if err := os.WriteFile(path, []byte(got+"\n"), 0o644); err != nil {
+			t.Fatalf("update golden snapshot %s: %v", path, err)
+		}
+		return
+	}
 	want := strings.TrimSpace(strings.ReplaceAll(string(raw), "\r\n", "\n"))
 	got = strings.ReplaceAll(got, "\r\n", "\n")
 	if got != want {

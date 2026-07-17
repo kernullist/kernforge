@@ -88,12 +88,12 @@ func interactivePlanReviewContext(ctx context.Context, policy ModelRequestPolicy
 	return context.WithTimeout(ctx, timeout)
 }
 
-func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) error {
+func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool, documentAuthoring bool) error {
 	if a == nil || a.Session == nil || a.Session.TaskState == nil {
 		return nil
 	}
 	state := a.Session.TaskState
-	if !shouldPrimeInteractivePlan(state, readOnlyAnalysis, explicitEditRequest, explicitGitRequest) {
+	if !shouldPrimeInteractivePlan(state, readOnlyAnalysis, explicitEditRequest, explicitGitRequest, documentAuthoring) {
 		return nil
 	}
 	reviewerClient, reviewerModel := a.ensureInteractiveReviewerClient()
@@ -156,7 +156,7 @@ func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis 
 	return a.Store.Save(a.Session)
 }
 
-func shouldPrimeInteractivePlan(state *TaskState, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) bool {
+func shouldPrimeInteractivePlan(state *TaskState, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool, documentAuthoring bool) bool {
 	if state == nil {
 		return false
 	}
@@ -167,13 +167,13 @@ func shouldPrimeInteractivePlan(state *TaskState, readOnlyAnalysis bool, explici
 	if strings.TrimSpace(state.PlanSummary) != "" {
 		return false
 	}
-	if shouldSkipInteractivePlanPreflight(goal, readOnlyAnalysis, explicitEditRequest, explicitGitRequest) {
+	if shouldSkipInteractivePlanPreflight(goal, readOnlyAnalysis, explicitEditRequest, explicitGitRequest, documentAuthoring) {
 		return false
 	}
 	return true
 }
 
-func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) bool {
+func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool, documentAuthoring bool) bool {
 	if readOnlyAnalysis && !explicitEditRequest && !explicitGitRequest {
 		return true
 	}
@@ -188,8 +188,10 @@ func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, expl
 		return true
 	}
 	// Document authoring is a direct artifact write; the interactive plan/review
-	// preflight only adds latency (and used to look like a hung first turn).
-	if looksLikeDocumentAuthoringIntent(lowerGoal) || preWriteRequestLooksLikeGeneratedDocumentArtifact(lowerGoal) {
+	// preflight only adds latency (and used to look like a hung first turn). The
+	// document-authoring decision comes from the RequestEnvelope (source of truth)
+	// rather than re-deriving it here from the raw goal text.
+	if documentAuthoring || preWriteRequestLooksLikeGeneratedDocumentArtifact(lowerGoal) {
 		return true
 	}
 	if requestLooksLikeLocalVerificationWork(lowerGoal) && !requestLooksLikeImplementationOrSourceEditWork(lowerGoal) {

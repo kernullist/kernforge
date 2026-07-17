@@ -4515,12 +4515,17 @@ func progressEventsContainKind(events []ProgressEvent, kind string) bool {
 }
 
 func progressEventMessageForKind(events []ProgressEvent, kind string) string {
+	// The context-loading progress surface emits two events of the same kind: a
+	// generic "Loading ..." indicator first, then the informative detail line
+	// (freshness/sources/files). Return the last matching event so callers get
+	// the detail rather than the placeholder.
+	message := ""
 	for _, event := range events {
 		if strings.TrimSpace(event.Kind) == kind {
-			return event.Message
+			message = event.Message
 		}
 	}
-	return ""
+	return message
 }
 
 func TestAgentFinalizesFinalLookingReplyWhenProviderEndTurnFalse(t *testing.T) {

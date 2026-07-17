@@ -25,7 +25,7 @@ func TestShouldRunAutoScoutOnlyForLookupStyleQueries(t *testing.T) {
 }
 
 func TestShouldSkipInteractivePlanPreflightForDocumentAuthoring(t *testing.T) {
-	if !shouldSkipInteractivePlanPreflight("현재 구현을 반영한 README 문서를 최신화해서 작성해", false, false, false) {
+	if !shouldSkipInteractivePlanPreflight("현재 구현을 반영한 README 문서를 최신화해서 작성해", false, false, false, true) {
 		t.Fatal("document authoring should skip interactive plan preflight")
 	}
 }
