@@ -853,11 +853,11 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 		return
 	}
 	if report.HasFailures() {
-		// Failures that do not reference the current patch are ambient / pre-
-		// existing project risk (e.g. whole-solution compile noise). Disclose
-		// them as warnings so the operator request can still complete after a
-		// successful scoped edit. Failures that name the patch remain blockers.
-		if verificationFailureTouchesChangedPaths(report, ledger.ChangedPaths) {
+		// Failures that do not reference the current patch, or that are only
+		// build-config/environment gaps (Debug-only listing, missing toolset),
+		// are ambient risk. Disclose as warnings so a successful scoped edit can
+		// still complete. Source/link errors that name the patch remain blockers.
+		if verificationFailureTouchesChangedPaths(report, ledger.ChangedPaths) && !verificationReportIsOnlyNonCodeBuildIssue(report) {
 			ledger.Blockers = append(ledger.Blockers, "latest verification failed: "+compactPromptSection(report.FailureSummary(), 240))
 			ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
 				ID:             "verify",
@@ -869,15 +869,19 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 				ExpectedResult: "Latest verification passes before completion.",
 			})
 		} else {
-			ledger.Warnings = append(ledger.Warnings, "latest verification has ambient failures outside the current patch scope: "+compactPromptSection(report.FailureSummary(), 240))
+			reason := "ambient verification failure remains outside the current patch scope"
+			if verificationReportIsOnlyNonCodeBuildIssue(report) {
+				reason = "verification failed due to build configuration or environment, not a confirmed patch code defect"
+			}
+			ledger.Warnings = append(ledger.Warnings, "latest verification has ambient/config failures (request not hard-failed): "+compactPromptSection(report.FailureSummary(), 240))
 			ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
 				ID:             "verify",
 				Command:        "/verify --full",
-				Reason:         "ambient verification failure remains outside the current patch scope",
+				Reason:         reason,
 				Safety:         "safe_local",
-				When:           "when you choose to investigate the ambient failure",
-				ClientHint:     "The current request completed without expanding repair into unrelated failures. Revisit /verify when ready to tackle the ambient break.",
-				ExpectedResult: "Ambient failure is fixed or accepted; patch-scoped work stays unblocked.",
+				When:           "when you choose to investigate the ambient or configuration failure",
+				ClientHint:     "Prefer a maintained configuration (often Release|x64). Do not expand repair into unrelated projects for config/environment noise.",
+				ExpectedResult: "Ambient/config failure is fixed or accepted; patch-scoped work stays unblocked.",
 			})
 		}
 		return

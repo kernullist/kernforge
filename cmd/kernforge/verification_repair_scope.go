@@ -58,6 +58,12 @@ func verificationRepairChangedPaths(a *Agent, report VerificationReport) []strin
 }
 
 func verificationStepIsPatchScoped(step VerificationStep, changed []string) bool {
+	// Configuration/environment failures are never "the current patch is wrong".
+	// Many product trees only maintain Release; a Debug or toolset failure must
+	// not force a code repair loop.
+	if verificationFailureIsNonCodeBuildIssue(step) {
+		return false
+	}
 	changed = normalizeTaskStateList(changed, 32)
 	if len(changed) == 0 {
 		// No patch scope is known, so any failure is treated as in-scope for
@@ -81,6 +87,20 @@ func verificationStepIsPatchScoped(step VerificationStep, changed []string) bool
 	return verificationTextMentionsChangedPath(verificationFailureEvidenceText(step.Output), changed)
 }
 
+func verificationFailureIsNonCodeBuildIssue(step VerificationStep) bool {
+	kind := strings.ToLower(strings.TrimSpace(step.FailureKind))
+	switch kind {
+	case "build_config", "build_environment", "command_not_found":
+		return true
+	}
+	output := strings.ToLower(step.Output)
+	command := strings.ToLower(step.Command + " " + step.Label)
+	if looksLikeBuildConfigurationFailure(output, command) || looksLikeBuildEnvironmentFailure(output) {
+		return true
+	}
+	return false
+}
+
 // verificationFailureTouchesChangedPaths reports whether any failed step is
 // attributable to the current patch. When changed paths are empty the failure
 // is treated as in-scope (same as verificationStepIsPatchScoped).
@@ -98,6 +118,23 @@ func verificationFailureTouchesChangedPaths(report VerificationReport, changed [
 		}
 	}
 	return false
+}
+
+func verificationReportIsOnlyNonCodeBuildIssue(report VerificationReport) bool {
+	if !report.HasFailures() {
+		return false
+	}
+	sawFailed := false
+	for _, step := range report.Steps {
+		if step.Status != VerificationFailed {
+			continue
+		}
+		sawFailed = true
+		if !verificationFailureIsNonCodeBuildIssue(step) {
+			return false
+		}
+	}
+	return sawFailed
 }
 
 func verificationFailureEvidenceText(output string) string {

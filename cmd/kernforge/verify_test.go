@@ -695,6 +695,125 @@ func TestClassifyVerificationFailureRecognizesCommonGoFailures(t *testing.T) {
 	}
 }
 
+func TestSelectPreferredMSBuildConfigurationPrefersReleaseOverDebug(t *testing.T) {
+	cfg := selectPreferredMSBuildConfiguration([]msbuildProjectConfiguration{
+		{Configuration: "Debug", Platform: "x64"},
+		{Configuration: "Release", Platform: "x64"},
+		{Configuration: "Debug", Platform: "Win32"},
+	})
+	if !strings.EqualFold(cfg.Configuration, "Release") || !strings.EqualFold(cfg.Platform, "x64") {
+		t.Fatalf("expected Release|x64 for verification, got %#v", cfg)
+	}
+	// Release-only product tree (no Debug entry that verification should prefer).
+	releaseOnly := selectPreferredMSBuildConfiguration([]msbuildProjectConfiguration{
+		{Configuration: "Release", Platform: "x64"},
+	})
+	if !strings.EqualFold(releaseOnly.Configuration, "Release") {
+		t.Fatalf("expected Release when only Release exists, got %#v", releaseOnly)
+	}
+}
+
+func TestMSBuildProjectVerificationCommandUsesReleaseWhenAvailable(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "App", "App.vcxproj")
+	if err := os.MkdirAll(filepath.Dir(project), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+</Project>
+`
+	if err := os.WriteFile(project, []byte(content), 0o644); err != nil {
+		t.Fatalf("write vcxproj: %v", err)
+	}
+	command, label := msbuildProjectVerificationCommand(root, "App/App.vcxproj")
+	if !strings.Contains(command, "Configuration=Release") || !strings.Contains(command, "Platform=x64") {
+		t.Fatalf("expected Release|x64 in command, got %q", command)
+	}
+	if !strings.Contains(label, "Release|x64") {
+		t.Fatalf("expected Release|x64 in label, got %q", label)
+	}
+	if strings.Contains(command, "Configuration=Debug") {
+		t.Fatalf("Debug must not win when Release is available: %q", command)
+	}
+}
+
+func TestMSBuildSolutionVerificationCommandUsesSolutionReleaseConfig(t *testing.T) {
+	root := t.TempDir()
+	solution := filepath.Join(root, "Tavern.sln")
+	sln := `Microsoft Visual Studio Solution File, Format Version 12.00
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+EndGlobal
+`
+	if err := os.WriteFile(solution, []byte(sln), 0o644); err != nil {
+		t.Fatalf("write sln: %v", err)
+	}
+	command, label := msbuildSolutionVerificationCommand(root, "Tavern.sln")
+	if !strings.Contains(command, "Configuration=Release") || !strings.Contains(command, "Platform=x64") {
+		t.Fatalf("solution verify must pin Release|x64, got %q", command)
+	}
+	if !strings.Contains(label, "Release|x64") {
+		t.Fatalf("expected Release|x64 label, got %q", label)
+	}
+}
+
+func TestClassifyVerificationFailureRecognizesBuildConfigurationGap(t *testing.T) {
+	kind, hint := classifyVerificationFailure(VerificationStep{
+		Label:   "msbuild Tavern.sln Debug|x64",
+		Command: `msbuild "Tavern.sln" /m /p:Configuration=Debug /p:Platform=x64`,
+		Output:  "error MSB4126: The specified solution configuration \"Debug|x64\" is invalid. Please specify a valid solution configuration using the Configuration and Platform properties",
+	})
+	if kind != "build_config" {
+		t.Fatalf("expected build_config, got %q (hint=%q)", kind, hint)
+	}
+	if !strings.Contains(strings.ToLower(hint), "configuration") {
+		t.Fatalf("expected configuration-oriented hint, got %q", hint)
+	}
+	// Real source error must remain compile_error.
+	kind, _ = classifyVerificationFailure(VerificationStep{
+		Label:   "msbuild App.vcxproj Release|x64",
+		Command: `msbuild "App.vcxproj" /m /p:Configuration=Release /p:Platform=x64`,
+		Output:  `App\main.cpp(12): error C2065: 'missing': undeclared identifier`,
+	})
+	if kind != "compile_error" {
+		t.Fatalf("source error must stay compile_error, got %q", kind)
+	}
+}
+
+func TestBuildConfigFailureIsNotPatchScopedRepair(t *testing.T) {
+	step := VerificationStep{
+		Label:       "msbuild Tavern.sln",
+		Command:     `msbuild "Tavern.sln" /m /p:Configuration=Debug /p:Platform=x64`,
+		Status:      VerificationFailed,
+		FailureKind: "build_config",
+		Output:      "error MSB4126: The specified solution configuration \"Debug|x64\" is invalid.",
+	}
+	if verificationStepIsPatchScoped(step, []string{"TavernKernel/FileFilter.cpp"}) {
+		t.Fatalf("build_config failure must not be treated as patch-scoped code repair")
+	}
+	report := VerificationReport{Steps: []VerificationStep{step}}
+	if verificationFailureTouchesChangedPaths(report, []string{"TavernKernel/FileFilter.cpp"}) {
+		t.Fatalf("build_config report must not touch changed paths for repair")
+	}
+	if !verificationReportIsOnlyNonCodeBuildIssue(report) {
+		t.Fatalf("expected only non-code build issue")
+	}
+}
+
 func TestClassifyVerificationFailureRecognizesMissingCommand(t *testing.T) {
 	kind, hint := classifyVerificationFailure(VerificationStep{
 		Label:   "msbuild demo.sln",

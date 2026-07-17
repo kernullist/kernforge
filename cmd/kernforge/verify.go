@@ -678,9 +678,10 @@ func buildCppVerificationSteps(root string, changed []string, mode VerificationM
 			return uniqueVerificationSteps(steps)
 		}
 		if solution := detectSolutionFile(root); solution != "" {
+			command, label := msbuildSolutionVerificationCommand(root, solution)
 			steps = append(steps, VerificationStep{
-				Label:   "msbuild " + solution,
-				Command: "msbuild " + quoteVerificationCommandArg(solution) + " /m",
+				Label:   label,
+				Command: command,
 				Scope:   "workspace",
 				Stage:   "workspace",
 				Status:  VerificationPending,
@@ -690,17 +691,19 @@ func buildCppVerificationSteps(root string, changed []string, mode VerificationM
 	}
 	if buildDir := detectCMakeBuildDir(root); buildDir != "" {
 		quotedBuildDir := quoteVerificationCommandArg(buildDir)
+		// Prefer Release for multi-config generators (VS/Xcode). Single-config
+		// generators ignore --config when CMAKE_BUILD_TYPE is already set.
 		steps := []VerificationStep{{
-			Label:   "cmake --build " + buildDir,
-			Command: "cmake --build " + quotedBuildDir + " --parallel",
+			Label:   "cmake --build " + buildDir + " (Release)",
+			Command: "cmake --build " + quotedBuildDir + " --config Release --parallel",
 			Scope:   "workspace",
 			Stage:   "workspace",
 			Status:  VerificationPending,
 		}}
 		if mode == VerificationFull && hasCTestMetadata(root, buildDir) {
 			steps = append(steps, VerificationStep{
-				Label:   "ctest --test-dir " + buildDir,
-				Command: "ctest --test-dir " + quotedBuildDir + " --output-on-failure",
+				Label:   "ctest --test-dir " + buildDir + " -C Release",
+				Command: "ctest --test-dir " + quotedBuildDir + " -C Release --output-on-failure",
 				Scope:   "workspace",
 				Stage:   "workspace",
 				Status:  VerificationPending,
@@ -709,9 +712,10 @@ func buildCppVerificationSteps(root string, changed []string, mode VerificationM
 		return steps
 	}
 	if solution := detectSolutionFile(root); solution != "" {
+		command, label := msbuildSolutionVerificationCommand(root, solution)
 		return []VerificationStep{{
-			Label:   "msbuild " + solution,
-			Command: "msbuild " + quoteVerificationCommandArg(solution) + " /m",
+			Label:   label,
+			Command: command,
 			Scope:   "workspace",
 			Stage:   "workspace",
 			Status:  VerificationPending,
@@ -746,24 +750,69 @@ func msbuildProjectVerificationCommand(root string, project string) (string, str
 	return command, label
 }
 
+func msbuildSolutionVerificationCommand(root string, solution string) (string, string) {
+	command := "msbuild " + quoteVerificationCommandArg(solution) + " /m"
+	label := "msbuild " + solution
+	if cfg := selectMSBuildSolutionConfiguration(root, solution); cfg.Configuration != "" && cfg.Platform != "" {
+		command += " /p:Configuration=" + quoteMSBuildPropertyValue(cfg.Configuration)
+		command += " /p:Platform=" + quoteMSBuildPropertyValue(cfg.Platform)
+		label += " " + cfg.Configuration + "|" + cfg.Platform
+	}
+	return command, label
+}
+
 func selectMSBuildProjectConfiguration(root string, project string) msbuildProjectConfiguration {
-	configs := readMSBuildProjectConfigurations(root, project)
+	return selectPreferredMSBuildConfiguration(readMSBuildProjectConfigurations(root, project))
+}
+
+func selectMSBuildSolutionConfiguration(root string, solution string) msbuildProjectConfiguration {
+	if cfg := selectPreferredMSBuildConfiguration(readMSBuildSolutionConfigurations(root, solution)); cfg.Configuration != "" {
+		return cfg
+	}
+	// Fall back to configurations declared by a project in the workspace.
+	if project := detectVCXProjFile(root); project != "" {
+		return selectMSBuildProjectConfiguration(root, project)
+	}
+	return msbuildProjectConfiguration{}
+}
+
+// selectPreferredMSBuildConfiguration picks a configuration for automatic
+// verification. Release is preferred over Debug: many product trees (game /
+// anti-cheat / kernel clients) only maintain Release fully, while Debug may be
+// listed but incomplete. A failed Debug build is often a config gap, not a
+// code regression from the current edit.
+func selectPreferredMSBuildConfiguration(configs []msbuildProjectConfiguration) msbuildProjectConfiguration {
 	if len(configs) == 0 {
 		return msbuildProjectConfiguration{}
 	}
 	preferred := []msbuildProjectConfiguration{
-		{Configuration: "Debug", Platform: "x64"},
 		{Configuration: "Release", Platform: "x64"},
-		{Configuration: "Debug", Platform: "ARM64"},
 		{Configuration: "Release", Platform: "ARM64"},
-		{Configuration: "Debug", Platform: "Win32"},
 		{Configuration: "Release", Platform: "Win32"},
+		{Configuration: "Release", Platform: "Any CPU"},
+		{Configuration: "Release", Platform: "AnyCPU"},
+		{Configuration: "Debug", Platform: "x64"},
+		{Configuration: "Debug", Platform: "ARM64"},
+		{Configuration: "Debug", Platform: "Win32"},
+		{Configuration: "Debug", Platform: "Any CPU"},
+		{Configuration: "Debug", Platform: "AnyCPU"},
 	}
 	for _, want := range preferred {
 		for _, cfg := range configs {
 			if strings.EqualFold(cfg.Configuration, want.Configuration) && strings.EqualFold(cfg.Platform, want.Platform) {
 				return cfg
 			}
+		}
+	}
+	// Any Release before any Debug, then x64, then first listed.
+	for _, cfg := range configs {
+		if strings.EqualFold(cfg.Configuration, "Release") && strings.EqualFold(cfg.Platform, "x64") {
+			return cfg
+		}
+	}
+	for _, cfg := range configs {
+		if strings.EqualFold(cfg.Configuration, "Release") {
+			return cfg
 		}
 	}
 	for _, cfg := range configs {
@@ -816,6 +865,65 @@ func readMSBuildProjectConfigurations(root string, project string) []msbuildProj
 				platform = strings.TrimSpace(parts[1])
 			}
 		}
+		if configuration == "" || platform == "" {
+			continue
+		}
+		key := strings.ToLower(configuration + "|" + platform)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		configs = append(configs, msbuildProjectConfiguration{
+			Configuration: configuration,
+			Platform:      platform,
+		})
+	}
+	return configs
+}
+
+func readMSBuildSolutionConfigurations(root string, solution string) []msbuildProjectConfiguration {
+	solutionPath := solution
+	if !filepath.IsAbs(solutionPath) {
+		solutionPath = filepath.Join(root, filepath.FromSlash(solution))
+	}
+	data, err := os.ReadFile(solutionPath)
+	if err != nil {
+		return nil
+	}
+	text := string(data)
+	// GlobalSection(SolutionConfigurationPlatforms) = preSolution
+	// 	Debug|x64 = Debug|x64
+	// 	Release|x64 = Release|x64
+	// EndGlobalSection
+	const begin = "GlobalSection(SolutionConfigurationPlatforms)"
+	start := strings.Index(text, begin)
+	if start < 0 {
+		return nil
+	}
+	rest := text[start:]
+	end := strings.Index(rest, "EndGlobalSection")
+	if end < 0 {
+		return nil
+	}
+	section := rest[:end]
+	var configs []msbuildProjectConfiguration
+	seen := map[string]bool{}
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "\r"))
+		if line == "" || strings.HasPrefix(line, "GlobalSection") || strings.HasPrefix(line, "EndGlobal") {
+			continue
+		}
+		// Release|x64 = Release|x64
+		left := line
+		if eq := strings.Index(line, "="); eq >= 0 {
+			left = strings.TrimSpace(line[:eq])
+		}
+		if !strings.Contains(left, "|") {
+			continue
+		}
+		parts := strings.SplitN(left, "|", 2)
+		configuration := strings.TrimSpace(parts[0])
+		platform := strings.TrimSpace(parts[1])
 		if configuration == "" || platform == "" {
 			continue
 		}
@@ -2049,7 +2157,13 @@ func classifyVerificationFailure(step VerificationStep) (string, string) {
 	case strings.Contains(command, "ctest"):
 		return "test_failure", "The C++ test suite is failing. Fix the reported failures before finishing."
 	case strings.Contains(command, "cmake --build"), strings.Contains(command, "msbuild"), strings.Contains(command, "ninja"):
-		return "compile_error", "The C++ build failed. Fix the first compiler or linker error before retrying verification."
+		if looksLikeBuildConfigurationFailure(output, command) {
+			return "build_config", "The selected build configuration or platform is missing/incomplete (for example Debug is listed but only Release is maintained). Retry with a configured configuration rather than treating this as a code defect in the current patch."
+		}
+		if looksLikeBuildEnvironmentFailure(output) {
+			return "build_environment", "The build failed because of missing tools, SDK, platform toolset, or environment setup — not necessarily a defect in the current code change."
+		}
+		return "compile_error", "The C++ build failed. Confirm the failure is a real source/link error in the current change, not a missing Debug/Release configuration, then fix the first concrete compiler or linker error."
 	case strings.Contains(command, "npm test"), strings.Contains(command, "pnpm test"), strings.Contains(command, "yarn test"):
 		return "test_failure", "The test suite is failing. Fix the reported test failures before finishing."
 	default:
@@ -2064,8 +2178,12 @@ func repairStrategyForFailure(step VerificationStep) string {
 	switch step.FailureKind {
 	case "command_not_found":
 		return "The verification command could not start because a required tool was not found. Fix PATH, install the missing toolchain component, open the workspace in a developer shell, or disable automatic verification if the environment is intentionally incomplete."
+	case "build_config":
+		return "This looks like a build-configuration gap (for example only Release is maintained while verification chose Debug, or the solution configuration is invalid). Do not rewrite product code for it. Re-run verification with a configured Configuration|Platform (prefer Release|x64 when that is what the project maintains), or treat the failure as ambient risk if the current patch is unrelated."
+	case "build_environment":
+		return "This looks like a local toolchain/SDK/environment problem. Do not treat it as a logic bug in the current patch. Install/fix the toolset, open a Developer shell, or disclose the environment risk and finish the scoped edit."
 	case "compile_error":
-		return "Fix the compiler or build errors before anything else. Start with the first reported error, keep the change set minimal, and rerun verification after the code builds again."
+		return "Fix the compiler or build errors before anything else only when the first error clearly names sources in the current change. If the failure is only a missing Debug/Release configuration or an unrelated project, disclose ambient risk instead of expanding the repair."
 	case "typecheck_error":
 		return "Fix the reported type errors first. Avoid broader refactors until the typechecker passes, then rerun verification."
 	case "lint_error":
@@ -2077,6 +2195,81 @@ func repairStrategyForFailure(step VerificationStep) string {
 	default:
 		return "Start from the first concrete verification error and fix the smallest blocking issue before rerunning verification."
 	}
+}
+
+// looksLikeBuildConfigurationFailure detects MSBuild/CMake failures caused by
+// choosing a configuration/platform that the project does not actually maintain
+// (common when Debug is listed but only Release is wired).
+func looksLikeBuildConfigurationFailure(output string, command string) bool {
+	if containsAny(output,
+		"msb4126",
+		"msb4121",
+		"msb8013",
+		"the specified solution configuration",
+		"solution configuration is invalid",
+		"not a valid configuration",
+		"not a valid platform",
+		"configuration is not valid",
+		"platform is not valid",
+		"project not selected to build for this solution configuration",
+		"the project file does not exist for the configuration",
+		"cannot find the configuration",
+		"unknown configuration type",
+		"unknown configuration",
+		"unknown platform",
+		"invalid configuration",
+		"invalid platform",
+		"was not found in the project file",
+	) {
+		return true
+	}
+	// Command requested Debug while the log only complains about configuration
+	// selection (not C/C++ source diagnostics).
+	if strings.Contains(command, "configuration=debug") || strings.Contains(command, "/p:configuration=debug") {
+		if containsAny(output, "configuration", "platform", "msb41", "msb80") &&
+			!looksLikeMSVCSourceCompileOrLinkError(output) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeBuildEnvironmentFailure(output string) bool {
+	if looksLikeMSVCSourceCompileOrLinkError(output) {
+		return false
+	}
+	return containsAny(output,
+		"msb8020", // Platform toolset not found
+		"msb8036", // Windows SDK version not found
+		"msb8085",
+		"platform toolset",
+		"the windows sdk version",
+		"windows sdk version",
+		"is not installed",
+		"cannot open include file: 'windows.h'",
+		"cannot open include file: \"windows.h\"",
+		"vcvarsall",
+		"developer command prompt",
+		"no cl.exe",
+		"unable to locate cl.exe",
+		"could not find cl.exe",
+	)
+}
+
+func looksLikeMSVCSourceCompileOrLinkError(output string) bool {
+	return containsAny(output,
+		"error c2",
+		"error c1",
+		"error c4",
+		"error c6",
+		"error c7",
+		"error c8",
+		"error c9",
+		"error lnk",
+		": error c",
+		": fatal error c",
+		"fatal error c",
+	)
 }
 
 func looksLikeGoCompileFailure(output string) bool {
