@@ -2827,7 +2827,7 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"Permission prompts use the same keys: y allows once, a allows for the current session, n denies, and Esc cancels.",
 		"Diff preview and automatic verification use the same shape: y runs once, a enables the matching session auto-action, n skips, and Esc cancels.",
 		"Shell, write, and git approvals are tracked separately for the current session.",
-		"run_shell to modify workspace files",
+		"run_shell cannot perform manual workspace file writes",
 		"/status to inspect the current session approval state",
 		"/config to inspect effective settings",
 		"git actions",
