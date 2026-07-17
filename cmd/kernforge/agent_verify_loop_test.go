@@ -4236,12 +4236,21 @@ func TestAgentStopsAfterRepeatedIdenticalToolCallsContinueAfterRecoveryTurn(t *t
 		Store:     store,
 	}
 
-	_, err := agent.Reply(context.Background(), "inspect the workspace")
-	if err == nil {
-		t.Fatalf("expected repeated identical tool calls to stop the loop")
+	reply, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(err.Error(), "repeated identical tool calls") {
-		t.Fatalf("unexpected error: %v", err)
+	// Repeated identical tool calls must escalate to a user recovery card (the
+	// bounded-loop / escalate-to-user invariant), not churn on and not return a
+	// bare error the caller might surface raw.
+	if !strings.Contains(reply, "repeating the same tool calls") &&
+		!strings.Contains(reply, "같은 도구 호출") &&
+		!strings.Contains(reply, "Choose") &&
+		!strings.Contains(reply, "다음 단계") {
+		t.Fatalf("expected repeated tool-call escalation reply, got %q", reply)
+	}
+	if session.PendingHarnessBlockedRecovery == nil || session.PendingHarnessBlockedRecovery.Cause != harnessRecoveryCauseRepeatedToolCalls {
+		t.Fatalf("expected pending repeated-tool-call recovery, got %#v", session.PendingHarnessBlockedRecovery)
 	}
 	if len(provider.requests) != 5 {
 		t.Fatalf("expected abort on fifth repeated tool-call turn, got %d requests", len(provider.requests))
@@ -5478,15 +5487,21 @@ func TestAgentReportsTokenLimitAfterRepeatedLengthStop(t *testing.T) {
 		Store:     store,
 	}
 
-	_, err := agent.Reply(context.Background(), "inspect the workspace")
-	if err == nil {
-		t.Fatalf("expected token limit error")
+	reply, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(err.Error(), "token limit") {
-		t.Fatalf("unexpected error: %v", err)
+	// A repeated output-length stop leaves no usable model text, so the loop must
+	// escalate to a user recovery card (with the stop reason) instead of returning
+	// a bare error the caller might surface raw.
+	if !strings.Contains(reply, "stop_reason=length") {
+		t.Fatalf("expected stop reason in length-stop escalation reply, got %q", reply)
 	}
-	if !strings.Contains(err.Error(), "stop_reason=length") {
-		t.Fatalf("expected stop_reason in error, got %v", err)
+	if !strings.Contains(reply, "length limit") && !strings.Contains(reply, "길이 제한") {
+		t.Fatalf("expected length-limit escalation reply, got %q", reply)
+	}
+	if session.PendingHarnessBlockedRecovery == nil || session.PendingHarnessBlockedRecovery.Cause != harnessRecoveryCauseLengthStop {
+		t.Fatalf("expected pending length-stop recovery, got %#v", session.PendingHarnessBlockedRecovery)
 	}
 	if session.LastRecoveryDecision == nil || session.LastRecoveryDecision.Kind != RecoveryKindBlocked {
 		t.Fatalf("expected blocked recovery decision after repeated length stop, got %#v", session.LastRecoveryDecision)
@@ -8809,7 +8824,7 @@ func TestAgentRetriesFinalReplyThatBlamesSkippedVerificationOnToolAvailability(t
 	}
 	approvalProgressCount := 0
 	for _, message := range progress {
-		if strings.Contains(message, "Requesting background verification approval") || strings.Contains(message, "백그라운드 검증 승인 확인") {
+		if strings.Contains(message, "Asking to run background verification") || strings.Contains(message, "백그라운드 검증 승인 요청") {
 			approvalProgressCount++
 		}
 	}

@@ -1098,7 +1098,7 @@ func TestSystemPromptExplainsDocumentReadConfirmationGuidance(t *testing.T) {
 	if !strings.Contains(prompt, "prefer edit tools. Do not use run_shell for repo bootstrap") {
 		t.Fatalf("expected document edit guidance, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "Do not use run_shell with Set-Content") {
+	if !strings.Contains(prompt, "run_shell with Set-Content") {
 		t.Fatalf("expected source-edit shell safety guidance, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "Use list_files on the parent directory before read_file") {

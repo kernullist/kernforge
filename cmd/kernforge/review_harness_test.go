@@ -5902,7 +5902,7 @@ func TestReviewProposedEditKeepsKoreanAfterWrappedInternalFeedback(t *testing.T)
 	}
 	joinedProgress := strings.Join(progress, "\n")
 	for _, want := range []string{
-		"자동 쓰기 전 리뷰를 실행합니다.",
+		"쓰기 전 안전 검사를 실행합니다",
 		"자동 쓰기 전 리뷰가 완료되었습니다.",
 		"최종 검토 결과:",
 	} {

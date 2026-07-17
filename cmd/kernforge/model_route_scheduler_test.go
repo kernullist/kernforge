@@ -372,6 +372,15 @@ func TestModelRouteSchedulerDynamicLimitResize(t *testing.T) {
 }
 
 func TestModelRoutePermitHeldUntilProviderReturnsAfterCallerTimeout(t *testing.T) {
+	// This test verifies the permit stays held while the provider call is still
+	// in flight, so the watchdog that reclaims a slot from a provider that ignores
+	// cancellation must not fire during the test window. Pin it well above the
+	// test's wall-clock; the default (500ms) is short enough that CPU contention
+	// during a full parallel suite can elapse past it and flake this test.
+	prevReleaseTimeout := modelRouteCancelSlotReleaseTimeout
+	modelRouteCancelSlotReleaseTimeout = 30 * time.Second
+	defer func() { modelRouteCancelSlotReleaseTimeout = prevReleaseTimeout }()
+
 	scheduler := NewModelRouteScheduler()
 	client := &contextIgnoringProviderClient{
 		name:    "ollama",
