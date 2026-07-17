@@ -6075,6 +6075,7 @@ func TestPreWriteVisibleSummaryShowsSkippedModelReviewAndOriginalProposal(t *tes
 		SkipReason:              modelReviewSkipByUser,
 		OriginalMainProposal:    "Proposed diff:\ndiff --git a/main.cpp b/main.cpp\n+return 1;",
 		OriginalMainProposalRef: "C:/tmp/review/original_main_proposal.md",
+		ArtifactRefs:            []string{"C:/tmp/review/review.md"},
 	}
 
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
@@ -6087,6 +6088,7 @@ func TestPreWriteVisibleSummaryShowsSkippedModelReviewAndOriginalProposal(t *tes
 		"Summary: Proposed diff:",
 		"Review items:",
 		"No key findings.",
+		"Gate record: C:/tmp/review/review.md",
 	} {
 		if !strings.Contains(visible, want) {
 			t.Fatalf("expected visible summary to contain %q, got:\n%s", want, visible)
@@ -6095,8 +6097,62 @@ func TestPreWriteVisibleSummaryShowsSkippedModelReviewAndOriginalProposal(t *tes
 	if strings.Contains(visible, "Final review result:") {
 		t.Fatalf("skipped model review summary should not look like a completed model review, got:\n%s", visible)
 	}
+	if strings.Contains(visible, "Review report:") {
+		t.Fatalf("user-skipped model review must not label the audit file as a Review report, got:\n%s", visible)
+	}
 	if strings.Count(visible, "C:/tmp/review/original_main_proposal.md") != 1 {
 		t.Fatalf("original proposal ref should be shown once, got:\n%s", visible)
+	}
+}
+
+// Single-model auto-skip never ran a model review. The operator-facing summary
+// must not look like a review report was produced: no original_main_proposal
+// path and no "Review report"/"Gate record" artifact line.
+func TestPreWriteVisibleSummarySingleModelRouteOmitsReviewReportArtifacts(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+		Result: ReviewResult{
+			Summary: "Deterministic checks allowed diff preview; model review skipped on single-model route.",
+		},
+		ModelReviewConsent:      modelReviewConsentAsk,
+		ConsentSource:           "single_model_route",
+		SkipReason:              modelReviewSkipSingleModelRoute,
+		OriginalMainProposal:    "Proposed diff:\ndiff --git a/main.cpp b/main.cpp\n+return 1;",
+		OriginalMainProposalRef: "C:/tmp/review/original_main_proposal.md",
+		ArtifactRefs:            []string{"C:/tmp/review/review.md"},
+	}
+
+	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
+	for _, want := range []string{
+		"Review result",
+		"Model review: skipped (skipped_single_model_route, source=single_model_route)",
+		"preview without model review",
+		"Review items:",
+		"No key findings.",
+	} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("expected single-model skip summary to contain %q, got:\n%s", want, visible)
+		}
+	}
+	for _, banned := range []string{
+		"Review report:",
+		"Gate record:",
+		"리뷰 보고서:",
+		"게이트 기록:",
+		"Original main-model proposal",
+		"원본 메인 모델 제안",
+		"C:/tmp/review/review.md",
+		"C:/tmp/review/original_main_proposal.md",
+	} {
+		if strings.Contains(visible, banned) {
+			t.Fatalf("single-model skip summary must not contain %q, got:\n%s", banned, visible)
+		}
+	}
+	if suffix := preWriteReviewReportProgressSuffix(Config{AutoLocale: boolPtr(false)}, run); suffix != "" {
+		t.Fatalf("single-model skip progress must omit report suffix, got %q", suffix)
 	}
 }
 

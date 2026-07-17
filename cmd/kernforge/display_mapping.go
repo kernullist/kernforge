@@ -608,6 +608,11 @@ func humanizeModelReviewSkipReason(value string, korean bool) string {
 			return "이번 턴의 모델 리뷰 한도를 초과해 자동 검사만 수행했습니다."
 		}
 		return "The model-review budget for this turn was used up; only automated checks ran."
+	case modelReviewSkipSingleModelRoute:
+		if korean {
+			return "독립 리뷰어가 없는 단일 모델 라우트라 암시적 모델 리뷰를 생략하고 결정적 검사와 diff preview만 수행했습니다."
+		}
+		return "Implicit model review was skipped on the single-model route; only deterministic checks and the diff preview ran."
 	default:
 		if korean {
 			return "모델 리뷰를 건너뛰고 자동 검사만 수행했습니다."

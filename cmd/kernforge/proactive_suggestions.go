@@ -244,6 +244,11 @@ func BuildProactiveSuggestions(snapshot SituationSnapshot, src ProactiveSources)
 	}
 	if event, ok := latestProviderRateLimitEvent(src.Session); ok {
 		model := firstNonBlankString(event.Entities["model"], event.Entities["session_model"])
+		if src.Session != nil {
+			// Prefer the live session model so the suggestion never blames a
+			// previously rate-limited route after the operator already switched.
+			model = firstNonBlankString(src.Session.Model, model)
+		}
 		shard := event.Entities["shard"]
 		reason := "최근 provider rate-limit/timeout event가 현재 workflow를 막았습니다."
 		if model != "" {
@@ -1031,6 +1036,7 @@ func latestProviderRateLimitEvent(sess *Session) (ConversationEvent, bool) {
 	if sess == nil {
 		return ConversationEvent{}, false
 	}
+	currentModel := normalizeSuggestionModelID(sess.Model)
 	for i := len(sess.ConversationEvents) - 1; i >= 0; i-- {
 		event := sess.ConversationEvents[i]
 		if event.Kind != conversationEventKindProviderError {
@@ -1038,11 +1044,48 @@ func latestProviderRateLimitEvent(sess *Session) (ConversationEvent, bool) {
 		}
 		category := strings.ToLower(strings.TrimSpace(event.Entities["category"]))
 		code := strings.TrimSpace(event.Entities["code"])
-		if category == "rate_limit" || category == "timeout" || code == "429" || strings.Contains(strings.ToLower(event.Summary), "too many requests") {
-			return event, true
+		if category != "rate_limit" && category != "timeout" && code != "429" && !strings.Contains(strings.ToLower(event.Summary), "too many requests") {
+			continue
 		}
+		eventModel := normalizeSuggestionModelID(firstNonBlankString(event.Entities["model"], event.Entities["session_model"]))
+		// After /model switch, rate-limits for the previous route are historical
+		// noise. Only surface limits that still apply to the active session model.
+		if currentModel != "" && eventModel != "" && currentModel != eventModel {
+			continue
+		}
+		// A later successful turn/tool/verification means the rate-limit is no
+		// longer the active workflow blocker (e.g. compile failure after recovery).
+		if providerRateLimitEventSuperseded(sess, i) {
+			continue
+		}
+		return event, true
 	}
 	return ConversationEvent{}, false
+}
+
+func normalizeSuggestionModelID(model string) string {
+	return strings.ToLower(strings.TrimSpace(model))
+}
+
+// providerRateLimitEventSuperseded reports whether work after a provider
+// rate-limit/timeout event already continued successfully, so the stale event
+// must not drive a "switch model" suggestion for an unrelated later failure.
+func providerRateLimitEventSuperseded(sess *Session, rateLimitIndex int) bool {
+	if sess == nil || rateLimitIndex < 0 || rateLimitIndex >= len(sess.ConversationEvents) {
+		return false
+	}
+	for j := rateLimitIndex + 1; j < len(sess.ConversationEvents); j++ {
+		switch sess.ConversationEvents[j].Kind {
+		case conversationEventKindAssistantReply,
+			conversationEventKindToolCall,
+			conversationEventKindToolResult,
+			conversationEventKindPatchApplyBegin,
+			conversationEventKindPatchApplyEnd,
+			conversationEventKindVerification:
+			return true
+		}
+	}
+	return false
 }
 
 func latestFailedVerification(sess *Session) string {

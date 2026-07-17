@@ -734,7 +734,10 @@ func writeReviewRunArtifacts(root string, run *ReviewRun) error {
 		return err
 	}
 	originalProposalRef := strings.TrimSpace(run.OriginalMainProposalRef)
-	if originalProposalRef == "" {
+	// Do not materialize original_main_proposal.md for single-model auto-skip:
+	// no model review ran and no consent UX needs the path. In-memory proposal
+	// text remains on the run for structured audit JSON when useful.
+	if originalProposalRef == "" && !reviewRunSuppressesVisibleOriginalMainProposal(*run) {
 		ref, err := writeReviewOriginalMainProposalArtifact(root, run)
 		if err != nil {
 			return err
@@ -958,7 +961,10 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.ModelPlan = planReviewModels(rt.cfg, run)
 	run.SingleModelPolicy = buildSingleModelReviewPolicy(run, reviewRuntimeHasDistinctCrossReviewer(rt))
 	run.Findings = append(run.Findings, deterministicReviewFindings(rt, run)...)
-	if strings.TrimSpace(run.OriginalMainProposal) != "" {
+	// Compact single-model auto pipelines skip implicit model review without a
+	// consent prompt, so the "original main proposal" file is not needed for
+	// operator consent UX. Keep the in-memory proposal text for gate/audit JSON.
+	if strings.TrimSpace(run.OriginalMainProposal) != "" && !compactSingleModel {
 		ref, err := writeReviewOriginalMainProposalArtifact(root, &run)
 		if err != nil {
 			return run, err

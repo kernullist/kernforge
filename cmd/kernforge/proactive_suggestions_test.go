@@ -41,6 +41,115 @@ func TestProactiveProviderRateLimitSuggestionIsShownOnce(t *testing.T) {
 	}
 }
 
+// After /model switch, a historical rate-limit for the previous model must not
+// blame the active route or suggest switching models for an unrelated failure
+// (e.g. compile_error verification) under the new model.
+func TestProactiveRateLimitSuggestionIgnoresStalePreviousModel(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "z-ai/glm-5.2", "", "default")
+	session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindProviderError,
+		Severity: conversationSeverityError,
+		Summary:  "provider error: 429 Too Many Requests",
+		Entities: map[string]string{
+			"category":      "rate_limit",
+			"code":          "429",
+			"model":         "moonshotai/kimi-k3",
+			"session_model": "moonshotai/kimi-k3",
+		},
+	})
+	// Workflow continued under the new model after the operator switched.
+	session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindAssistantReply,
+		Severity: conversationSeverityInfo,
+		Summary:  "edit proposal under glm-5.2",
+	})
+	session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindVerification,
+		Severity: conversationSeverityError,
+		Summary:  "msbuild compile_error",
+	})
+
+	items := BuildProactiveSuggestions(SituationSnapshot{}, ProactiveSources{Session: session})
+	for _, item := range items {
+		if item.Type == "retry_or_switch_model" {
+			t.Fatalf("stale previous-model rate-limit must not produce retry_or_switch_model, got %#v", item)
+		}
+	}
+	if event, ok := latestProviderRateLimitEvent(session); ok {
+		t.Fatalf("latestProviderRateLimitEvent must ignore stale previous-model event, got %#v", event)
+	}
+}
+
+// A rate-limit that was recovered from (tools/assistant continued) must not
+// remain the default "Suggested next step" for a later unrelated failure.
+func TestProactiveRateLimitSuggestionExpiresAfterRecovery(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "z-ai/glm-5.2", "", "default")
+	session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindProviderError,
+		Severity: conversationSeverityError,
+		Summary:  "provider error: 429 Too Many Requests",
+		Entities: map[string]string{
+			"category": "rate_limit",
+			"code":     "429",
+			"model":    "z-ai/glm-5.2",
+		},
+	})
+	session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindToolCall,
+		Severity: conversationSeverityInfo,
+		Summary:  "apply_patch",
+	})
+	session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindVerification,
+		Severity: conversationSeverityError,
+		Summary:  "compile_error outside patch scope",
+	})
+
+	if event, ok := latestProviderRateLimitEvent(session); ok {
+		t.Fatalf("recovered rate-limit must not stay active, got %#v", event)
+	}
+	items := BuildProactiveSuggestions(SituationSnapshot{}, ProactiveSources{Session: session})
+	for _, item := range items {
+		if item.Type == "retry_or_switch_model" {
+			t.Fatalf("recovered rate-limit must not produce retry_or_switch_model, got %#v", item)
+		}
+	}
+}
+
+// An unrecovered rate-limit for the active model still surfaces the suggestion.
+func TestProactiveRateLimitSuggestionStillSurfacesForActiveModel(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "z-ai/glm-5.2", "", "default")
+	session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindProviderError,
+		Severity: conversationSeverityError,
+		Summary:  "provider error: 429 Too Many Requests",
+		Entities: map[string]string{
+			"category": "rate_limit",
+			"code":     "429",
+			"model":    "z-ai/glm-5.2",
+		},
+	})
+	event, ok := latestProviderRateLimitEvent(session)
+	if !ok {
+		t.Fatalf("expected active-model rate-limit event")
+	}
+	if got := event.Entities["model"]; got != "z-ai/glm-5.2" {
+		t.Fatalf("expected glm model on event, got %q", got)
+	}
+	items := BuildProactiveSuggestions(SituationSnapshot{}, ProactiveSources{Session: session})
+	if !hasSuggestionType(items, "retry_or_switch_model") {
+		t.Fatalf("expected retry_or_switch_model for unrecovered active-model limit, got %#v", items)
+	}
+	for _, item := range items {
+		if item.Type == "retry_or_switch_model" && !strings.Contains(item.Reason, "z-ai/glm-5.2") {
+			t.Fatalf("suggestion reason must name the active model, got %#v", item)
+		}
+	}
+}
+
 func TestVerificationGapSuggestionFromChangedPaths(t *testing.T) {
 	snapshot := SituationSnapshot{
 		ChangedPaths:        []string{"driver/ioctl_dispatch.cpp", "include/ioctl_dispatch.h"},

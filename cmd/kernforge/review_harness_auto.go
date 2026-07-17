@@ -2478,8 +2478,19 @@ func preWriteReviewReportProgressSuffix(cfg Config, run ReviewRun) string {
 	if len(run.ArtifactRefs) == 0 {
 		return ""
 	}
+	// Single-model auto-skip never ran a model review; omit a "report" path so
+	// progress does not look like a completed model-review report was produced.
+	if strings.TrimSpace(run.SkipReason) == modelReviewSkipSingleModelRoute {
+		return ""
+	}
 	if reviewRunPrefersKorean(cfg, run) {
+		if reviewRunModelReviewSkipped(run) {
+			return " 게이트 기록: " + run.ArtifactRefs[0]
+		}
 		return " 보고서: " + run.ArtifactRefs[0]
+	}
+	if reviewRunModelReviewSkipped(run) {
+		return " gate record: " + run.ArtifactRefs[0]
 	}
 	return " report: " + run.ArtifactRefs[0]
 }
@@ -2563,9 +2574,14 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 			}
 		}
 	}
-	if original := formatOriginalMainProposalReviewRef(cfg, run); original != "" {
-		b.WriteString("\n")
-		b.WriteString(original)
+	// Single-model auto-skip never prompted for consent, so the original
+	// proposal path is not an "awaiting review" artifact. Diff preview is the
+	// operator-facing surface; keep the proposal only for user-driven skips.
+	if !reviewRunSuppressesVisibleOriginalMainProposal(run) {
+		if original := formatOriginalMainProposalReviewRef(cfg, run); original != "" {
+			b.WriteString("\n")
+			b.WriteString(original)
+		}
 	}
 	if len(run.RepairFindings) > 0 {
 		if korean {
@@ -2607,14 +2623,48 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 			writePreWriteVisibleFinding(&b, finding, korean, blockingIDs[finding.ID])
 		}
 	}
-	if len(run.ArtifactRefs) > 0 {
-		if korean {
-			fmt.Fprintf(&b, "\n\n리뷰 보고서: %s", run.ArtifactRefs[0])
-		} else {
-			fmt.Fprintf(&b, "\n\nReview report: %s", run.ArtifactRefs[0])
-		}
+	if artifactLine := formatPreWriteVisibleArtifactLine(run, korean); artifactLine != "" {
+		b.WriteString("\n\n")
+		b.WriteString(artifactLine)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// reviewRunSuppressesVisibleOriginalMainProposal is true when the original
+// main-model proposal path would mislead operators into thinking a model
+// review ran or is still pending. Single-model auto-skip is the main case.
+func reviewRunSuppressesVisibleOriginalMainProposal(run ReviewRun) bool {
+	return strings.TrimSpace(run.SkipReason) == modelReviewSkipSingleModelRoute
+}
+
+// formatPreWriteVisibleArtifactLine returns an honest operator-facing artifact
+// line for the pre-write summary. When model review was skipped, do not call
+// the audit file a "review report" — no reviewer model produced it. Single-
+// model auto-skip omits the path entirely; deterministic checks + diff preview
+// are the gate, and the on-disk audit remains available under .kernforge/reviews.
+func formatPreWriteVisibleArtifactLine(run ReviewRun, korean bool) string {
+	if len(run.ArtifactRefs) == 0 {
+		return ""
+	}
+	path := strings.TrimSpace(run.ArtifactRefs[0])
+	if path == "" {
+		return ""
+	}
+	if !reviewRunModelReviewSkipped(run) {
+		if korean {
+			return "리뷰 보고서: " + path
+		}
+		return "Review report: " + path
+	}
+	// Model review did not run. Single-model auto-skip keeps audit artifacts
+	// internal so the summary does not look like a completed model review.
+	if strings.TrimSpace(run.SkipReason) == modelReviewSkipSingleModelRoute {
+		return ""
+	}
+	if korean {
+		return "게이트 기록: " + path
+	}
+	return "Gate record: " + path
 }
 
 func preWriteUnresolvedRepairIDs(run ReviewRun) map[string]bool {
