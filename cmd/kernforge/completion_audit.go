@@ -540,10 +540,19 @@ func completionAuditEditLoop(session *Session, artifact *CompletionAuditArtifact
 		requirement = "Edit loop has remaining risks"
 		evidence = "Remaining risks: " + strings.Join(limitStrings(loop.RemainingRisks, 4), " | ")
 	}
-	if strings.EqualFold(loop.VerificationStatus, string(VerificationFailed)) {
+	if strings.EqualFold(loop.VerificationStatus, string(VerificationFailed)) ||
+		strings.EqualFold(loop.VerificationStatus, "error") {
 		status = completionAuditStatusBlocked
 		requirement = "Edit loop verification failed"
 		evidence = "Edit loop verification failed: " + valueOrDefault(loop.VerificationSummary, loop.VerificationBundleID)
+	} else if strings.EqualFold(loop.VerificationStatus, "ambient_failed") ||
+		strings.EqualFold(loop.VerificationStatus, "out_of_scope") {
+		// Ambient compile/test noise outside the patch must not fail the audit.
+		if status == completionAuditStatusPassed {
+			status = completionAuditStatusWarning
+		}
+		requirement = "Edit loop recorded ambient verification risk outside the patch"
+		evidence = "Ambient verification risk: " + valueOrDefault(loop.VerificationSummary, loop.VerificationBundleID)
 	}
 	completionAuditAddItem(artifact, CompletionAuditItem{
 		Requirement: requirement,

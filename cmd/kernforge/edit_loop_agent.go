@@ -182,6 +182,35 @@ func (a *Agent) recordEditLoopRisk(summary string, detail string) {
 	})
 }
 
+// recordEditLoopAmbientVerification records a verification failure that is not
+// attributable to the current patch. It keeps completion unblocked (status is
+// not "failed") while preserving the ambient risk for the final answer.
+func (a *Agent) recordEditLoopAmbientVerification(report VerificationReport, decision verificationRepairScopeDecision) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	summary := compactPromptSection(firstNonBlankString(report.FailureSummary(), report.SummaryLine(), "verification failed outside patch scope"), 280)
+	detail := strings.Join([]string{decision.Reason, decision.Anchor}, "\n")
+	a.Session.RecordEditLoopEvent(editLoopGoal(a.Session), EditLoopEvent{
+		Kind:         "risk",
+		Source:       "controller",
+		ToolName:     "verify",
+		OwnerNodeID:  currentExecutorFocusNode(a.Session),
+		Summary:      "Ambient verification failure outside patch scope: " + summary,
+		Detail:       compactPromptSection(detail, 500),
+		Status:       "open",
+		ChangedPaths: normalizeTaskStateList(decision.ChangedPaths, 32),
+	})
+	if loop := a.Session.ActiveEditLoop; loop != nil {
+		// Do not leave VerificationStatus=failed: that hard-blocks completion
+		// audit even when the failure is ambient to the current request.
+		loop.VerificationStatus = "ambient_failed"
+		loop.VerificationSummary = summary
+		loop.RemainingRisks = appendTaskStateItem(loop.RemainingRisks, "Ambient verification failure outside patch scope: "+summary, 12)
+		loop.Normalize()
+	}
+}
+
 func (a *Agent) recordEditLoopFinalReview(verdict string, feedback string) {
 	if a == nil || a.Session == nil || a.Session.ActiveEditLoop == nil {
 		return
@@ -229,7 +258,9 @@ func (a *Agent) finalizeEditLoopOnReturn(reply string, unresolvedVerification bo
 
 func editLoopVerificationStatusUnresolved(status string) bool {
 	switch strings.TrimSpace(strings.ToLower(status)) {
-	case "", "passed":
+	case "", "passed", "ambient_failed", "out_of_scope":
+		// ambient_failed / out_of_scope mean the patch itself is not the broken
+		// unit under repair; remaining risk is disclosed separately.
 		return false
 	default:
 		return true

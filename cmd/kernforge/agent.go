@@ -4649,18 +4649,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if !autoVerifyDisabledAfterPrompt {
 						scopeDecision := a.verificationFailureRepairScope(report)
 						if !scopeDecision.ShouldRepair {
+							// Ambient / out-of-scope failure: the user request is not
+							// a hard failure. Stop expanding repair, disclose risk, and
+							// keep the gate/edit-loop from treating compile noise as a
+							// blocked completion.
 							unresolvedVerification = false
 							syncRuntimeFlags()
 							verificationOutOfScopeThisTurn = true
 							verificationOutOfScopeFinalOnly = true
-							a.recordEditLoopRisk("Automatic verification failed outside the current patch scope.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"))
+							a.recordEditLoopAmbientVerification(report, scopeDecision)
 							if a.Session.TaskState != nil {
-								a.Session.TaskState.RecordEvent("verification_terminal", strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode), "verify", "Automatic verification failed outside the current patch scope; switching to final-answer-only.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"), "blocked", true)
+								a.Session.TaskState.RecordEvent("verification_terminal", strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode), "verify", "Automatic verification failed outside the current patch scope; disclose as ambient risk and complete without expanding repair.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"), "risk", true)
 							}
 							a.Session.AddMessage(internalUserMessage(automaticVerificationOutOfScopeMessage(a.Config, report, scopeDecision)))
 							if a.EmitProgress != nil {
-								a.EmitProgress(localizedText(a.Config, "Verification failure is outside the current patch scope; stopping edit expansion and requiring disclosure.", "검증 실패가 현재 patch scope 밖입니다. 수정 범위 확장을 중단하고 보고하도록 전환합니다."))
-								a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "Verification failed outside the patch scope. The model should summarize the edit and disclose the external blocker.", "검증 실패가 patch scope 밖입니다. 모델이 수정 내용을 요약하고 외부 blocker를 밝혀야 합니다.")
+								a.EmitProgress(localizedText(a.Config, "Verification failure is outside the current patch scope; disclosing as ambient risk and finishing without expanding repair.", "검증 실패가 현재 patch scope 밖입니다. 환경성 risk로 기록하고 수리 범위를 넓히지 않은 채 마무리합니다."))
+								a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "Verification failed outside the patch scope. Summarize the edit and disclose the ambient verification risk; do not treat the user request as failed.", "검증이 patch scope 밖에서 실패했습니다. 수정 내용을 요약하고 환경성 검증 risk를 밝히세요. 사용자 요청 자체는 실패로 취급하지 마세요.")
 							}
 						} else {
 							failureSummary := strings.TrimSpace(report.FailureSummary())
@@ -6238,12 +6242,12 @@ func (a *Agent) ensureOutOfScopeVerificationFinalDisclosure(reply string) string
 	}
 	var note string
 	if korean {
-		note = "검증 참고: 자동 검증은 현재 patch scope 밖의 실패로 종료되어, 이번 수정 범위에서는 추가 수리를 진행하지 않았습니다."
+		note = "검증 참고: 자동 검증이 현재 patch scope 밖에서 실패했지만, 이번 요청/수정 자체는 실패로 취급하지 않았습니다. 환경성 risk로만 기록하고 추가 수리는 하지 않았습니다."
 		if summary != "" {
 			note += "\n" + compactPromptSection(summary, 500)
 		}
 	} else {
-		note = "Verification note: automatic verification failed outside the current patch scope, so no additional repair was made in this change scope."
+		note = "Verification note: automatic verification failed outside the current patch scope. The user request was not treated as failed; the ambient risk was disclosed and no additional repair was made in this change scope."
 		if summary != "" {
 			note += "\n" + compactPromptSection(summary, 500)
 		}

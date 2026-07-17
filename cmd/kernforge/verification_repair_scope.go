@@ -60,6 +60,8 @@ func verificationRepairChangedPaths(a *Agent, report VerificationReport) []strin
 func verificationStepIsPatchScoped(step VerificationStep, changed []string) bool {
 	changed = normalizeTaskStateList(changed, 32)
 	if len(changed) == 0 {
+		// No patch scope is known, so any failure is treated as in-scope for
+		// repair decisions (full-workspace /verify without an active patch).
 		return true
 	}
 	scope := strings.TrimSpace(strings.ToLower(step.Scope))
@@ -77,6 +79,25 @@ func verificationStepIsPatchScoped(step VerificationStep, changed []string) bool
 		return true
 	}
 	return verificationTextMentionsChangedPath(verificationFailureEvidenceText(step.Output), changed)
+}
+
+// verificationFailureTouchesChangedPaths reports whether any failed step is
+// attributable to the current patch. When changed paths are empty the failure
+// is treated as in-scope (same as verificationStepIsPatchScoped).
+func verificationFailureTouchesChangedPaths(report VerificationReport, changed []string) bool {
+	if !report.HasFailures() {
+		return false
+	}
+	changed = normalizeTaskStateList(changed, 32)
+	for _, step := range report.Steps {
+		if step.Status != VerificationFailed {
+			continue
+		}
+		if verificationStepIsPatchScoped(step, changed) {
+			return true
+		}
+	}
+	return false
 }
 
 func verificationFailureEvidenceText(output string) string {
@@ -119,8 +140,8 @@ func automaticVerificationOutOfScopeMessage(cfg Config, report VerificationRepor
 	var lines []string
 	lines = append(lines, localizedText(
 		cfg,
-		"Automatic verification failed, but the failure is not clearly tied to the current patch scope.",
-		"자동 검증이 실패했지만, 실패 근거가 현재 patch scope와 명확히 연결되어 있지 않습니다.",
+		"Automatic verification failed, but the failure is not clearly tied to the current patch scope. Do not treat the user request as failed.",
+		"자동 검증이 실패했지만, 실패 근거가 현재 patch scope와 명확히 연결되어 있지 않습니다. 사용자 요청 자체는 실패로 취급하지 마십시오.",
 	))
 	if len(decision.ChangedPaths) > 0 {
 		lines = append(lines, localizedText(cfg, "Current patch scope: ", "현재 patch scope: ")+strings.Join(limitStrings(decision.ChangedPaths, 8), ", "))
@@ -137,8 +158,8 @@ func automaticVerificationOutOfScopeMessage(cfg Config, report VerificationRepor
 	}
 	lines = append(lines, localizedText(
 		cfg,
-		"Do not broaden the repair into unrelated build files, project settings, or other source paths. Stop editing unless a failure line directly references the current patch. In the final answer, disclose the verification failure as an external or ambient blocker/risk.",
-		"관련 없는 빌드 파일, 프로젝트 설정, 다른 소스 경로로 수정 범위를 넓히지 마십시오. 실패 라인이 현재 patch를 직접 가리키지 않으면 편집을 중단하고, 최종 답변에서 이 검증 실패를 외부/환경성 blocker 또는 risk로 명시하십시오.",
+		"Do not broaden the repair into unrelated build files, project settings, or other source paths. Stop editing unless a failure line directly references the current patch. In the final answer, disclose this as ambient verification risk; the scoped edit may still complete successfully.",
+		"관련 없는 빌드 파일, 프로젝트 설정, 다른 소스 경로로 수정 범위를 넓히지 마십시오. 실패 라인이 현재 patch를 직접 가리키지 않으면 편집을 중단하고, 최종 답변에서 환경성 검증 risk로 명시하십시오. 범위 안 편집은 성공으로 마무리할 수 있습니다.",
 	))
 	return strings.Join(lines, "\n")
 }

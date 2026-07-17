@@ -853,16 +853,33 @@ func runtimeGateAttachVerification(session *Session, ledger *RuntimeGateLedger) 
 		return
 	}
 	if report.HasFailures() {
-		ledger.Blockers = append(ledger.Blockers, "latest verification failed: "+compactPromptSection(report.FailureSummary(), 240))
-		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
-			ID:             "verify",
-			Command:        "/verify --full",
-			Reason:         "latest verification has failures",
-			Safety:         "safe_local",
-			When:           "after fixing the failure",
-			ClientHint:     "Fix the failing command and rerun verification.",
-			ExpectedResult: "Latest verification passes before completion.",
-		})
+		// Failures that do not reference the current patch are ambient / pre-
+		// existing project risk (e.g. whole-solution compile noise). Disclose
+		// them as warnings so the operator request can still complete after a
+		// successful scoped edit. Failures that name the patch remain blockers.
+		if verificationFailureTouchesChangedPaths(report, ledger.ChangedPaths) {
+			ledger.Blockers = append(ledger.Blockers, "latest verification failed: "+compactPromptSection(report.FailureSummary(), 240))
+			ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+				ID:             "verify",
+				Command:        "/verify --full",
+				Reason:         "latest verification has failures tied to the current patch scope",
+				Safety:         "safe_local",
+				When:           "after fixing the failure",
+				ClientHint:     "Fix the failing command for the current patch and rerun verification.",
+				ExpectedResult: "Latest verification passes before completion.",
+			})
+		} else {
+			ledger.Warnings = append(ledger.Warnings, "latest verification has ambient failures outside the current patch scope: "+compactPromptSection(report.FailureSummary(), 240))
+			ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+				ID:             "verify",
+				Command:        "/verify --full",
+				Reason:         "ambient verification failure remains outside the current patch scope",
+				Safety:         "safe_local",
+				When:           "when you choose to investigate the ambient failure",
+				ClientHint:     "The current request completed without expanding repair into unrelated failures. Revisit /verify when ready to tackle the ambient break.",
+				ExpectedResult: "Ambient failure is fixed or accepted; patch-scoped work stays unblocked.",
+			})
+		}
 		return
 	}
 	if !completionAuditVerificationHasPassedStep(report) {

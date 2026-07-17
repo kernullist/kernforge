@@ -1917,17 +1917,34 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, flags ...bool) Outcome
 	}
 	verificationWasSkipped := a.Session.LastVerification != nil && a.Session.LastVerification.WasSkipped()
 	verificationHasFailures := a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures() && !verificationWasSkipped
+	// Ambient / out-of-scope verification failures (failure output does not
+	// name the current patch) must not hard-block request completion. They are
+	// disclosed as risk; only patch-scoped failures stay completion blockers
+	// when the final answer omits that state.
+	patchScopedVerificationFailures := false
+	if verificationHasFailures && a.Session.LastVerification != nil {
+		patchScopedVerificationFailures = verificationFailureTouchesChangedPaths(
+			*a.Session.LastVerification,
+			currentTurnPatchTransactionChangedPaths(a.Session),
+		)
+	}
 	if unresolvedVerification && verificationWasSkipped && !replyMentionsVerificationNotRun(reply) {
 		report.Findings = append(report.Findings, CodingHarnessFinding{
 			Severity: "blocker",
 			Title:    "Verification was not run disclosure missing",
 			Detail:   "The latest verification was skipped or declined, but the final answer does not clearly state that verification was not run.",
 		})
-	} else if (unresolvedVerification || verificationHasFailures) && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+	} else if (unresolvedVerification || patchScopedVerificationFailures) && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
 		report.Findings = append(report.Findings, CodingHarnessFinding{
 			Severity: "blocker",
 			Title:    "Unresolved verification failure",
-			Detail:   "The latest verification still has failures, but the final answer does not clearly state the blocker.",
+			Detail:   "The latest verification still has failures in the current patch scope, but the final answer does not clearly state the blocker.",
+		})
+	} else if verificationHasFailures && !patchScopedVerificationFailures && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) && !replyMentionsAmbientVerificationRisk(reply) {
+		report.Findings = append(report.Findings, CodingHarnessFinding{
+			Severity: "warning",
+			Title:    "Ambient verification failure not disclosed",
+			Detail:   "The latest verification failed outside the current patch scope. Mention that ambient risk in the final answer; do not treat it as a failed user request.",
 		})
 	}
 	if a.changesAreGeneratedDocumentArtifactsForTurn(codingHarnessSourcePrompt(a.Session)) && !sessionHasSuccessfulVerificationEvidence(a.Session) && !replyMentionsVerificationNotRun(reply) && !replyMentionsVerificationBlocker(reply) {
@@ -2685,11 +2702,36 @@ func replyMentionsVerificationNotRun(reply string) bool {
 	)
 }
 
+// replyMentionsAmbientVerificationRisk reports whether the final answer already
+// disclosed an out-of-scope / ambient verification failure (not a patch-scoped
+// hard failure). Used so ambient compile noise does not fail the harness.
+func replyMentionsAmbientVerificationRisk(reply string) bool {
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	return containsAny(lower,
+		"outside the current patch scope",
+		"outside the patch scope",
+		"out of scope",
+		"out-of-scope",
+		"ambient",
+		"patch scope 밖",
+		"scope 밖",
+		"외부/환경",
+		"환경성",
+		"추가 수리를 진행하지 않았",
+		"no additional repair was made",
+		"검증 참고",
+		"verification note",
+	)
+}
+
 func replyMentionsVerificationBlocker(reply string) bool {
 	lower := strings.ToLower(strings.TrimSpace(reply))
 	if containsAny(lower, "no known remaining blocker", "no remaining blocker", "no remaining blockers", "no known blockers") &&
 		!containsAny(lower, "verification failed", "tests failed", "build failed", "검증 실패", "테스트 실패", "빌드 실패") {
 		return false
+	}
+	if replyMentionsAmbientVerificationRisk(reply) {
+		return true
 	}
 	return containsAny(lower,
 		"verification failed",

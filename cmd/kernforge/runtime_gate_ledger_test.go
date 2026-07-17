@@ -997,6 +997,129 @@ func TestRuntimeGateLedgerLinksReviewPatchVerificationAndWaiver(t *testing.T) {
 	}
 }
 
+func TestRuntimeGateAmbientVerificationFailureIsWarningNotBlocker(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"TavernKernel/FileFilter.cpp"})
+	now := time.Now()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "TavernKernel/FileFilter.cpp 에 DllInjectionFiltering 구조를 구현해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:            "patch-tx-dll",
+		Goal:          "DllInjectionFiltering",
+		Status:        patchTransactionStatusCommitted,
+		WorkspaceRoot: root,
+		StartedAt:     now.Add(-time.Minute),
+		UpdatedAt:     now,
+		CompletedAt:   now,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-dll-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "TavernKernel/FileFilter.cpp",
+				Operation: "modify",
+			}},
+		}},
+	}}
+	// Whole-solution compile fails on an unrelated translation unit — ambient.
+	session.LastVerification = &VerificationReport{
+		GeneratedAt:  now,
+		Workspace:    root,
+		ChangedPaths: []string{"TavernKernel/FileFilter.cpp"},
+		Steps: []VerificationStep{{
+			Label:       "msbuild Tavern/Tavern.sln",
+			Command:     `msbuild Tavern/Tavern.sln /m`,
+			Status:      VerificationFailed,
+			FailureKind: "compile_error",
+			Output:      "OtherProject\\Unrelated.cpp(12): error C2065: 'missing': undeclared identifier\nBuild FAILED.",
+			Hint:        "The C++ build failed. Fix the first compiler or linker error before retrying verification.",
+		}},
+	}
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-dll",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Branch:            "main",
+		ReviewFingerprint: "fp-dll",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"TavernKernel/FileFilter.cpp"},
+		},
+		Freshness: ReviewFreshness{
+			ReviewFingerprint: "fp-dll",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+	if strings.Contains(strings.Join(ledger.Blockers, " "), "verification failed") {
+		t.Fatalf("ambient compile failure must not block the gate, got blockers=%#v", ledger.Blockers)
+	}
+	if !strings.Contains(strings.Join(ledger.Warnings, " "), "ambient") {
+		t.Fatalf("expected ambient verification warning, got warnings=%#v", ledger.Warnings)
+	}
+	if ledger.Status == runtimeGateStatusBlocked {
+		t.Fatalf("ambient compile failure must not set gate blocked, got %#v", ledger)
+	}
+}
+
+func TestRuntimeGatePatchScopedVerificationFailureStillBlocks(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
+	now := time.Now()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: "fix main.go"}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:            "patch-tx-main",
+		Goal:          "fix main.go",
+		Status:        patchTransactionStatusCommitted,
+		WorkspaceRoot: root,
+		StartedAt:     now.Add(-time.Minute),
+		UpdatedAt:     now,
+		CompletedAt:   now,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-main-001",
+			Status: "success",
+			Paths:  []PatchPathChange{{Path: "main.go", Operation: "modify"}},
+		}},
+	}}
+	session.LastVerification = &VerificationReport{
+		GeneratedAt:  now,
+		Workspace:    root,
+		ChangedPaths: []string{"main.go"},
+		Steps: []VerificationStep{{
+			Label:       "go test",
+			Command:     "go test ./...",
+			Status:      VerificationFailed,
+			FailureKind: "compile_error",
+			Output:      "main.go:12:2: undefined: missingSymbol\nFAIL",
+		}},
+	}
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-main",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Branch:            "main",
+		ReviewFingerprint: "fp-main",
+		ChangeSet:         ReviewChangeSet{ChangedPaths: []string{"main.go"}},
+		Freshness:         ReviewFreshness{ReviewFingerprint: "fp-main"},
+		Gate:              GateDecision{Verdict: reviewVerdictApproved},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+	if !strings.Contains(strings.Join(ledger.Blockers, " "), "verification failed") {
+		t.Fatalf("patch-scoped compile failure must block, got blockers=%#v warnings=%#v", ledger.Blockers, ledger.Warnings)
+	}
+	if ledger.Status != runtimeGateStatusBlocked {
+		t.Fatalf("expected blocked status, got %#v", ledger)
+	}
+}
+
 func TestRuntimeGateTreatsFailedVerificationBeforeCurrentPatchAsWarning(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"README.md"})
