@@ -12187,6 +12187,11 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString(requestContract)
 		b.WriteString("\n")
 	}
+	if designGuard := strings.TrimSpace(injectionDesignGuardPromptSection(latestUser)); designGuard != "" {
+		b.WriteString("\n")
+		b.WriteString(designGuard)
+		b.WriteString("\n")
+	}
 	if webResearchIntent {
 		if a.MCP != nil && a.MCP.HasWebResearchCapability() {
 			b.WriteString("The latest user request likely needs current external research. Prefer relevant MCP web/search/browser tools before relying on memory or local-only context.\n")

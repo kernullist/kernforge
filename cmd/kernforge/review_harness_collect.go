@@ -311,7 +311,8 @@ func reviewPolicyPacksFor(target string, mode string, paths []string, request st
 	if mode == reviewModeSecurityHardening || containsAny(text, ".sys", "ioctl", "irql", "kernel", "커널") {
 		packs = append(packs, "windows_kernel_driver")
 	}
-	if containsAny(text, "anti-cheat", "anticheat", "telemetry", "etw", "false positive", "오탐") {
+	if containsAny(text, "anti-cheat", "anticheat", "telemetry", "etw", "false positive", "오탐") ||
+		requestNeedsInjectionDetectionDesignGuard(text) {
 		packs = append(packs, "anti_cheat_telemetry")
 	}
 	if containsAny(text, "memory", "scan", "vad", "page table", "메모리") {

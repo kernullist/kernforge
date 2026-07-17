@@ -213,6 +213,7 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 			RequiredFix:  "Repeat /review with a narrower target if this warning affects the result.",
 		})
 	}
+	findings = append(findings, deterministicInjectionDesignFindings(run)...)
 	assignReviewFindingIDs(findings)
 	return findings
 }

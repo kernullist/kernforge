@@ -603,7 +603,7 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Generating implementation plan with the active model..."))
 	planResp, planErr := rt.agent.completeModelTurn(requestCtx, ChatRequest{
 		Model:       rt.session.Model,
-		System:      planReviewSystemPromptPlanner(rt.session.WorkingDir, memoryContext),
+		System:      planReviewSystemPromptPlanner(rt.session.WorkingDir, memoryContext, feature.Request+"\n"+specText+"\n"+planPrompt),
 		Messages:    []Message{{Role: "user", Text: planPrompt}},
 		MaxTokens:   rt.cfg.MaxTokens,
 		Temperature: rt.cfg.Temperature,

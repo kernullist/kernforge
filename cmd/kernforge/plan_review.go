@@ -10,7 +10,7 @@ import (
 const planReviewMaxRounds = 3
 
 // planReviewSystemPromptPlanner returns the system prompt for the planning model.
-func planReviewSystemPromptPlanner(workspaceRoot string, memoryContext string) string {
+func planReviewSystemPromptPlanner(workspaceRoot string, memoryContext string, userPrompt string) string {
 	var b strings.Builder
 	b.WriteString("You are a senior software architect. Your job is to create a detailed, step-by-step implementation plan for the user's request.\n")
 	b.WriteString("The plan should cover:\n")
@@ -26,10 +26,10 @@ func planReviewSystemPromptPlanner(workspaceRoot string, memoryContext string) s
 		b.WriteString(memoryContext)
 		b.WriteString("\n")
 	}
-	return b.String()
+	return appendPlanReviewInjectionDesignGuards(b.String(), userPrompt)
 }
 
-func planReviewSystemPromptReviewer() string {
+func planReviewSystemPromptReviewer(userPrompt string) string {
 	var b strings.Builder
 	b.WriteString("You are a meticulous code review expert. Your job is to review an implementation plan and provide constructive feedback.\n")
 	b.WriteString("Evaluate the plan for:\n")
@@ -41,7 +41,7 @@ func planReviewSystemPromptReviewer() string {
 	b.WriteString("If the plan is good enough to proceed, start your response with exactly: APPROVED\n")
 	b.WriteString("If changes are needed, start with: NEEDS_REVISION\n")
 	b.WriteString("Then provide specific, actionable feedback.\n")
-	return b.String()
+	return appendPlanReviewInjectionDesignGuards(b.String(), userPrompt)
 }
 
 func planReviewSystemPromptRevise() string {
@@ -141,7 +141,7 @@ func RunPlanReviewWithPolicy(
 	}
 	planResp, err := completePlanReviewRequest(ctx, plannerClient, ChatRequest{
 		Model:       plannerModel,
-		System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext),
+		System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext, userPrompt),
 		Messages:    plannerMessages,
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
@@ -163,7 +163,7 @@ func RunPlanReviewWithPolicy(
 		}
 		reviewResp, err := completePlanReviewRequest(ctx, reviewerClient, ChatRequest{
 			Model:       reviewerModel,
-			System:      planReviewSystemPromptReviewer(),
+			System:      planReviewSystemPromptReviewer(userPrompt),
 			Messages:    reviewMessages,
 			MaxTokens:   maxTokens,
 			Temperature: temperature,
@@ -197,7 +197,7 @@ func RunPlanReviewWithPolicy(
 
 			reviseResp, err := completePlanReviewRequest(ctx, plannerClient, ChatRequest{
 				Model:       plannerModel,
-				System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext) + "\n\n" + planReviewSystemPromptRevise(),
+				System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext, userPrompt) + "\n\n" + planReviewSystemPromptRevise(),
 				Messages:    plannerMessages,
 				MaxTokens:   maxTokens,
 				Temperature: temperature,
