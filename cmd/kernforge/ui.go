@@ -1442,7 +1442,8 @@ func formatAssistantText(text string) string {
 		}
 
 		kind := classifyAssistantLine(line, inFence)
-		if shouldInsertAssistantSpacer(prevKind, kind, prevBlank) {
+		currentFlushLeft := line == strings.TrimLeft(line, " \t")
+		if shouldInsertAssistantSpacer(prevKind, kind, prevBlank, currentFlushLeft) {
 			out = append(out, "")
 		}
 		out = append(out, line)
@@ -1665,7 +1666,7 @@ func classifyAssistantLine(line string, inFence bool) assistantLineKind {
 	return assistantLineParagraph
 }
 
-func shouldInsertAssistantSpacer(previous, current assistantLineKind, previousBlank bool) bool {
+func shouldInsertAssistantSpacer(previous, current assistantLineKind, previousBlank bool, currentFlushLeft bool) bool {
 	if previous == assistantLineNone || previousBlank {
 		return false
 	}
@@ -1677,6 +1678,12 @@ func shouldInsertAssistantSpacer(previous, current assistantLineKind, previousBl
 	case assistantLineFence:
 		return previous != assistantLineFence
 	case assistantLineParagraph, assistantLineQuote:
+		if previous == assistantLineList {
+			// A flush-left paragraph after a list block reads as a new paragraph and
+			// should breathe. An indented line is a wrapped list-item continuation
+			// and must stay attached to its bullet, so it gets no spacer.
+			return currentFlushLeft
+		}
 		return previous == assistantLineHeading || previous == assistantLineFence
 	default:
 		return false
