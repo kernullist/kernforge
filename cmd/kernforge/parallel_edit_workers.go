@@ -1311,24 +1311,36 @@ func completeModelTurnSingleRouteAttempt(ctx context.Context, scheduler *ModelRo
 
 	select {
 	case <-ctx.Done():
-		// Cancel returns before Complete finishes. Force-close the provider and
-		// free the scheduler slot if Complete stays stuck — otherwise the next
-		// turn blocks forever on Acquire while this goroutine still holds it.
+		// The caller's context ended (timeout/cancel). Force-close so a
+		// cancellation-respecting provider aborts its in-flight call promptly,
+		// then return to the caller immediately instead of blocking on Complete.
+		//
+		// The Complete goroutine keeps the route permit (via its defer release())
+		// until it actually returns, so a single-slot provider is never hit
+		// concurrently by the next turn while this call is still in flight. A
+		// background watchdog reclaims the slot only if the provider ignores both
+		// cancellation and force-close for an extended period, preventing a
+		// permanent route deadlock. release is idempotent, so the watchdog and the
+		// goroutine's defer cannot double-free the slot.
 		forceCloseProviderClient(client)
 		releaseTimeout := modelRouteCancelSlotReleaseTimeout
 		if releaseTimeout <= 0 {
 			releaseTimeout = 500 * time.Millisecond
 		}
-		timer := time.NewTimer(releaseTimeout)
-		defer timer.Stop()
-		select {
-		case <-done:
-			return ChatResponse{}, ctx.Err()
-		case <-timer.C:
-			release()
-			go func() { <-done }()
-			return ChatResponse{}, ctx.Err()
-		}
+		go func() {
+			timer := time.NewTimer(releaseTimeout)
+			defer timer.Stop()
+			select {
+			case <-done:
+				// Complete returned; its defer already released the permit.
+			case <-timer.C:
+				// Provider ignored cancellation and force-close; reclaim the slot
+				// so the route does not deadlock, then drain the eventual result.
+				release()
+				<-done
+			}
+		}()
+		return ChatResponse{}, ctx.Err()
 	case out := <-done:
 		return out.resp, out.err
 	}
