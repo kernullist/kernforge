@@ -117,13 +117,11 @@ func reviewScopeSignals(discovery ReviewScopeDiscovery, request string) ([]Revie
 			risk:        "false_positive_or_bypass_surface",
 			severity:    reviewSeverityMedium,
 			confidence:  "high",
-			searchTerms: []string{"telemetry", "ETW", "EventWrite", "TraceLogging", "scan", "detection", "spoof", "evasion", "SetWindowsHookEx", "ImageLoad", "DllInjection"},
+			searchTerms: []string{"telemetry", "ETW", "EventWrite", "TraceLogging", "scan", "detection", "spoof", "evasion"},
 			keywords: []string{
 				"anti-cheat", "anticheat", "anti_cheat", "telemetry", "etw", "eventwrite", "tracelogging",
 				"detection", "detect", "false positive", "false-positive", "false_positive", "bypass", "evasion", "spoof",
 				"안티치트", "탐지", "텔레메트리", "오탐", "우회",
-				"setwindowshook", "setwindowshookex", "dll injection", "dllinjection", "dll 인젝션",
-				"hook injection", "훅 인젝션", "proxydll", "proxy dll", "imageload",
 			},
 		},
 		{

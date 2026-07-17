@@ -78,9 +78,6 @@ func reviewLensesForRun(run ReviewRun) ([]string, []string) {
 		if reviewRunSecuritySensitive(run) {
 			optional = append(optional, "security")
 		}
-		if reviewRunFalsePositiveSensitive(run) {
-			required = append(required, "false_positive")
-		}
 	case run.Flow == "security_review" || run.Mode == reviewModeSecurityHardening:
 		required = append(required, "security")
 		if reviewRunFalsePositiveSensitive(run) {
@@ -109,11 +106,6 @@ func reviewLensesForRun(run ReviewRun) ([]string, []string) {
 		if reviewRunFalsePositiveSensitive(run) {
 			optional = append(optional, "false_positive")
 		}
-	}
-	// Injection/hook defense always needs the false_positive lens, even when
-	// the request wording did not say "오탐" explicitly.
-	if reviewObjectiveNeedsFalsePositiveLens(firstNonBlankString(run.Objective, run.RequestAnalysis.OriginalRequest)) {
-		required = append(required, "false_positive")
 	}
 	return analysisUniqueStrings(required), analysisUniqueStrings(optional)
 }
@@ -265,17 +257,13 @@ func reviewRunFalsePositiveSensitive(run ReviewRun) bool {
 			return true
 		}
 	}
-	text := strings.ToLower(strings.Join(run.ChangeSet.ChangedPaths, " ") + " " + run.Objective + " " + run.RequestAnalysis.OriginalRequest)
-	if requestNeedsInjectionDetectionDesignGuard(text) {
-		return true
-	}
+	text := strings.ToLower(strings.Join(run.ChangeSet.ChangedPaths, " ") + " " + run.Objective)
 	return containsAny(text,
 		"false positive", "false_positive", "false-positive", "오탐",
 		"anti_cheat", "anti-cheat", "anticheat", "안티치트",
 		"detection", "detect", "telemetry", "탐지", "텔레메트리",
 		"memory scan", "memory-scan", "scanner", "scan",
-		"spoof", "evasion", "우회",
-		"setwindowshook", "dll injection", "dllinjection")
+		"spoof", "evasion", "우회")
 }
 
 func configuredReviewRoleLabel(cfg Config, reviewCfg ReviewHarnessConfig, role string) string {
@@ -3030,9 +3018,9 @@ func reviewLensDescription(lens string) string {
 	case "design":
 		return "architecture, scope, reversibility, and long-term maintenance cost."
 	case "security":
-		return "security boundaries, privileged paths, bypass risk, stability, and abuse cases. Reject path-only non-system DLL checks as SetWindowsHook/injection detection."
+		return "security boundaries, privileged paths, bypass risk, stability, abuse cases, and whether the control matches its stated threat model."
 	case "false_positive":
-		return "false positives, telemetry provenance, operator interpretability, and version drift. Flag path-only non-system/System32 DLL heuristics for hook/injection defense; require hook-install↔ImageLoad correlation or explicit path/hash policy."
+		return "false positives, legitimate traffic the rule would also hit, telemetry provenance, operator interpretability, version drift, and whether a coarse single-attribute heuristic was substituted for a multi-signal or policy-listed target."
 	case "regression":
 		return "behavior preservation, compatibility, OS/version drift, and refactor risk."
 	case "test":
@@ -3098,9 +3086,6 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 	}
 	if len(run.PolicyPacks) > 0 {
 		fmt.Fprintf(&b, "\nPolicy packs:\n- %s\n", strings.Join(run.PolicyPacks, "\n- "))
-	}
-	if packGuard := reviewPolicyPackDesignGuidance(run.PolicyPacks, firstNonBlankString(run.Objective, run.RequestAnalysis.OriginalRequest)); packGuard != "" {
-		fmt.Fprintf(&b, "\nPolicy pack design guards:\n%s\n", packGuard)
 	}
 	if len(run.ChangeSet.ChangedPaths) > 0 {
 		fmt.Fprintf(&b, "\nChanged paths:\n- %s\n", strings.Join(limitStrings(run.ChangeSet.ChangedPaths, 64), "\n- "))

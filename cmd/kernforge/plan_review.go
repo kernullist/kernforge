@@ -10,7 +10,7 @@ import (
 const planReviewMaxRounds = 3
 
 // planReviewSystemPromptPlanner returns the system prompt for the planning model.
-func planReviewSystemPromptPlanner(workspaceRoot string, memoryContext string, userPrompt string) string {
+func planReviewSystemPromptPlanner(workspaceRoot string, memoryContext string) string {
 	var b strings.Builder
 	b.WriteString("You are a senior software architect. Your job is to create a detailed, step-by-step implementation plan for the user's request.\n")
 	b.WriteString("The plan should cover:\n")
@@ -19,6 +19,12 @@ func planReviewSystemPromptPlanner(workspaceRoot string, memoryContext string, u
 	b.WriteString("- The order of operations\n")
 	b.WriteString("- Edge cases and potential pitfalls\n")
 	b.WriteString("- Testing strategy if applicable\n\n")
+	b.WriteString("When the plan is for detection, policy enforcement, telemetry, or security controls, also cover:\n")
+	b.WriteString("- Threat model and concrete evidence fields (what signal proves the bad case)\n")
+	b.WriteString("- Reuse of existing detectors/correlation/policy paths in the repo before inventing a parallel heuristic\n")
+	b.WriteString("- False-positive surface: which legitimate behavior the rule would also hit\n")
+	b.WriteString("- Separation of distinct threat models that only share infrastructure\n")
+	b.WriteString("- Prefer multi-signal or correlation designs over a single coarse static attribute unless that attribute is the documented policy target\n\n")
 	b.WriteString("Output the plan in a clear, numbered format. Be precise and actionable.\n")
 	fmt.Fprintf(&b, "Workspace root: %s\n", workspaceRoot)
 	if strings.TrimSpace(memoryContext) != "" {
@@ -26,10 +32,10 @@ func planReviewSystemPromptPlanner(workspaceRoot string, memoryContext string, u
 		b.WriteString(memoryContext)
 		b.WriteString("\n")
 	}
-	return appendPlanReviewInjectionDesignGuards(b.String(), userPrompt)
+	return b.String()
 }
 
-func planReviewSystemPromptReviewer(userPrompt string) string {
+func planReviewSystemPromptReviewer() string {
 	var b strings.Builder
 	b.WriteString("You are a meticulous code review expert. Your job is to review an implementation plan and provide constructive feedback.\n")
 	b.WriteString("Evaluate the plan for:\n")
@@ -37,11 +43,12 @@ func planReviewSystemPromptReviewer(userPrompt string) string {
 	b.WriteString("- Correctness: are the proposed changes technically sound?\n")
 	b.WriteString("- Order of operations: is the sequence logical?\n")
 	b.WriteString("- Edge cases: are potential issues addressed?\n")
-	b.WriteString("- Risks: any potential breaking changes or regressions?\n\n")
+	b.WriteString("- Risks: any potential breaking changes or regressions?\n")
+	b.WriteString("- For detection/policy/security plans: threat model clarity, evidence fields, false-positive surface, reuse of existing pipelines, and no conflation of unrelated mechanisms\n\n")
 	b.WriteString("If the plan is good enough to proceed, start your response with exactly: APPROVED\n")
 	b.WriteString("If changes are needed, start with: NEEDS_REVISION\n")
 	b.WriteString("Then provide specific, actionable feedback.\n")
-	return appendPlanReviewInjectionDesignGuards(b.String(), userPrompt)
+	return b.String()
 }
 
 func planReviewSystemPromptRevise() string {
@@ -141,7 +148,7 @@ func RunPlanReviewWithPolicy(
 	}
 	planResp, err := completePlanReviewRequest(ctx, plannerClient, ChatRequest{
 		Model:       plannerModel,
-		System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext, userPrompt),
+		System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext),
 		Messages:    plannerMessages,
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
@@ -163,7 +170,7 @@ func RunPlanReviewWithPolicy(
 		}
 		reviewResp, err := completePlanReviewRequest(ctx, reviewerClient, ChatRequest{
 			Model:       reviewerModel,
-			System:      planReviewSystemPromptReviewer(userPrompt),
+			System:      planReviewSystemPromptReviewer(),
 			Messages:    reviewMessages,
 			MaxTokens:   maxTokens,
 			Temperature: temperature,
@@ -197,7 +204,7 @@ func RunPlanReviewWithPolicy(
 
 			reviseResp, err := completePlanReviewRequest(ctx, plannerClient, ChatRequest{
 				Model:       plannerModel,
-				System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext, userPrompt) + "\n\n" + planReviewSystemPromptRevise(),
+				System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext) + "\n\n" + planReviewSystemPromptRevise(),
 				Messages:    plannerMessages,
 				MaxTokens:   maxTokens,
 				Temperature: temperature,

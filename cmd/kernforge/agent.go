@@ -12187,11 +12187,6 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString(requestContract)
 		b.WriteString("\n")
 	}
-	if designGuard := strings.TrimSpace(injectionDesignGuardPromptSection(latestUser)); designGuard != "" {
-		b.WriteString("\n")
-		b.WriteString(designGuard)
-		b.WriteString("\n")
-	}
 	if webResearchIntent {
 		if a.MCP != nil && a.MCP.HasWebResearchCapability() {
 			b.WriteString("The latest user request likely needs current external research. Prefer relevant MCP web/search/browser tools before relying on memory or local-only context.\n")
@@ -12469,6 +12464,7 @@ func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
 	b.WriteString("- Inspect current repository state before making assumptions, and preserve unrelated user changes in a dirty worktree.\n")
 	if envelope.AllowsFileMutation {
 		b.WriteString("- After inspecting the relevant code and before the first edit, if 2-4 materially valid implementation approaches remain with meaningful tradeoffs, call present_implementation_decision as a single tool call and wait for the recorded choice. Do not invoke it for trivial syntax, naming, formatting, or an approach already fixed by the user's requirements.\n")
+		b.WriteString("- Treat detection/policy design forks the same way: alternative evidence models, correlation vs coarse attribute heuristics, or shared-infrastructure threat-model splits are material tradeoffs that should pause for present_implementation_decision when more than one approach remains plausible.\n")
 	}
 	b.WriteString("- For review-only requests, use a code-review stance: findings first, ordered by severity, with concrete file/function/line evidence when available; do not edit files unless the user asks for a fix.\n")
 	b.WriteString("- For document_artifact requests, use artifact-quality checks as the primary gate: artifact exists, requested topic is covered, content is not placeholder/TODO-only, and verification claims are not unsupported.\n")
