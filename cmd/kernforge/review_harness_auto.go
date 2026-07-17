@@ -1319,6 +1319,16 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 		}
 		return false, nil
 	}
+	// The review's only gap is missing verification evidence, and the acceptance
+	// contract already requires verification with no recorded outcome yet. Defer to
+	// the acceptance-contract verification check, which owns the precise
+	// "Required verification has no outcome" prompt (asking the model to run tests
+	// or disclose an honest not-run). Emitting a duplicate review-gate verification
+	// blocker here would pre-empt that cleaner prompt and surface incidental review
+	// warnings (for example a non-git-workspace git-status note) as final feedback.
+	if needsRevision && !verificationOutcomeContradictsClaim && reviewRunOnlyRequiresVerificationEvidence(a.Session.LastReviewRun) && a.acceptanceContractRequiresUnresolvedVerification() {
+		return false, nil
+	}
 	if a.EmitProgress != nil {
 		if needsRevision {
 			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review found blockers. Asking the model to revise...", "자동 변경 후 리뷰에서 차단 항목을 발견했습니다. 모델에 수정안을 다시 요청합니다..."))
@@ -1630,6 +1640,18 @@ func (a *Agent) shouldSkipPostChangeReviewForKnownFinalBlocker(reply string, unr
 		}
 	}
 	return false
+}
+
+// acceptanceContractRequiresUnresolvedVerification reports that the turn's
+// acceptance contract explicitly requires verification and no successful
+// verification evidence has been recorded yet. The acceptance-contract check
+// owns prompting for that outcome, so the post-change review gate defers its own
+// verification-evidence blocker to it.
+func (a *Agent) acceptanceContractRequiresUnresolvedVerification() bool {
+	if a == nil || a.Session == nil || a.Session.AcceptanceContract == nil {
+		return false
+	}
+	return a.Session.AcceptanceContract.VerificationRequired && !sessionHasSuccessfulVerificationEvidence(a.Session)
 }
 
 func postChangeReviewHasDedicatedModel(a *Agent) bool {
