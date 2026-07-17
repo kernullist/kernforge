@@ -438,12 +438,62 @@ func requestExplicitlyOrdersCodeFixAlongsideDocument(lower string) bool {
 	if lower == "" {
 		return false
 	}
-	return containsAny(lower,
+	if containsAny(lower,
 		"implement the", "implement a", "implement this", "implement it",
 		"fix the", "fix this", "fix it", "fix bugs", "fix any",
 		"in the code", "in code", "source code", "change the code", "edit the code", "modify the code",
 		"코드를", "코드에", "코드 수정", "소스를", "소스에", "구현해", "구현 해", "고쳐", "고치", "수정해", "패치해",
-	)
+	) {
+		return true
+	}
+	return requestOrdersNamedSourceFileEditAlongsideDocument(lower)
+}
+
+// sourceCodeFileExtensionTokens are the extension tokens that mark a named
+// source-code file (as opposed to a document artifact like .md/.txt) inside a
+// request. A bare mention such as "main.go" or "parser.rs" is a concrete source
+// target, so an edit verb aimed at it is a real code change, not doc subject
+// matter.
+var sourceCodeFileExtensionTokens = []string{
+	".go", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh", ".cs", ".rs",
+	".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".rb", ".php", ".kt", ".swift", ".m", ".mm",
+}
+
+// requestOrdersNamedSourceFileEditAlongsideDocument reports a request that gives
+// an imperative source-edit verb aimed at a named source-code file (for example
+// "fix main.go and write docs/report.md"). The phrase-based patterns in
+// requestExplicitlyOrdersCodeFixAlongsideDocument miss "<verb> <file>.<ext>"
+// forms, which made a mixed edit+document request collapse to a pure
+// document-artifact classification and silently drop the source-edit half.
+//
+// It is deliberately conservative: it requires a whole-word edit verb AND a
+// concrete source-code file token, and it excludes cases where the edit is the
+// document's subject matter ("write a README about how to fix main.go") via the
+// subordination markers and looksLikeModificationDescribedAsDocumentContent, so
+// a pure documentation request is never misread as an order to edit code.
+func requestOrdersNamedSourceFileEditAlongsideDocument(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	if looksLikeModificationDescribedAsDocumentContent(lower) {
+		return false
+	}
+	// Subordination markers mean the edit is described, not ordered ("about how
+	// to fix", "documentation describing the fix in ...").
+	if containsAny(lower,
+		"about ", "how to ", "describ", "documenting ", "explain", "guide to ", "regarding ", "on how ",
+		"설명", "방법", "대한", "관한",
+	) {
+		return false
+	}
+	hasEditVerb := containsWord(lower,
+		"fix", "edit", "change", "modify", "patch", "refactor", "implement", "correct", "rename", "replace",
+	) || containsAny(lower, "수정", "고쳐", "고치", "패치", "구현해", "변경", "교체", "삭제")
+	if !hasEditVerb {
+		return false
+	}
+	return containsAny(lower, sourceCodeFileExtensionTokens...)
 }
 
 func preWritePreviewDocumentArtifactPaths(preview EditPreview) []string {
