@@ -1710,7 +1710,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			// Grok-style: never hard-cap new file reads. Only block pure re-reads of
 			// paths already opened this turn so the model cannot spin without progress.
-			if analysisOnlyTurn {
+			// A single-file repeated-read batch is owned by the dedicated single-file
+			// read-churn detector below (graduated nudge -> recovery -> escalate to a
+			// user recovery card). Do not let this immediate revisit-blocker pre-empt
+			// it, or same-file churn would emit a generic nudge forever and never
+			// escalate (it would end in a garbage default reply instead).
+			_, singleFileReadBatch := repeatedReadFilePathKey(resp.Message.ToolCalls)
+			if analysisOnlyTurn && !singleFileReadBatch {
 				if block, reason := analysisExplorationShouldBlockRevisitBatch(readChurnSeenPaths, resp.Message.ToolCalls); block {
 					explored := countAnalysisExplorationPaths(readChurnSeenPaths)
 					guidance := analysisExplorationRevisitBlockGuidance(explored)
