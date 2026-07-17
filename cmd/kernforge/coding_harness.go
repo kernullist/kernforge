@@ -1676,7 +1676,14 @@ func (a *Agent) runPreFinalCodingHarnesses(ctx context.Context, reply string, at
 	if a == nil || a.Session == nil {
 		return true, ""
 	}
-	if a.ReviewerClient != nil {
+	// Generated-document artifact turns skip the live code reviewer (document-only
+	// output is not code-reviewed), so their content-consistency and disclosure
+	// checks live only in the deterministic coding-harness report. Build that report
+	// even when a ReviewerClient is configured; otherwise a document whose claimed
+	// counts contradict its body would be approved unchecked and finalized with a
+	// stale summary instead of being repaired.
+	generatedDocumentTurn := a.changesAreGeneratedDocumentArtifactsForTurn(codingHarnessSourcePrompt(a.Session))
+	if a.ReviewerClient != nil && !generatedDocumentTurn {
 		// Live-reviewer path: the deterministic coding-harness report is owned by
 		// the auto post-change review gate, so it is not built here. The disclosure
 		// cross-check (rh-5) must still run on this real final-answer path, so run it
