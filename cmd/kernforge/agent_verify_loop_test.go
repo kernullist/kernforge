@@ -4304,6 +4304,32 @@ func TestSanitizeAssistantMessageTextRemovesToolPreambleNarration(t *testing.T) 
 	}
 }
 
+func TestSanitizeAssistantMessageTextKeepsLongKoreanAnalysisPreamble(t *testing.T) {
+	// Korean models often start analysis with "먼저" / "이제" — that must not
+	// erase the whole working note when the line carries real direction.
+	text := "먼저 요청은 SetWindowsHook 인젝션 탐지이고, 비시스템 경로 휴리스틱은 오탐이 커서 기존 ETW 상관 구조를 확장하는 쪽으로 가겠습니다."
+
+	got := sanitizeAssistantMessageText(text, true)
+	if !strings.Contains(got, "ETW") && !strings.Contains(got, "오탐") {
+		t.Fatalf("expected long analysis starting with 먼저 to stay visible, got %q", got)
+	}
+}
+
+func TestCollectModelWorkingNotesPrefersReasoningAndPlan(t *testing.T) {
+	msg := Message{
+		Role:             "assistant",
+		Text:             "구현 계획:\n1. 기존 상관 경로 확인\n2. 정책 모드 추가",
+		ReasoningContent: "요구사항은 훅 인젝션 탐지이며 path-only 차단은 위험하다.",
+	}
+	got := collectModelWorkingNotes(msg, "먼저 파일을 읽겠습니다.\n"+msg.Text)
+	if !strings.Contains(got, "요구사항은 훅 인젝션") {
+		t.Fatalf("expected reasoning content in working notes, got %q", got)
+	}
+	if !strings.Contains(got, "구현 계획:") {
+		t.Fatalf("expected plan text in working notes, got %q", got)
+	}
+}
+
 func TestSanitizeAssistantMessageTextKeepsSubstantiveToolPlan(t *testing.T) {
 	text := "Let me inspect the providers.\nThe approach:\n1. Update the interface\n2. Pass reasoning effort through all providers"
 

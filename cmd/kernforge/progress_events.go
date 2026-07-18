@@ -26,6 +26,10 @@ const (
 	progressKindAnalysisContext      = "analysis_context"
 	progressKindRuntimeIntervention  = "runtime_intervention"
 	progressKindPromptAssembly       = "prompt_assembly"
+	// progressKindModelThought is durable operator-facing model working notes:
+	// requirement analysis, plan direction, and provider reasoning summaries
+	// before or between tools (Claude Code / Grok Build style).
+	progressKindModelThought = "model_thought"
 )
 
 func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
@@ -50,6 +54,14 @@ func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
 }
 
 func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
+	// Working notes are already operator-facing prose; do not run them through
+	// the generic progress humanizer (which is meant for status phrases).
+	if strings.TrimSpace(event.Kind) == progressKindModelThought {
+		if msg := strings.TrimSpace(event.Message); msg != "" {
+			return msg
+		}
+		return localizedText(cfg, "Model working note", "모델 작업 메모")
+	}
 	if strings.TrimSpace(event.Message) != "" {
 		return formatProgressEventMessageWithContext(cfg, event, humanizeProgressMessage(cfg, strings.TrimSpace(event.Message)))
 	}
@@ -239,6 +251,7 @@ func progressEventAllowsContextPrefix(event ProgressEvent) bool {
 		progressKindModelStreamToolReady,
 		progressKindModelReroute,
 		progressKindModelVerification,
+		progressKindModelThought,
 		progressKindProviderRetry,
 		progressKindRuntimeIntervention,
 		progressKindPromptAssembly:

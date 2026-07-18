@@ -2392,21 +2392,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
-			preamble := strings.TrimSpace(resp.Message.Text)
-			if a.EmitAssistant != nil {
-				if preamble != "" {
-					if preamble != a.lastEmittedText {
-						a.EmitAssistant(preamble)
-						a.lastEmittedText = preamble
-					}
-				} else {
-					synth := synthesizeToolPreambleText(resp.Message.ToolCalls)
-					if synth != a.lastEmittedText {
-						a.EmitAssistant(synth)
-						a.lastEmittedText = synth
-					}
-				}
-			}
+			// Surface the model's working notes (requirement analysis, plan
+			// direction, provider reasoning) before tools — not only synthetic
+			// "Let me check..." filler. Claude Code / Grok Build show this path;
+			// operators should not stare only at a spinner and tool dumps.
+			a.emitModelWorkingNotes(resp.Message, rawAssistantText)
 			if postEditFinalAnswerNudges > 0 && allToolCallsAreEditTools(resp.Message.ToolCalls) {
 				a.Session.AddMessage(internalUserMessage("You have already made multiple rounds of edits. Do not call more edit tools unless the previous changes are clearly insufficient. If the requested work is complete, provide the final answer now and summarize what changed."))
 				if err := a.Store.Save(a.Session); err != nil {
@@ -6813,8 +6803,29 @@ func suppressInternalRoutingMarkers(text string) string {
 	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
+// isAssistantNarrationPreamble reports pure short action fluff ("Let me read X")
+// that should not clutter the operator transcript before tools. Substantive
+// working notes — requirement analysis, plan direction, threat-model notes —
+// must stay visible even when they start with "I'll" / "먼저".
 func isAssistantNarrationPreamble(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	// Deadlock / system-tool confusion is always noise, even when long.
+	if strings.Contains(lower, "tool execution deadlock") ||
+		strings.HasPrefix(lower, "the system is ") {
+		return true
+	}
+	// Long lines are analysis, not fluff.
+	if utf8.RuneCountInString(trimmed) > 72 {
+		return false
+	}
+	// Content markers mean the model is explaining direction, not only acting.
+	if assistantLineHasWorkingNoteMarkers(lower) {
+		return false
+	}
 	switch {
 	case strings.HasPrefix(lower, "let me "):
 		return true
@@ -6823,16 +6834,6 @@ func isAssistantNarrationPreamble(text string) bool {
 	case strings.HasPrefix(lower, "now let me "):
 		return true
 	case strings.HasPrefix(lower, "now i "):
-		return true
-	case strings.HasPrefix(lower, "the system is "):
-		return true
-	case strings.HasPrefix(lower, "there's a tool execution deadlock"):
-		return true
-	case strings.HasPrefix(lower, "there is a tool execution deadlock"):
-		return true
-	case strings.HasPrefix(lower, "i'm experiencing a tool execution deadlock"):
-		return true
-	case strings.HasPrefix(lower, "i am experiencing a tool execution deadlock"):
 		return true
 	case strings.HasPrefix(lower, "i'll "):
 		return true
@@ -6857,6 +6858,17 @@ func isAssistantNarrationPreamble(text string) bool {
 	default:
 		return false
 	}
+}
+
+func assistantLineHasWorkingNoteMarkers(lower string) bool {
+	return containsAny(lower,
+		"because", "therefore", "approach", "plan:", "root cause", "threat",
+		"instead of", "rather than", "tradeoff", "trade-off", "risk",
+		"requirement", "requirements", "so we ", " so that",
+		"계획", "구현", "구조", "위협", "요구", "때문에", "그래서",
+		"대신", "분리", "재사용", "상관", "근거", "오탐", "범위",
+		"1.", "2.", "3.", "- ", "* ",
+	)
 }
 
 // sessionContextWindowTokens resolves the context window (in tokens) for the
@@ -13643,7 +13655,82 @@ func compactToolErrorDetail(text string) string {
 	return firstLine(normalized)
 }
 
+// emitModelWorkingNotes surfaces the model's requirement analysis, plan
+// direction, and provider reasoning summaries to the operator before tools run.
+// Session storage still uses the sanitized tool-turn text; this path is display.
+func (a *Agent) emitModelWorkingNotes(msg Message, rawAssistantText string) {
+	if a == nil {
+		return
+	}
+	notes := collectModelWorkingNotes(msg, rawAssistantText)
+	if notes == "" {
+		return
+	}
+	if notes == a.lastEmittedText {
+		return
+	}
+	a.lastEmittedText = notes
+	// Durable progress event so auto/compact modes keep multi-line working notes
+	// in the transcript instead of a spinner-only "thinking..." footer.
+	a.emitProgressEvent(ProgressEvent{
+		Kind:    progressKindModelThought,
+		Message: notes,
+		Status:  "working_note",
+	})
+}
+
+func collectModelWorkingNotes(msg Message, rawAssistantText string) string {
+	// Provider reasoning (DeepSeek/OpenAI-compatible reasoning_content, Codex
+	// summaries) is the closest equivalent to Claude/Grok "thinking" output.
+	reasoning := strings.TrimSpace(msg.ReasoningContent)
+	// Prefer the sanitized tool-turn text already on the message (fluff removed).
+	// Fall back to a lightly cleaned raw preamble when sanitize emptied pure
+	// fluff but the raw body still has multi-line analysis.
+	visible := strings.TrimSpace(msg.Text)
+	if visible == "" {
+		visible = strings.TrimSpace(sanitizeAssistantMessageText(rawAssistantText, true))
+	}
+	if visible == "" {
+		// Last resort: keep multi-line raw text when it looks like a working plan
+		// rather than a one-line "Let me..." fluff sentence.
+		raw := strings.TrimSpace(splitAssistantPreambleBoundaries(rawAssistantText))
+		raw = stripHiddenAssistantMarkup(raw)
+		if assistantRawLooksLikeWorkingPlan(raw) {
+			visible = raw
+		}
+	}
+	parts := make([]string, 0, 2)
+	if reasoning != "" {
+		parts = append(parts, reasoning)
+	}
+	if visible != "" && !strings.EqualFold(visible, reasoning) {
+		parts = append(parts, visible)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func assistantRawLooksLikeWorkingPlan(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if utf8.RuneCountInString(trimmed) < 40 {
+		return false
+	}
+	// Pure one-line action fluff still fails.
+	if !strings.Contains(trimmed, "\n") && isAssistantNarrationPreamble(trimmed) {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return assistantLineHasWorkingNoteMarkers(lower) ||
+		strings.Count(trimmed, "\n") >= 1 ||
+		utf8.RuneCountInString(trimmed) >= 120
+}
+
 func synthesizeToolPreambleText(calls []ToolCall) string {
+	// Synthetic filler is no longer the default operator-facing path when the
+	// model is silent; emitModelWorkingNotes prefers real reasoning/text.
+	// Keep a tiny map for callers that still want a short cue in tests/UI.
 	if len(calls) == 0 {
 		return ""
 	}

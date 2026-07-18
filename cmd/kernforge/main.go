@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 func main() {
@@ -2138,6 +2139,8 @@ func progressEventActivityKind(event ProgressEvent, text string) string {
 		return "memory"
 	case progressKindAnalysisContext:
 		return "analysis"
+	case progressKindModelThought:
+		return "thought"
 	case progressKindModelRequestStart, progressKindModelRequestWait, progressKindModelRequestDone,
 		progressKindModelRouteWait, progressKindModelRouteAcquired,
 		progressKindModelStreamToolCall, progressKindModelStreamToolArgs, progressKindModelStreamToolReady,
@@ -2174,6 +2177,7 @@ func (rt *runtimeState) shouldPersistProgressEvent(event ProgressEvent, text str
 	case progressKindToolStarted, progressKindToolCompleted, progressKindToolFailed,
 		progressKindModelStreamToolCall, progressKindModelStreamToolReady,
 		progressKindModelReroute, progressKindModelVerification,
+		progressKindModelThought,
 		progressKindProviderRetry,
 		progressKindMemoryContext,
 		progressKindAnalysisContext:
@@ -2855,12 +2859,23 @@ func (rt *runtimeState) printAssistantWhileThinking(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
-	if rt.showTransientPanelWhileThinking(rt.ui.activityLine("next", text)) {
+	// Working notes (requirement analysis, plan direction) must stay visible
+	// like Claude Code / Grok Build. Only short one-liners may use the
+	// transient panel; multi-line thoughts always persist.
+	kind := "thought"
+	lineCount := strings.Count(text, "\n") + 1
+	if lineCount > 1 || utf8.RuneCountInString(strings.TrimSpace(text)) > 96 {
+		rt.clearThinkingStatus()
+		rt.clearThinkingDetails()
+		rt.printPersistentWhileThinking(rt.ui.activityLine(kind, text))
+		return
+	}
+	if rt.showTransientPanelWhileThinking(rt.ui.activityLine(kind, text)) {
 		return
 	}
 	rt.clearThinkingStatus()
 	rt.clearThinkingDetails()
-	rt.printPersistentWhileThinking(rt.ui.activityLine("next", text))
+	rt.printPersistentWhileThinking(rt.ui.activityLine(kind, text))
 }
 
 func (rt *runtimeState) shouldHonorRequestCancel() bool {
