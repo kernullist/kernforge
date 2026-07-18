@@ -603,16 +603,115 @@ func TestAssistantStreamDeltaDrawsRailOncePerLine(t *testing.T) {
 	ui := UI{color: true}
 	var ctx assistantRenderContext
 	prefix := ""
+	rowCells := 0
 
 	// A line split across two deltas must carry exactly one rail.
-	out := ui.renderAssistantStreamDelta("hel", &ctx, &prefix)
-	out += ui.renderAssistantStreamDelta("lo\nworld\n", &ctx, &prefix)
+	out := ui.renderAssistantStreamDelta("hel", &ctx, &prefix, &rowCells)
+	out += ui.renderAssistantStreamDelta("lo\nworld\n", &ctx, &prefix, &rowCells)
 
 	if got := strings.Count(out, assistantGutterBar); got != 2 {
 		t.Fatalf("expected one rail per line (2 total), got %d in %q", got, out)
 	}
 	if prefix != "" {
 		t.Fatalf("expected line prefix reset after completed lines, got %q", prefix)
+	}
+}
+
+func TestAssistantBodyHardWrapsLongLinesWithRailOnEachRow(t *testing.T) {
+	ui := UI{color: true}
+	// A CJK-heavy long line must split into multiple gutter-prefixed rows.
+	long := "SetWindowsHook 기반 DLL 인젝션은 보호 대상 프로세스가 비시스템 경로의 DLL을 image section으로 매핑할 때 발생합니다. 이를 탐지하려면 보호 대상 프로세스에서 로드되는 DLL이 시스템 디렉토리가 아닌지 확인하면 됩니다."
+	parts := wrapAssistantContentLine(long, 40)
+	if len(parts) < 2 {
+		t.Fatalf("expected long line to wrap into multiple parts at width 40, got %#v", parts)
+	}
+	for i, part := range parts {
+		if visibleLen(part) > 40 {
+			t.Fatalf("part %d exceeds width 40: visible=%d text=%q", i, visibleLen(part), part)
+		}
+	}
+
+	// Full body render with forced narrow width must place a rail on every
+	// physical segment (not just the first logical line).
+	prev := assistantBodyWidthForTest
+	assistantBodyWidthForTest = 40
+	t.Cleanup(func() { assistantBodyWidthForTest = prev })
+
+	rendered := ui.renderAssistantBody(long)
+	rails := strings.Count(rendered, assistantGutterBar)
+	if rails < 2 {
+		t.Fatalf("expected rail on each hard-wrapped body row (>=2), got %d in %q", rails, rendered)
+	}
+	// Every non-empty physical row must start with the gutter after a newline
+	// (or at the beginning of the buffer).
+	for i, row := range strings.Split(rendered, "\n") {
+		if strings.TrimSpace(row) == "" {
+			continue
+		}
+		if !strings.Contains(row, assistantGutterBar) {
+			t.Fatalf("row %d missing left rail: %q", i, row)
+		}
+	}
+}
+
+func TestAssistantStreamDeltaHardWrapsLongLineWithMultipleRails(t *testing.T) {
+	ui := UI{color: true}
+	var ctx assistantRenderContext
+	prefix := ""
+	rowCells := 0
+
+	// Force a narrow content width so Hangul (2 cells each) must hard-wrap
+	// independent of the real console width.
+	prev := assistantBodyWidthForTest
+	assistantBodyWidthForTest = 16
+	t.Cleanup(func() { assistantBodyWidthForTest = prev })
+
+	var long strings.Builder
+	for i := 0; i < 40; i++ {
+		long.WriteRune('가')
+	}
+	out := ui.renderAssistantStreamDelta(long.String()+"\n", &ctx, &prefix, &rowCells)
+	rails := strings.Count(out, assistantGutterBar)
+	if rails < 2 {
+		t.Fatalf("expected hard-wrap to emit multiple rails for long stream line, got %d in %q", rails, out)
+	}
+	// Continuations after an explicit wrap must re-emit the rail.
+	for i, row := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if strings.TrimSpace(row) == "" {
+			continue
+		}
+		if !strings.Contains(row, assistantGutterBar) {
+			t.Fatalf("stream row %d missing left rail: %q", i, row)
+		}
+	}
+	if prefix != "" {
+		t.Fatalf("expected prefix cleared after newline, got %q", prefix)
+	}
+	if rowCells != 0 {
+		t.Fatalf("expected row cells reset after newline, got %d", rowCells)
+	}
+}
+
+func TestAssistantStreamDeltaHardWrapsAcrossChunks(t *testing.T) {
+	ui := UI{color: true}
+	var ctx assistantRenderContext
+	prefix := ""
+	rowCells := 0
+
+	prev := assistantBodyWidthForTest
+	assistantBodyWidthForTest = 20
+	t.Cleanup(func() { assistantBodyWidthForTest = prev })
+
+	// Chunks that individually fit but together exceed the body width must
+	// insert a hard wrap + rail mid-stream without waiting for a newline.
+	out := ui.renderAssistantStreamDelta("abcdefghij", &ctx, &prefix, &rowCells) // 10 cells
+	out += ui.renderAssistantStreamDelta("klmnopqrstuvwxyz", &ctx, &prefix, &rowCells) // +16 => wrap
+	rails := strings.Count(out, assistantGutterBar)
+	if rails < 2 {
+		t.Fatalf("expected mid-stream hard-wrap rails, got %d in %q", rails, out)
+	}
+	if rowCells <= 0 || rowCells > 20 {
+		t.Fatalf("expected rowCells within body width after chunks, got %d", rowCells)
 	}
 }
 

@@ -96,6 +96,7 @@ type runtimeState struct {
 	pendingAssistantSpacing         string
 	assistantStreamCtx              assistantRenderContext
 	assistantStreamLine             string
+	assistantStreamRowCells         int // content cells on the current physical rail row
 	assistantBlockOpen              bool
 	assistantTurnClosedWithRail     bool
 	pendingCloseElapsed             time.Duration
@@ -1883,6 +1884,7 @@ func (rt *runtimeState) resetAssistantStream() {
 	rt.pendingAssistantSpacing = ""
 	rt.assistantStreamCtx = assistantRenderContext{}
 	rt.assistantStreamLine = ""
+	rt.assistantStreamRowCells = 0
 	rt.streamMu.Unlock()
 }
 
@@ -1934,6 +1936,7 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 			rt.pendingAssistantSpacing = ""
 			rt.assistantStreamCtx = assistantRenderContext{}
 			rt.assistantStreamLine = ""
+			rt.assistantStreamRowCells = 0
 			rt.setThinkingStatus(localizedText(rt.cfg, "Working ...", "작업 중 ..."))
 			rt.allowThinkingIndicator()
 			rt.startThinkingIndicator()
@@ -1952,13 +1955,14 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		rt.writeOutput(rt.ui.assistantHeader() + "\n")
 		rt.streamingAssistant = true
 		rt.assistantBlockOpen = true
+		rt.assistantStreamRowCells = 0
 	}
 	text = formatAssistantStreamDelta(rt.streamedAssistantText.String(), text)
 	if text == "" {
 		return
 	}
 	rt.streamedAssistantText.WriteString(text)
-	rt.writeOutput(rt.ui.renderAssistantStreamDelta(text, &rt.assistantStreamCtx, &rt.assistantStreamLine))
+	rt.writeOutput(rt.ui.renderAssistantStreamDelta(text, &rt.assistantStreamCtx, &rt.assistantStreamLine, &rt.assistantStreamRowCells))
 }
 
 // emitAssistantClosingRail terminates the assistant block that is currently
@@ -2000,6 +2004,7 @@ func (rt *runtimeState) finishAssistantStream() {
 	rt.streamedAssistantText.Reset()
 	rt.assistantStreamCtx = assistantRenderContext{}
 	rt.assistantStreamLine = ""
+	rt.assistantStreamRowCells = 0
 }
 
 func (rt *runtimeState) flushAssistantStream() {

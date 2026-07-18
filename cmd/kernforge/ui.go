@@ -1208,6 +1208,7 @@ func (ui UI) renderAssistantBody(text string) string {
 
 	gutter := ui.assistantGutter()
 	blankGutter := ui.assistantGutterBlank()
+	bodyWidth := assistantBodyContentWidth()
 
 	var out strings.Builder
 	var ctx assistantRenderContext
@@ -1221,8 +1222,22 @@ func (ui UI) renderAssistantBody(text string) string {
 			out.WriteString(blankGutter)
 		} else {
 			kind := classifyAssistantLine(content, ctx.inFence)
-			out.WriteString(gutter)
-			out.WriteString(ui.renderAssistantLine(kind, content, &ctx))
+			// Hard-wrap to terminal width so the left rail stays on every
+			// physical row. Soft terminal wrap would continue without the bar.
+			segments := wrapAssistantContentLine(content, bodyWidth)
+			for i, segment := range segments {
+				if i > 0 {
+					out.WriteByte('\n')
+				}
+				out.WriteString(gutter)
+				// Color segments through a scratch context so multi-part wraps do
+				// not advance block-comment state mid-line; commit once below.
+				previewCtx := ctx
+				out.WriteString(ui.renderAssistantLine(kind, segment, &previewCtx))
+			}
+			if kind == assistantLineCode && ctx.inFence {
+				ui.advanceLexerState(kind, content, &ctx)
+			}
 		}
 		if hasNewline {
 			out.WriteByte('\n')
@@ -1232,16 +1247,22 @@ func (ui UI) renderAssistantBody(text string) string {
 	return out.String()
 }
 
-func (ui UI) renderAssistantStreamDelta(text string, ctx *assistantRenderContext, linePrefix *string) string {
+func (ui UI) renderAssistantStreamDelta(text string, ctx *assistantRenderContext, linePrefix *string, rowCells *int) string {
 	if text == "" {
 		return ""
 	}
 	if !ui.color {
 		return text
 	}
+	if rowCells == nil {
+		// Backward-compatible path for tests that omit physical-column tracking.
+		zero := 0
+		rowCells = &zero
+	}
 
 	gutter := ui.assistantGutter()
 	blankGutter := ui.assistantGutterBlank()
+	bodyWidth := assistantBodyContentWidth()
 
 	var out strings.Builder
 	for _, segment := range strings.SplitAfter(text, "\n") {
@@ -1251,52 +1272,212 @@ func (ui UI) renderAssistantStreamDelta(text string, ctx *assistantRenderContext
 
 		hasNewline := strings.HasSuffix(segment, "\n")
 		content := strings.TrimSuffix(segment, "\n")
-		// linePrefix holds the visible content already emitted for the current
-		// line; an empty prefix means we are at the start of a line and must
-		// draw the left rail before any content.
-		atLineStart := *linePrefix == ""
+		// linePrefix holds the full logical-line content already accepted for
+		// classification; an empty prefix means a new logical line is starting.
+		atLogicalStart := *linePrefix == ""
 
 		if hasNewline {
 			fullLine := *linePrefix + content
 			kind := classifyAssistantLine(fullLine, ctx.inFence)
-			if atLineStart {
+			if atLogicalStart {
 				if strings.TrimSpace(content) == "" {
-					out.WriteString(blankGutter)
+					if *rowCells == 0 {
+						out.WriteString(blankGutter)
+					}
 				} else {
-					out.WriteString(gutter)
-					out.WriteString(ui.renderAssistantLine(kind, content, ctx))
+					out.WriteString(ui.emitWrappedAssistantContent(content, kind, ctx, gutter, bodyWidth, rowCells, true))
 				}
 			} else {
-				// The line was split across deltas: only the tail is emitted
-				// here (the prefix already went out). Color the tail through a
-				// scratch context so its lexing does not advance the persistent
-				// block-comment state with partial information; the canonical
-				// state is then derived below by lexing the whole line.
-				previewCtx := *ctx
-				out.WriteString(ui.renderAssistantLine(kind, content, &previewCtx))
+				// Complete the in-flight logical line: emit the new tail with
+				// hard wraps so the rail continues on every physical row.
+				out.WriteString(ui.emitWrappedAssistantContent(content, kind, ctx, gutter, bodyWidth, rowCells, false))
 				ui.advanceLexerState(kind, fullLine, ctx)
 			}
 			out.WriteByte('\n')
 			ctx.applyFenceLine(fullLine)
 			*linePrefix = ""
+			*rowCells = 0
 			continue
 		}
 
 		previewLine := *linePrefix + content
 		kind := classifyAssistantLine(previewLine, ctx.inFence)
-		if atLineStart {
-			out.WriteString(gutter)
-		}
-		// A partial (not-yet-terminated) code line must not commit the lexer's
-		// cross-line block-comment state: the same physical line keeps arriving
-		// in later deltas and is re-lexed from its own start, so the persistent
-		// state has to reflect only completed lines. Render through a scratch
-		// copy of the context to color the preview without side effects.
-		previewCtx := *ctx
-		out.WriteString(ui.renderAssistantLine(kind, content, &previewCtx))
+		out.WriteString(ui.emitWrappedAssistantContent(content, kind, ctx, gutter, bodyWidth, rowCells, atLogicalStart && *rowCells == 0))
 		*linePrefix = previewLine
 	}
 	return out.String()
+}
+
+// emitWrappedAssistantContent writes content for the current logical line,
+// inserting hard newlines + gutters before any segment that would exceed the
+// body width. rowCells tracks content cells already on the current physical row.
+func (ui UI) emitWrappedAssistantContent(content string, kind assistantLineKind, ctx *assistantRenderContext, gutter string, bodyWidth int, rowCells *int, forceGutter bool) string {
+	if content == "" && !forceGutter {
+		return ""
+	}
+	var out strings.Builder
+	if forceGutter && *rowCells == 0 {
+		out.WriteString(gutter)
+	}
+	// Render through a scratch context so partial physical segments do not
+	// advance cross-line block-comment state; callers advance on full lines.
+	runes := []rune(content)
+	i := 0
+	for i < len(runes) {
+		room := bodyWidth - *rowCells
+		if room <= 0 {
+			out.WriteByte('\n')
+			out.WriteString(gutter)
+			*rowCells = 0
+			room = bodyWidth
+		}
+		// Take as many runes as fit in room.
+		segStart := i
+		segWidth := 0
+		for i < len(runes) {
+			w := runeWidth(runes[i])
+			if segWidth+w > room {
+				break
+			}
+			segWidth += w
+			i++
+		}
+		if i == segStart {
+			// Single wide rune cannot fit in remaining room: wrap first.
+			if *rowCells > 0 {
+				out.WriteByte('\n')
+				out.WriteString(gutter)
+				*rowCells = 0
+				continue
+			}
+			// Force one rune even if wider than body (extreme narrow terminal).
+			i = segStart + 1
+			segWidth = runeWidth(runes[segStart])
+		}
+		segment := string(runes[segStart:i])
+		previewCtx := *ctx
+		out.WriteString(ui.renderAssistantLine(kind, segment, &previewCtx))
+		*rowCells += segWidth
+	}
+	return out.String()
+}
+
+// assistantBodyWidthForTest overrides the content width used by assistant
+// body/stream hard-wrap when > 0. Production code leaves it at 0.
+var assistantBodyWidthForTest int
+
+// assistantBodyContentWidth is the display width available for assistant body
+// text after the left rail (" ┃ "). Long lines hard-wrap to this width so the
+// rail is redrawn on every physical row instead of relying on terminal wrap.
+func assistantBodyContentWidth() int {
+	if assistantBodyWidthForTest > 0 {
+		return assistantBodyWidthForTest
+	}
+	termW := terminalWidth()
+	if termW <= 0 {
+		termW = 80
+	}
+	// " " + "┃" + " " is three cells; measure without ANSI paint.
+	gutterW := visibleLen(" " + assistantGutterBar + " ")
+	if gutterW <= 0 {
+		gutterW = 3
+	}
+	// Leave one cell of headroom: some Windows consoles soft-wrap when the
+	// cursor sits exactly on the last column, which would orphan the rail.
+	width := termW - gutterW - 1
+	if width < 16 {
+		return 16
+	}
+	return width
+}
+
+// wrapAssistantContentLine hard-wraps one logical assistant line into physical
+// segments that fit bodyWidth. List items use a hanging indent on continuations
+// so wrapped bullets stay aligned under the text, not under the marker.
+func wrapAssistantContentLine(content string, bodyWidth int) []string {
+	if bodyWidth <= 0 || content == "" {
+		return []string{content}
+	}
+	if visibleLen(content) <= bodyWidth {
+		return []string{content}
+	}
+	hang := assistantLineHangingIndent(content)
+	if hang < 0 || hang >= bodyWidth {
+		hang = 0
+	}
+	indent := strings.Repeat(" ", hang)
+	var parts []string
+	remaining := content
+	first := true
+	for remaining != "" {
+		width := bodyWidth
+		if !first {
+			width = bodyWidth - hang
+			if width < 8 {
+				width = 8
+			}
+		}
+		chunk, rest := splitDisplayPrefix(remaining, width)
+		if chunk == "" {
+			// Failsafe: consume one rune so we cannot loop forever.
+			rs := []rune(remaining)
+			chunk = string(rs[0])
+			rest = string(rs[1:])
+		}
+		if !first && hang > 0 {
+			chunk = indent + chunk
+		}
+		parts = append(parts, chunk)
+		remaining = strings.TrimLeft(rest, " \t")
+		first = false
+	}
+	if len(parts) == 0 {
+		return []string{content}
+	}
+	return parts
+}
+
+func assistantLineHangingIndent(content string) int {
+	if m := assistantBulletListPattern.FindString(content); m != "" {
+		return visibleLen(m)
+	}
+	if m := assistantOrderedListPattern.FindString(content); m != "" {
+		return visibleLen(m)
+	}
+	return 0
+}
+
+// splitDisplayPrefix returns the longest prefix of text whose display width is
+// at most width, preferring breaks at spaces/tabs. rest is the remainder.
+func splitDisplayPrefix(text string, width int) (string, string) {
+	if width <= 0 || text == "" {
+		return "", text
+	}
+	runes := []rune(text)
+	if visibleLen(text) <= width {
+		return text, ""
+	}
+	lineWidth := 0
+	end := 0
+	lastBreak := -1
+	for end < len(runes) {
+		r := runes[end]
+		w := runeWidth(r)
+		if lineWidth+w > width {
+			break
+		}
+		if r == ' ' || r == '\t' {
+			lastBreak = end
+		}
+		lineWidth += w
+		end++
+	}
+	if end == 0 {
+		end = 1
+	} else if end < len(runes) && lastBreak >= 0 {
+		end = lastBreak + 1
+	}
+	return string(runes[:end]), string(runes[end:])
 }
 
 // assistantRenderContext threads the per-render fence state through the line

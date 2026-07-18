@@ -307,16 +307,17 @@ func TestStreamingThreadsFenceLanguage(t *testing.T) {
 	ui := UI{color: true}
 	var ctx assistantRenderContext
 	prefix := ""
+	rowCells := 0
 
-	out := ui.renderAssistantStreamDelta("```go\n", &ctx, &prefix)
+	out := ui.renderAssistantStreamDelta("```go\n", &ctx, &prefix, &rowCells)
 	if !ctx.inFence || ctx.language != "go" {
 		t.Fatalf("expected fence open with go language, got inFence=%v language=%q", ctx.inFence, ctx.language)
 	}
-	out += ui.renderAssistantStreamDelta("func f() {}\n", &ctx, &prefix)
+	out += ui.renderAssistantStreamDelta("func f() {}\n", &ctx, &prefix, &rowCells)
 	if !strings.Contains(out, testPaint(syntaxKeywordCode, "func")) {
 		t.Fatalf("expected streamed go code highlighted, got %q", out)
 	}
-	out += ui.renderAssistantStreamDelta("```\n", &ctx, &prefix)
+	out += ui.renderAssistantStreamDelta("```\n", &ctx, &prefix, &rowCells)
 	if ctx.inFence || ctx.language != "" {
 		t.Fatalf("expected fence closed and language cleared, got inFence=%v language=%q", ctx.inFence, ctx.language)
 	}
@@ -326,15 +327,16 @@ func TestStreamingSplitLineKeepsBlockCommentState(t *testing.T) {
 	ui := UI{color: true}
 	ctx := assistantRenderContext{inFence: true, language: "cpp"}
 	prefix := ""
+	rowCells := 0
 
 	// First delta is a partial code line opening a block comment; it must not
 	// commit the block-comment state because the line is not yet terminated.
-	ui.renderAssistantStreamDelta("int x; /* op", &ctx, &prefix)
+	ui.renderAssistantStreamDelta("int x; /* op", &ctx, &prefix, &rowCells)
 	if ctx.blockComment.inBlockComment {
 		t.Fatalf("partial line wrongly committed block-comment state")
 	}
 	// Completing the line must derive the canonical state from the whole line.
-	ui.renderAssistantStreamDelta("en\n", &ctx, &prefix)
+	ui.renderAssistantStreamDelta("en\n", &ctx, &prefix, &rowCells)
 	if !ctx.blockComment.inBlockComment {
 		t.Fatalf("expected block-comment state open after full split line")
 	}
