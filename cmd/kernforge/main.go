@@ -1364,11 +1364,14 @@ func (rt *runtimeState) printOperatorFooter() {
 	if rt == nil || rt.writer == nil {
 		return
 	}
-	line := rt.operatorFooterLine()
-	if strings.TrimSpace(line) == "" {
-		return
+	snapshot := rt.operatorStatusSnapshot(runtimeGateActionFinalAnswer)
+	line := rt.ui.statusSummaryBlock("status", snapshot.Items, operatorFooterDisplayWidth(terminalWidth()))
+	if strings.TrimSpace(line) != "" {
+		fmt.Fprintln(rt.writer, line)
 	}
-	fmt.Fprintln(rt.writer, line)
+	// When the gate is blocked or needs review, show plain recovery steps above
+	// the prompt so users do not have to discover /status detail first.
+	rt.printRuntimeGateRecoveryGuidance(snapshot.Ledger)
 }
 
 func (rt *runtimeState) operatorFooterLine() string {
@@ -1380,6 +1383,35 @@ func (rt *runtimeState) operatorFooterLineForWidth(width int) string {
 		return ""
 	}
 	return rt.ui.statusSummaryBlock("status", rt.operatorStatusSnapshot(runtimeGateActionFinalAnswer).Items, operatorFooterDisplayWidth(width))
+}
+
+// printRuntimeGateRecoveryGuidance prints short "what to do" lines for a
+// non-ready runtime gate (blocked / needs_review). Ready gates print nothing.
+func (rt *runtimeState) printRuntimeGateRecoveryGuidance(ledger RuntimeGateLedger) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	lines := runtimeGateRecoveryGuidanceLines(rt.cfg, rt.session, ledger)
+	if len(lines) == 0 {
+		return
+	}
+	ledger.Normalize()
+	blocked := strings.EqualFold(ledger.Status, runtimeGateStatusBlocked)
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		switch {
+		case i == 0 && blocked:
+			fmt.Fprintln(rt.writer, rt.ui.warnLine(line))
+		case strings.HasPrefix(line, "Do now:") || strings.HasPrefix(line, "지금 할 일:") ||
+			strings.HasPrefix(line, "Or:") || strings.HasPrefix(line, "또는:"):
+			fmt.Fprintln(rt.writer, rt.ui.activityLine("next", line))
+		default:
+			fmt.Fprintln(rt.writer, rt.ui.hintLine(line))
+		}
+	}
 }
 
 func operatorFooterDisplayWidth(width int) int {
@@ -7656,7 +7688,11 @@ func (rt *runtimeState) printStatusOverview(action string) {
 	if summary := rt.ui.statusSummaryBlock("", snapshot.Items, terminalWidth()); strings.TrimSpace(summary) != "" {
 		fmt.Fprintln(rt.writer, summary)
 	}
-	if next := operatorStatusNextCommandLine(rt.session, snapshot.Ledger); next != "" {
+	// Prefer concrete gate recovery steps when blocked/needs_review; fall back
+	// to the generic next-command line only when the gate is ready.
+	if runtimeGateNeedsRecoveryGuidance(snapshot.Ledger) {
+		rt.printRuntimeGateRecoveryGuidance(snapshot.Ledger)
+	} else if next := operatorStatusNextCommandLine(rt.session, snapshot.Ledger); next != "" {
 		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", next))
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", "/status detail for lifecycle evidence, /provider status for live provider details."))

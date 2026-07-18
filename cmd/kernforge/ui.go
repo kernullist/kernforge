@@ -861,6 +861,8 @@ func (ui UI) activityBadge(kind string) string {
 		return ui.bold(ui.blush(label))
 	case "next":
 		return ui.bold(ui.info(label))
+	case "fix":
+		return ui.bold(ui.warn(label))
 	case "analysis":
 		return ui.bold(ui.blush(label))
 	case "memory":

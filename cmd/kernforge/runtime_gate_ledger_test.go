@@ -1868,6 +1868,85 @@ func TestRenderRuntimeGateBlockedFeedbackGivesConcreteRemedy(t *testing.T) {
 	}
 }
 
+func TestRuntimeGateRecoveryGuidanceLinesForStaleBlock(t *testing.T) {
+	ledger := RuntimeGateLedger{
+		ID:          "runtime-gate-recovery",
+		Action:      runtimeGateActionFinalAnswer,
+		ReviewRunID: "review-stale",
+		Blockers:    []string{runtimeGateBlockerStaleReviewPrefix + " reviewed files changed since review: UserCommon.h"},
+		StaleReasons: []string{
+			"reviewed files changed since review: UserCommon.h",
+		},
+		NextCommands: []ReviewNextCommand{{Command: "/review", Reason: "latest review freshness is stale"}},
+	}
+	ledger.Normalize()
+
+	ko := runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(true)}, nil, ledger)
+	if len(ko) < 3 {
+		t.Fatalf("expected multi-line recovery guidance, got %#v", ko)
+	}
+	joined := strings.Join(ko, "\n")
+	if !strings.Contains(joined, "완료·커밋") ||
+		!strings.Contains(joined, "지금 할 일:") ||
+		!strings.Contains(joined, "/review") ||
+		!strings.Contains(joined, "/status") {
+		t.Fatalf("korean recovery guidance missing action steps:\n%s", joined)
+	}
+
+	en := runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(false)}, nil, ledger)
+	joinedEN := strings.Join(en, "\n")
+	if !strings.Contains(joinedEN, "Do now:") ||
+		!strings.Contains(joinedEN, "/review") ||
+		!strings.Contains(joinedEN, "completion/git write") {
+		t.Fatalf("english recovery guidance missing action steps:\n%s", joinedEN)
+	}
+
+	// Ready gate must stay silent.
+	ready := RuntimeGateLedger{ID: "ready", Status: runtimeGateStatusReady, Ready: true}
+	if got := runtimeGateRecoveryGuidanceLines(Config{}, nil, ready); len(got) != 0 {
+		t.Fatalf("ready gate must not print recovery guidance, got %#v", got)
+	}
+}
+
+func TestPrintOperatorFooterShowsRecoveryWhenGateBlocked(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"UserCommon.h"})
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-stale",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Trigger:           "pre_write",
+		Branch:            "main",
+		ReviewFingerprint: "fp-1",
+		ChangeSet:         ReviewChangeSet{ChangedPaths: []string{"other.go"}},
+		Freshness:         ReviewFreshness{ReviewFingerprint: "fp-1"},
+		Gate:              GateDecision{Verdict: reviewVerdictApproved},
+	}
+
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{color: false},
+		cfg:       Config{AutoLocale: boolPtr(true)},
+		session:   session,
+		workspace: Workspace{Root: root, BaseRoot: root},
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		perms:     NewPermissionManager(ModeBypass, nil),
+	}
+	rt.printOperatorFooter()
+	rendered := out.String()
+	if !strings.Contains(rendered, "status ") {
+		t.Fatalf("expected status pills line, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "WARN") ||
+		!strings.Contains(rendered, "지금 할 일:") ||
+		!strings.Contains(rendered, "/review") {
+		t.Fatalf("expected blocked-gate recovery steps in footer, got:\n%s", rendered)
+	}
+}
+
 func TestRuntimeGateStalenessOnlyStatusCopyStatesWriteSideScope(t *testing.T) {
 	ledger := RuntimeGateLedger{
 		ID:          "runtime-gate-test",

@@ -1953,6 +1953,144 @@ func runtimeGatePrimaryNextCommandLine(ledger RuntimeGateLedger) string {
 	return command + " - " + strings.TrimSpace(next.Reason)
 }
 
+// runtimeGateNeedsRecoveryGuidance reports whether the operator should be shown
+// concrete fix steps (blocked or needs_review). Ready gates stay silent.
+func runtimeGateNeedsRecoveryGuidance(ledger RuntimeGateLedger) bool {
+	if runtimeGateLedgerEmpty(ledger) {
+		return false
+	}
+	ledger.Normalize()
+	switch strings.ToLower(strings.TrimSpace(ledger.Status)) {
+	case runtimeGateStatusBlocked, runtimeGateStatusNeedsReview:
+		return true
+	default:
+		return false
+	}
+}
+
+// runtimeGateRecoveryGuidanceLines returns short plain-language recovery steps
+// for non-ready gates so REPL users do not have to open /status detail first.
+// Line 0 is the headline; later lines are reason / do-now / details.
+func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger RuntimeGateLedger) []string {
+	if !runtimeGateNeedsRecoveryGuidance(ledger) {
+		return nil
+	}
+	ledger.Normalize()
+	korean := localePrefersKorean(cfg)
+	status := strings.ToLower(strings.TrimSpace(ledger.Status))
+	stalenessOnly := runtimeGateBlockersAreReviewStalenessOnly(ledger)
+
+	var lines []string
+	switch {
+	case status == runtimeGateStatusBlocked && stalenessOnly:
+		if korean {
+			lines = append(lines, "게이트가 완료·커밋만 막고 있습니다. 편집·읽기·분석은 가능합니다.")
+		} else {
+			lines = append(lines, "Gate blocks completion/git write only. Edit, read, and analysis remain allowed.")
+		}
+	case status == runtimeGateStatusBlocked:
+		if korean {
+			lines = append(lines, "런타임 게이트가 막혀 있습니다. 아래 조치 후 다시 시도하세요.")
+		} else {
+			lines = append(lines, "Runtime gate is blocked. Resolve the steps below, then retry.")
+		}
+	default: // needs_review
+		if korean {
+			lines = append(lines, "리뷰 갱신이 필요합니다. 완료·write-side 전에 처리하세요.")
+		} else {
+			lines = append(lines, "Review refresh needed before completion or write-side actions.")
+		}
+	}
+
+	if reason := runtimeGateRecoveryReasonLine(ledger, korean); reason != "" {
+		if korean {
+			lines = append(lines, "이유: "+reason)
+		} else {
+			lines = append(lines, "Why: "+reason)
+		}
+	}
+
+	next := strings.TrimSpace(operatorStatusNextCommandLine(session, ledger))
+	if next == "" {
+		if korean {
+			next = "/review - 최신 리뷰 갱신"
+		} else {
+			next = "/review - refresh the latest review"
+		}
+	}
+	if korean {
+		lines = append(lines, "지금 할 일: "+next)
+	} else {
+		lines = append(lines, "Do now: "+next)
+	}
+
+	// Extra alternate next commands (skip duplicate of primary).
+	primaryCmd := ""
+	if fields := strings.Fields(next); len(fields) > 0 {
+		primaryCmd = strings.ToLower(fields[0])
+	}
+	extra := 0
+	for _, cmd := range ledger.NextCommands {
+		command := strings.TrimSpace(cmd.Command)
+		if command == "" {
+			continue
+		}
+		cmdFields := strings.Fields(command)
+		if len(cmdFields) == 0 {
+			continue
+		}
+		if primaryCmd != "" && strings.EqualFold(cmdFields[0], primaryCmd) {
+			continue
+		}
+		line := command
+		if reason := strings.TrimSpace(cmd.Reason); reason != "" {
+			line += " - " + reason
+		}
+		if korean {
+			lines = append(lines, "또는: "+line)
+		} else {
+			lines = append(lines, "Or: "+line)
+		}
+		extra++
+		if extra >= 2 {
+			break
+		}
+	}
+
+	if !strings.Contains(strings.ToLower(next), "/status") {
+		if korean {
+			lines = append(lines, "자세히: /status  또는  /status detail")
+		} else {
+			lines = append(lines, "Details: /status  or  /status detail")
+		}
+	}
+	return lines
+}
+
+func runtimeGateRecoveryReasonLine(ledger RuntimeGateLedger, korean bool) string {
+	ledger.Normalize()
+	if len(ledger.Blockers) > 0 {
+		blocker := strings.TrimSpace(ledger.Blockers[0])
+		class := reviewBlockerClassForText(blocker)
+		sentence := humanizeBlockerSentence(ReviewOperatorBlocker{
+			Class:     class,
+			WhyBlocks: blocker,
+		}, korean)
+		// Drop the class prefix for the compact recovery line when present.
+		if idx := strings.Index(sentence, ": "); idx > 0 && idx < 40 {
+			sentence = strings.TrimSpace(sentence[idx+2:])
+		}
+		return compactPromptSection(sentence, 180)
+	}
+	if len(ledger.Warnings) > 0 {
+		return compactPromptSection(ledger.Warnings[0], 180)
+	}
+	if len(ledger.StaleReasons) > 0 {
+		return compactPromptSection(ledger.StaleReasons[0], 180)
+	}
+	return ""
+}
+
 // runtimeGateBlockedRemedy returns plain-language, concrete steps that tell the
 // reader exactly what to do to clear the block, keyed off the kind of blocker
 // (real review findings vs. a stale/missing review). The terse blocker strings
