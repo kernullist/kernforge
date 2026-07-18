@@ -8508,6 +8508,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSuggestFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "gate":
+		if err := rt.handleGateCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "review":
 		err := rt.runWithRequestCancelWatcher(context.Background(), func(ctx context.Context) error {
 			return rt.handleReviewCommandWithContext(ctx, cmd.Args)

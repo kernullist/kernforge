@@ -102,6 +102,10 @@ type Session struct {
 	ReviewVerdictCache             []ReviewVerdictCacheEntry       `json:"review_verdict_cache,omitempty"`
 	ExternalLookupIntents          []ReviewExternalLookupIntent    `json:"external_lookup_intents,omitempty"`
 	RuntimeGateLedger              *RuntimeGateLedger              `json:"runtime_gate_ledger,omitempty"`
+	// RuntimeGateDismissal is a session-scoped operator choice to ignore a prior
+	// review for runtime-gate attachment. Workspace-scoped dismissals live in
+	// .kernforge/runtime_gate_dismissal.json and are used when this is nil.
+	RuntimeGateDismissal *RuntimeGateDismissal `json:"runtime_gate_dismissal,omitempty"`
 	ActiveFailureRepair            *FailureRepairAttempt           `json:"active_failure_repair,omitempty"`
 	FailureRepairAttempts          []FailureRepairAttempt          `json:"failure_repair_attempts,omitempty"`
 	LastSelection                  *ViewerSelection                `json:"last_selection,omitempty"`

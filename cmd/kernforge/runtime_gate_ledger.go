@@ -571,17 +571,28 @@ func runtimeGateActionMayUseArchivedPatchScope(action string) bool {
 func runtimeGateReviewRun(root string, session *Session, provided *ReviewRun) (ReviewRun, bool) {
 	if provided != nil {
 		copyRun := *provided
-		return copyRun, strings.TrimSpace(copyRun.ID) != ""
+		if strings.TrimSpace(copyRun.ID) == "" {
+			return ReviewRun{}, false
+		}
+		if runtimeGateReviewIsDismissed(root, session, copyRun) {
+			return ReviewRun{}, false
+		}
+		return copyRun, true
 	}
 	if session != nil && session.LastReviewRun != nil {
 		copyRun := *session.LastReviewRun
-		return copyRun, strings.TrimSpace(copyRun.ID) != ""
+		if strings.TrimSpace(copyRun.ID) != "" && !runtimeGateReviewIsDismissed(root, session, copyRun) {
+			return copyRun, true
+		}
 	}
 	if strings.TrimSpace(root) == "" {
 		return ReviewRun{}, false
 	}
 	latest, _, ok, err := loadLatestReviewRun(root)
 	if err != nil || !ok || strings.TrimSpace(latest.ID) == "" {
+		return ReviewRun{}, false
+	}
+	if runtimeGateReviewIsDismissed(root, session, latest) {
 		return ReviewRun{}, false
 	}
 	return latest, true
@@ -2062,6 +2073,15 @@ func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger Runti
 			lines = append(lines, "자세히: /status  또는  /status detail")
 		} else {
 			lines = append(lines, "Details: /status  or  /status detail")
+		}
+	}
+	// Offer an explicit escape hatch for previous-session baggage so operators
+	// are not forced through /review when they only want to keep editing.
+	if status == runtimeGateStatusBlocked && (stalenessOnly || len(ledger.Blockers) > 0) {
+		if korean {
+			lines = append(lines, "또는: /gate clear - 이전 세션 게이트 부담 해제 (리뷰 파일 유지)")
+		} else {
+			lines = append(lines, "Or: /gate clear - dismiss previous-session gate baggage (keeps review files)")
 		}
 	}
 	return lines

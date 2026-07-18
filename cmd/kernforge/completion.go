@@ -20,6 +20,7 @@ var slashCommands = []string{
 	"specialists",
 	"suggest",
 	"review",
+	"gate",
 	"review-soak",
 	"finish",
 	"retry-verify",
@@ -98,6 +99,7 @@ var slashCommandDescriptions = map[string]string{
 	"specialists":             "Show task ownership profiles plus editable ownership and worktree routing state.",
 	"suggest":                 "Inspect proactive situation judgment, suggested next actions, and suggestion mode.",
 	"review":                  "Run the common review harness for changes, plans, selections, PRs, goals, final answers, or analysis reports.",
+	"gate":                    "Show runtime gate status, or clear/restore previous-session gate blocks.",
 	"review-soak":             "Run the bounded live-provider soak and write status, MCP, Markdown, and runtime-gate artifacts.",
 	"finish":                  "Finish a harness-blocked turn with honest disclosure: /finish --disclose.",
 	"retry-verify":            "Retry focused verification after a harness block, then finish with recorded evidence.",
@@ -207,6 +209,11 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 	},
 	"finish": {
 		"--disclose": "Rewrite the blocked final answer with verification-not-run disclosure and complete when the gate allows.",
+	},
+	"gate": {
+		"status":  "Show runtime gate status and any active /gate clear dismissal.",
+		"clear":   "Dismiss previous-session review baggage from the runtime gate (keeps review files).",
+		"restore": "Re-enable the dismissed review for runtime gate checks.",
 	},
 	"review": {
 		"change":                    "Review the current workspace diff, patch transaction, or supplied diff/code.",
