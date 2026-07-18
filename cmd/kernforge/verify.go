@@ -136,7 +136,7 @@ func (a *Agent) autoVerifyChanges(ctx context.Context) (VerificationReport, bool
 		}
 		return report, ok
 	}
-	report, ok := runRecommendedVerification(ctx, a.Workspace, a.Session, a.VerifyHistory, "automatic", changed, a.confirmAutomaticVerification)
+	report, ok := runRecommendedVerification(ctx, a.Workspace, a.Session, a.VerifyHistory, "automatic", changed, a.confirmAutomaticVerification, a.Config)
 	if !ok {
 		return VerificationReport{}, false
 	}
@@ -164,7 +164,7 @@ func (a *Agent) confirmAutomaticVerification(plan VerificationPlan) (bool, error
 	return a.PromptConfirmAutoVerify(plan)
 }
 
-func runRecommendedVerification(ctx context.Context, ws Workspace, sess *Session, history *VerificationHistoryStore, trigger string, changed []string, confirm func(VerificationPlan) (bool, error)) (VerificationReport, bool) {
+func runRecommendedVerification(ctx context.Context, ws Workspace, sess *Session, history *VerificationHistoryStore, trigger string, changed []string, confirm func(VerificationPlan) (bool, error), cfg Config) (VerificationReport, bool) {
 	if len(changed) == 0 {
 		changed = collectVerificationChangedPaths(ws.Root, sess)
 	}
@@ -174,7 +174,7 @@ func runRecommendedVerification(ctx context.Context, ws Workspace, sess *Session
 			tuning = loaded
 		}
 	}
-	plan := buildVerificationPlanWithTuning(ws.Root, changed, VerificationAdaptive, tuning)
+	plan := buildVerificationPlanWithTuning(ws.Root, changed, VerificationAdaptive, tuning, cfg)
 	if len(plan.Steps) == 0 {
 		return VerificationReport{}, false
 	}
@@ -250,11 +250,11 @@ func skippedVerificationReportForPlan(root string, trigger string, plan Verifica
 }
 
 func buildVerificationPlan(root string, changed []string, mode VerificationMode) VerificationPlan {
-	return buildVerificationPlanWithTuning(root, changed, mode, VerificationTuning{})
+	return buildVerificationPlanWithTuning(root, changed, mode, VerificationTuning{}, Config{})
 }
 
-func buildVerificationPlanWithTuning(root string, changed []string, mode VerificationMode, tuning VerificationTuning) VerificationPlan {
-	steps := buildVerificationSteps(root, changed, mode)
+func buildVerificationPlanWithTuning(root string, changed []string, mode VerificationMode, tuning VerificationTuning, cfg Config) VerificationPlan {
+	steps := buildVerificationSteps(root, changed, mode, cfg)
 	var cadenceNote string
 	steps, cadenceNote = applyAdaptiveFullRegressionCadence(steps, mode, tuning)
 	securitySteps, securityNote := buildSecurityVerificationSteps(root, changed, mode)
@@ -492,7 +492,7 @@ func normalizeVerificationComparablePath(path string) string {
 	return strings.ToLower(path)
 }
 
-func buildVerificationSteps(root string, changed []string, mode VerificationMode) []VerificationStep {
+func buildVerificationSteps(root string, changed []string, mode VerificationMode, cfg Config) []VerificationStep {
 	if exists(filepath.Join(root, "go.mod")) {
 		return buildGoVerificationSteps(root, changed, mode)
 	}
@@ -517,7 +517,7 @@ func buildVerificationSteps(root string, changed []string, mode VerificationMode
 	if scripts := packageScripts(filepath.Join(root, "package.json")); len(scripts) > 0 {
 		return buildNodeVerificationSteps(scripts, mode)
 	}
-	if steps := buildCppVerificationSteps(root, changed, mode); len(steps) > 0 {
+	if steps := buildCppVerificationSteps(root, changed, mode, cfg); len(steps) > 0 {
 		return steps
 	}
 	return nil
@@ -659,11 +659,12 @@ func analysisVerificationMatrixEntryMatches(item AnalysisVerificationMatrixEntry
 	return false
 }
 
-func buildCppVerificationSteps(root string, changed []string, mode VerificationMode) []VerificationStep {
+func buildCppVerificationSteps(root string, changed []string, mode VerificationMode, cfg Config) []VerificationStep {
+	prefs := configVerify(cfg)
 	if projects := detectChangedVCXProjFiles(root, changed); len(projects) > 0 {
 		steps := make([]VerificationStep, 0, len(projects)+1)
 		for _, project := range projects {
-			command, label := msbuildProjectVerificationCommand(root, project)
+			command, label := msbuildProjectVerificationCommand(root, project, prefs)
 			steps = append(steps, VerificationStep{
 				Label:           label,
 				Command:         command,
@@ -678,7 +679,7 @@ func buildCppVerificationSteps(root string, changed []string, mode VerificationM
 			return uniqueVerificationSteps(steps)
 		}
 		if solution := detectSolutionFile(root); solution != "" {
-			command, label := msbuildSolutionVerificationCommand(root, solution)
+			command, label := msbuildSolutionVerificationCommand(root, solution, prefs)
 			steps = append(steps, VerificationStep{
 				Label:   label,
 				Command: command,
@@ -691,19 +692,20 @@ func buildCppVerificationSteps(root string, changed []string, mode VerificationM
 	}
 	if buildDir := detectCMakeBuildDir(root); buildDir != "" {
 		quotedBuildDir := quoteVerificationCommandArg(buildDir)
-		// Prefer Release for multi-config generators (VS/Xcode). Single-config
-		// generators ignore --config when CMAKE_BUILD_TYPE is already set.
+		cmakeConfig := firstNonBlankString(prefs.CMakeConfig, "Release")
+		// Prefer Release (or configured value) for multi-config generators.
+		// Single-config generators ignore --config when CMAKE_BUILD_TYPE is set.
 		steps := []VerificationStep{{
-			Label:   "cmake --build " + buildDir + " (Release)",
-			Command: "cmake --build " + quotedBuildDir + " --config Release --parallel",
+			Label:   "cmake --build " + buildDir + " (" + cmakeConfig + ")",
+			Command: "cmake --build " + quotedBuildDir + " --config " + quoteMSBuildPropertyValue(cmakeConfig) + " --parallel",
 			Scope:   "workspace",
 			Stage:   "workspace",
 			Status:  VerificationPending,
 		}}
 		if mode == VerificationFull && hasCTestMetadata(root, buildDir) {
 			steps = append(steps, VerificationStep{
-				Label:   "ctest --test-dir " + buildDir + " -C Release",
-				Command: "ctest --test-dir " + quotedBuildDir + " -C Release --output-on-failure",
+				Label:   "ctest --test-dir " + buildDir + " -C " + cmakeConfig,
+				Command: "ctest --test-dir " + quotedBuildDir + " -C " + quoteMSBuildPropertyValue(cmakeConfig) + " --output-on-failure",
 				Scope:   "workspace",
 				Stage:   "workspace",
 				Status:  VerificationPending,
@@ -712,7 +714,7 @@ func buildCppVerificationSteps(root string, changed []string, mode VerificationM
 		return steps
 	}
 	if solution := detectSolutionFile(root); solution != "" {
-		command, label := msbuildSolutionVerificationCommand(root, solution)
+		command, label := msbuildSolutionVerificationCommand(root, solution, prefs)
 		return []VerificationStep{{
 			Label:   label,
 			Command: command,
@@ -722,7 +724,7 @@ func buildCppVerificationSteps(root string, changed []string, mode VerificationM
 		}}
 	}
 	if project := detectVCXProjFile(root); project != "" {
-		command, label := msbuildProjectVerificationCommand(root, project)
+		command, label := msbuildProjectVerificationCommand(root, project, prefs)
 		return []VerificationStep{{
 			Label:   label,
 			Command: command,
@@ -739,10 +741,10 @@ type msbuildProjectConfiguration struct {
 	Platform      string
 }
 
-func msbuildProjectVerificationCommand(root string, project string) (string, string) {
+func msbuildProjectVerificationCommand(root string, project string, prefs VerifyConfig) (string, string) {
 	command := "msbuild " + quoteVerificationCommandArg(project) + " /m"
 	label := "msbuild " + project
-	if cfg := selectMSBuildProjectConfiguration(root, project); cfg.Configuration != "" && cfg.Platform != "" {
+	if cfg := selectMSBuildProjectConfiguration(root, project, prefs); cfg.Configuration != "" && cfg.Platform != "" {
 		command += " /p:Configuration=" + quoteMSBuildPropertyValue(cfg.Configuration)
 		command += " /p:Platform=" + quoteMSBuildPropertyValue(cfg.Platform)
 		label += " " + cfg.Configuration + "|" + cfg.Platform
@@ -750,10 +752,10 @@ func msbuildProjectVerificationCommand(root string, project string) (string, str
 	return command, label
 }
 
-func msbuildSolutionVerificationCommand(root string, solution string) (string, string) {
+func msbuildSolutionVerificationCommand(root string, solution string, prefs VerifyConfig) (string, string) {
 	command := "msbuild " + quoteVerificationCommandArg(solution) + " /m"
 	label := "msbuild " + solution
-	if cfg := selectMSBuildSolutionConfiguration(root, solution); cfg.Configuration != "" && cfg.Platform != "" {
+	if cfg := selectMSBuildSolutionConfiguration(root, solution, prefs); cfg.Configuration != "" && cfg.Platform != "" {
 		command += " /p:Configuration=" + quoteMSBuildPropertyValue(cfg.Configuration)
 		command += " /p:Platform=" + quoteMSBuildPropertyValue(cfg.Platform)
 		label += " " + cfg.Configuration + "|" + cfg.Platform
@@ -761,27 +763,75 @@ func msbuildSolutionVerificationCommand(root string, solution string) (string, s
 	return command, label
 }
 
-func selectMSBuildProjectConfiguration(root string, project string) msbuildProjectConfiguration {
-	return selectPreferredMSBuildConfiguration(readMSBuildProjectConfigurations(root, project))
+func selectMSBuildProjectConfiguration(root string, project string, prefs VerifyConfig) msbuildProjectConfiguration {
+	return selectPreferredMSBuildConfiguration(readMSBuildProjectConfigurations(root, project), prefs)
 }
 
-func selectMSBuildSolutionConfiguration(root string, solution string) msbuildProjectConfiguration {
-	if cfg := selectPreferredMSBuildConfiguration(readMSBuildSolutionConfigurations(root, solution)); cfg.Configuration != "" {
+func selectMSBuildSolutionConfiguration(root string, solution string, prefs VerifyConfig) msbuildProjectConfiguration {
+	if cfg := selectPreferredMSBuildConfiguration(readMSBuildSolutionConfigurations(root, solution), prefs); cfg.Configuration != "" {
 		return cfg
 	}
 	// Fall back to configurations declared by a project in the workspace.
 	if project := detectVCXProjFile(root); project != "" {
-		return selectMSBuildProjectConfiguration(root, project)
+		return selectMSBuildProjectConfiguration(root, project, prefs)
 	}
-	return msbuildProjectConfiguration{}
+	// Still honor explicit operator prefs when discovery finds no matrix.
+	return forcedMSBuildConfiguration(prefs)
 }
 
 // selectPreferredMSBuildConfiguration picks a configuration for automatic
-// verification. Release is preferred over Debug: many product trees (game /
-// anti-cheat / kernel clients) only maintain Release fully, while Debug may be
-// listed but incomplete. A failed Debug build is often a config gap, not a
-// code regression from the current edit.
-func selectPreferredMSBuildConfiguration(configs []msbuildProjectConfiguration) msbuildProjectConfiguration {
+// verification. Operator prefs in VerifyConfig win when set. Otherwise Release
+// is preferred over Debug: many product trees only maintain Release fully.
+func selectPreferredMSBuildConfiguration(configs []msbuildProjectConfiguration, prefs VerifyConfig) msbuildProjectConfiguration {
+	prefs.Normalize()
+	if forced := forcedMSBuildConfiguration(prefs); forced.Configuration != "" && forced.Platform != "" {
+		if len(configs) == 0 {
+			return forced
+		}
+		// Prefer an exact match from the project matrix when present; otherwise
+		// still force the operator preference so verification does not silently
+		// fall back into Debug on Release-only product trees.
+		for _, cfg := range configs {
+			if strings.EqualFold(cfg.Configuration, forced.Configuration) && strings.EqualFold(cfg.Platform, forced.Platform) {
+				return cfg
+			}
+		}
+		return forced
+	}
+	if prefs.MSBuildConfiguration != "" {
+		// Configuration forced, platform auto.
+		if prefs.MSBuildPlatform == "" {
+			for _, platform := range []string{"x64", "ARM64", "Win32", "Any CPU", "AnyCPU"} {
+				for _, cfg := range configs {
+					if strings.EqualFold(cfg.Configuration, prefs.MSBuildConfiguration) && strings.EqualFold(cfg.Platform, platform) {
+						return cfg
+					}
+				}
+			}
+			for _, cfg := range configs {
+				if strings.EqualFold(cfg.Configuration, prefs.MSBuildConfiguration) {
+					return cfg
+				}
+			}
+			return msbuildProjectConfiguration{Configuration: prefs.MSBuildConfiguration, Platform: "x64"}
+		}
+	}
+	if prefs.MSBuildPlatform != "" {
+		// Platform forced, configuration uses Release-first defaults.
+		for _, configuration := range []string{"Release", "Debug"} {
+			for _, cfg := range configs {
+				if strings.EqualFold(cfg.Configuration, configuration) && strings.EqualFold(cfg.Platform, prefs.MSBuildPlatform) {
+					return cfg
+				}
+			}
+		}
+		for _, cfg := range configs {
+			if strings.EqualFold(cfg.Platform, prefs.MSBuildPlatform) {
+				return cfg
+			}
+		}
+		return msbuildProjectConfiguration{Configuration: "Release", Platform: prefs.MSBuildPlatform}
+	}
 	if len(configs) == 0 {
 		return msbuildProjectConfiguration{}
 	}
@@ -804,7 +854,6 @@ func selectPreferredMSBuildConfiguration(configs []msbuildProjectConfiguration) 
 			}
 		}
 	}
-	// Any Release before any Debug, then x64, then first listed.
 	for _, cfg := range configs {
 		if strings.EqualFold(cfg.Configuration, "Release") && strings.EqualFold(cfg.Platform, "x64") {
 			return cfg
@@ -821,6 +870,22 @@ func selectPreferredMSBuildConfiguration(configs []msbuildProjectConfiguration) 
 		}
 	}
 	return configs[0]
+}
+
+func forcedMSBuildConfiguration(prefs VerifyConfig) msbuildProjectConfiguration {
+	prefs.Normalize()
+	if prefs.MSBuildConfiguration == "" && prefs.MSBuildPlatform == "" {
+		return msbuildProjectConfiguration{}
+	}
+	configuration := prefs.MSBuildConfiguration
+	platform := prefs.MSBuildPlatform
+	if configuration == "" {
+		configuration = "Release"
+	}
+	if platform == "" {
+		platform = "x64"
+	}
+	return msbuildProjectConfiguration{Configuration: configuration, Platform: platform}
 }
 
 func readMSBuildProjectConfigurations(root string, project string) []msbuildProjectConfiguration {

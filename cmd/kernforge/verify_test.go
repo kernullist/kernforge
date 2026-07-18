@@ -17,7 +17,7 @@ func TestBuildVerificationStepsForGoUsesChangedPackagesThenFullSuite(t *testing.
 	steps := buildVerificationSteps(root, []string{
 		filepath.Join(root, "cmd", "app", "main.go"),
 		filepath.Join(root, "internal", "auth", "service.go"),
-	}, VerificationAdaptive)
+	}, VerificationAdaptive, Config{})
 	if len(steps) < 4 {
 		t.Fatalf("expected targeted + full + vet verification steps, got %#v", steps)
 	}
@@ -45,7 +45,7 @@ func TestBuildVerificationPlanWithTuningCadencesAdaptiveGoFullRegression(t *test
 		filepath.Join(root, "internal", "auth", "service.go"),
 	}
 
-	plan := buildVerificationPlanWithTuning(root, changed, VerificationAdaptive, VerificationTuning{AdaptiveRuns: 0})
+	plan := buildVerificationPlanWithTuning(root, changed, VerificationAdaptive, VerificationTuning{AdaptiveRuns: 0}, Config{})
 	for _, step := range plan.Steps {
 		if step.Command == "go test ./..." || step.Command == "go vet ./..." {
 			t.Fatalf("adaptive cycle 1 should skip workspace regression step, got %#v", plan.Steps)
@@ -58,7 +58,7 @@ func TestBuildVerificationPlanWithTuningCadencesAdaptiveGoFullRegression(t *test
 		t.Fatalf("expected cadence note, got %q", plan.PlannerNote)
 	}
 
-	plan = buildVerificationPlanWithTuning(root, changed, VerificationAdaptive, VerificationTuning{AdaptiveRuns: 4})
+	plan = buildVerificationPlanWithTuning(root, changed, VerificationAdaptive, VerificationTuning{AdaptiveRuns: 4}, Config{})
 	if !verificationPlanContainsCommand(plan, "go test ./...") || !verificationPlanContainsCommand(plan, "go vet ./...") {
 		t.Fatalf("adaptive cycle 5 should include workspace regression checks, got %#v", plan.Steps)
 	}
@@ -66,7 +66,7 @@ func TestBuildVerificationPlanWithTuningCadencesAdaptiveGoFullRegression(t *test
 		t.Fatalf("expected cycle-5 cadence note, got %q", plan.PlannerNote)
 	}
 
-	plan = buildVerificationPlanWithTuning(root, changed, VerificationFull, VerificationTuning{AdaptiveRuns: 0})
+	plan = buildVerificationPlanWithTuning(root, changed, VerificationFull, VerificationTuning{AdaptiveRuns: 0}, Config{})
 	if !verificationPlanContainsCommand(plan, "go test ./...") || !verificationPlanContainsCommand(plan, "go vet ./...") {
 		t.Fatalf("explicit full verification should include workspace regression checks, got %#v", plan.Steps)
 	}
@@ -102,7 +102,7 @@ func TestBuildVerificationStepsForNodeIncludesTypecheckLintAndTest(t *testing.T)
 	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{"typecheck":"tsc -p .","lint":"eslint .","test":"vitest"}}`), 0o644); err != nil {
 		t.Fatalf("write package.json: %v", err)
 	}
-	steps := buildVerificationSteps(root, nil, VerificationAdaptive)
+	steps := buildVerificationSteps(root, nil, VerificationAdaptive, Config{})
 	if len(steps) != 3 {
 		t.Fatalf("expected 3 node verification steps, got %#v", steps)
 	}
@@ -122,7 +122,7 @@ func TestBuildVerificationStepsForCargoIncludesCheckAndTest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte("[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"), 0o644); err != nil {
 		t.Fatalf("write Cargo.toml: %v", err)
 	}
-	steps := buildVerificationSteps(root, nil, VerificationAdaptive)
+	steps := buildVerificationSteps(root, nil, VerificationAdaptive, Config{})
 	if len(steps) != 2 {
 		t.Fatalf("expected 2 cargo verification steps, got %#v", steps)
 	}
@@ -146,14 +146,14 @@ func TestBuildVerificationStepsForCMakeUsesBuildDirAndCTestInFullMode(t *testing
 	if err := os.WriteFile(filepath.Join(buildDir, "CTestTestfile.cmake"), []byte("# tests"), 0o644); err != nil {
 		t.Fatalf("write CTestTestfile.cmake: %v", err)
 	}
-	steps := buildVerificationSteps(root, []string{"src/foo.cpp"}, VerificationFull)
+	steps := buildVerificationSteps(root, []string{"src/foo.cpp"}, VerificationFull, Config{})
 	if len(steps) != 2 {
 		t.Fatalf("expected build + test steps for CMake workspace, got %#v", steps)
 	}
-	if steps[0].Command != `cmake --build "build" --parallel` {
+	if steps[0].Command != `cmake --build "build" --config Release --parallel` {
 		t.Fatalf("unexpected CMake build step: %#v", steps[0])
 	}
-	if steps[1].Command != `ctest --test-dir "build" --output-on-failure` {
+	if steps[1].Command != `ctest --test-dir "build" -C Release --output-on-failure` {
 		t.Fatalf("unexpected CTest step: %#v", steps[1])
 	}
 }
@@ -170,7 +170,7 @@ func TestBuildVerificationStepsForCppPrefersChangedProjectInAdaptiveMode(t *test
 	if err := os.WriteFile(filepath.Join(workerDir, "SampleWorker.vcxproj"), []byte("<Project/>"), 0o644); err != nil {
 		t.Fatalf("write vcxproj: %v", err)
 	}
-	steps := buildVerificationSteps(root, []string{"SampleApp/SampleWorker/PathConverter.cpp"}, VerificationAdaptive)
+	steps := buildVerificationSteps(root, []string{"SampleApp/SampleWorker/PathConverter.cpp"}, VerificationAdaptive, Config{})
 	if len(steps) != 1 {
 		t.Fatalf("expected a single targeted project step, got %#v", steps)
 	}
@@ -205,15 +205,15 @@ func TestBuildVerificationStepsForCppUsesProjectConfigurationPlatform(t *testing
 		t.Fatalf("write vcxproj: %v", err)
 	}
 
-	steps := buildVerificationSteps(root, []string{"SampleApp/SampleWorker/PathConverter.cpp"}, VerificationAdaptive)
+	steps := buildVerificationSteps(root, []string{"SampleApp/SampleWorker/PathConverter.cpp"}, VerificationAdaptive, Config{})
 	if len(steps) != 1 {
 		t.Fatalf("expected a single targeted project step, got %#v", steps)
 	}
-	wantCommand := `msbuild "SampleApp/SampleWorker/SampleWorker.vcxproj" /m /p:Configuration=Debug /p:Platform=x64`
+	wantCommand := `msbuild "SampleApp/SampleWorker/SampleWorker.vcxproj" /m /p:Configuration=Release /p:Platform=x64`
 	if steps[0].Command != wantCommand {
 		t.Fatalf("unexpected C++ command: %q", steps[0].Command)
 	}
-	if !strings.Contains(steps[0].Label, "Debug|x64") {
+	if !strings.Contains(steps[0].Label, "Release|x64") {
 		t.Fatalf("expected selected configuration in label, got %#v", steps[0])
 	}
 }
@@ -700,14 +700,14 @@ func TestSelectPreferredMSBuildConfigurationPrefersReleaseOverDebug(t *testing.T
 		{Configuration: "Debug", Platform: "x64"},
 		{Configuration: "Release", Platform: "x64"},
 		{Configuration: "Debug", Platform: "Win32"},
-	})
+	}, VerifyConfig{})
 	if !strings.EqualFold(cfg.Configuration, "Release") || !strings.EqualFold(cfg.Platform, "x64") {
 		t.Fatalf("expected Release|x64 for verification, got %#v", cfg)
 	}
 	// Release-only product tree (no Debug entry that verification should prefer).
 	releaseOnly := selectPreferredMSBuildConfiguration([]msbuildProjectConfiguration{
 		{Configuration: "Release", Platform: "x64"},
-	})
+	}, VerifyConfig{})
 	if !strings.EqualFold(releaseOnly.Configuration, "Release") {
 		t.Fatalf("expected Release when only Release exists, got %#v", releaseOnly)
 	}
@@ -736,7 +736,7 @@ func TestMSBuildProjectVerificationCommandUsesReleaseWhenAvailable(t *testing.T)
 	if err := os.WriteFile(project, []byte(content), 0o644); err != nil {
 		t.Fatalf("write vcxproj: %v", err)
 	}
-	command, label := msbuildProjectVerificationCommand(root, "App/App.vcxproj")
+	command, label := msbuildProjectVerificationCommand(root, "App/App.vcxproj", VerifyConfig{})
 	if !strings.Contains(command, "Configuration=Release") || !strings.Contains(command, "Platform=x64") {
 		t.Fatalf("expected Release|x64 in command, got %q", command)
 	}
@@ -762,12 +762,56 @@ EndGlobal
 	if err := os.WriteFile(solution, []byte(sln), 0o644); err != nil {
 		t.Fatalf("write sln: %v", err)
 	}
-	command, label := msbuildSolutionVerificationCommand(root, "Tavern.sln")
+	command, label := msbuildSolutionVerificationCommand(root, "Tavern.sln", VerifyConfig{})
 	if !strings.Contains(command, "Configuration=Release") || !strings.Contains(command, "Platform=x64") {
 		t.Fatalf("solution verify must pin Release|x64, got %q", command)
 	}
 	if !strings.Contains(label, "Release|x64") {
 		t.Fatalf("expected Release|x64 label, got %q", label)
+	}
+}
+
+func TestMSBuildVerificationHonorsConfiguredConfigurationOverride(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "App", "App.vcxproj")
+	if err := os.MkdirAll(filepath.Dir(project), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+</Project>
+`
+	if err := os.WriteFile(project, []byte(content), 0o644); err != nil {
+		t.Fatalf("write vcxproj: %v", err)
+	}
+	// Operator can still force Debug when needed.
+	command, label := msbuildProjectVerificationCommand(root, "App/App.vcxproj", VerifyConfig{
+		MSBuildConfiguration: "Debug",
+		MSBuildPlatform:      "x64",
+	})
+	if !strings.Contains(command, "Configuration=Debug") || !strings.Contains(command, "Platform=x64") {
+		t.Fatalf("expected forced Debug|x64, got %q", command)
+	}
+	if !strings.Contains(label, "Debug|x64") {
+		t.Fatalf("expected Debug|x64 label, got %q", label)
+	}
+	// Forced config that is not listed still emits the operator preference.
+	command, _ = msbuildProjectVerificationCommand(root, "App/App.vcxproj", VerifyConfig{
+		MSBuildConfiguration: "Shipping",
+		MSBuildPlatform:      "x64",
+	})
+	if !strings.Contains(command, "Configuration=Shipping") {
+		t.Fatalf("expected forced Shipping configuration, got %q", command)
 	}
 }
 
@@ -1147,7 +1191,7 @@ func TestBuildVerificationPlanWithTuningPrioritizesHistoricallyFlakyWorkspaceChe
 			"go vet workspace": 4,
 		},
 	}
-	plan := buildVerificationPlanWithTuning(root, []string{filepath.Join(root, "internal", "auth", "service.go")}, VerificationAdaptive, tuning)
+	plan := buildVerificationPlanWithTuning(root, []string{filepath.Join(root, "internal", "auth", "service.go")}, VerificationAdaptive, tuning, Config{})
 	if len(plan.Steps) < 3 {
 		t.Fatalf("unexpected verification plan: %#v", plan.Steps)
 	}

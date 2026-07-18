@@ -9003,6 +9003,106 @@ func (rt *runtimeState) handleProgressDisplayCommand(args string) error {
 	return nil
 }
 
+func (rt *runtimeState) handleShowVerifyConfigCommand() error {
+	prefs := configVerify(rt.cfg)
+	fmt.Fprintln(rt.writer, rt.ui.section("Verification Build Config"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("msbuild_configuration", valueOrDefault(prefs.MSBuildConfiguration, "(auto: Release-first)")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("msbuild_platform", valueOrDefault(prefs.MSBuildPlatform, "(auto)")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("cmake_config", valueOrDefault(prefs.CMakeConfig, "(auto: Release)")))
+	fmt.Fprintln(rt.writer, rt.ui.dim("Set with /verify config set msbuild-configuration Release"))
+	fmt.Fprintln(rt.writer, rt.ui.dim("Or in .kernforge/config.json: \"verify\": {\"msbuild_configuration\":\"Release\",\"msbuild_platform\":\"x64\"}"))
+	return nil
+}
+
+func (rt *runtimeState) handleSetVerifyConfigCommand(key, value string) error {
+	key = normalizeVerifyConfigKey(key)
+	value = strings.TrimSpace(value)
+	if key == "" {
+		return fmt.Errorf("usage: /verify config set <msbuild-configuration|msbuild-platform|cmake-config> <value>")
+	}
+	if value == "" {
+		return fmt.Errorf("value cannot be empty")
+	}
+	prefs := configVerify(rt.cfg)
+	switch key {
+	case "msbuild_configuration":
+		prefs.MSBuildConfiguration = value
+	case "msbuild_platform":
+		prefs.MSBuildPlatform = value
+	case "cmake_config":
+		prefs.CMakeConfig = value
+	default:
+		return fmt.Errorf("unknown verify config key %q", key)
+	}
+	if err := rt.persistVerifyConfig(prefs); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("verify.%s set to %s", key, value)))
+	return nil
+}
+
+func (rt *runtimeState) handleClearVerifyConfigCommand(key string) error {
+	key = normalizeVerifyConfigKey(key)
+	prefs := configVerify(rt.cfg)
+	switch key {
+	case "all", "":
+		prefs = VerifyConfig{}
+	case "msbuild_configuration":
+		prefs.MSBuildConfiguration = ""
+	case "msbuild_platform":
+		prefs.MSBuildPlatform = ""
+	case "cmake_config":
+		prefs.CMakeConfig = ""
+	default:
+		return fmt.Errorf("usage: /verify config clear [msbuild-configuration|msbuild-platform|cmake-config|all]")
+	}
+	if err := rt.persistVerifyConfig(prefs); err != nil {
+		return err
+	}
+	if key == "all" || key == "" {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("verify build configuration preferences cleared (auto defaults restored)"))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("verify.%s cleared", key)))
+	}
+	return nil
+}
+
+func (rt *runtimeState) persistVerifyConfig(prefs VerifyConfig) error {
+	prefs.Normalize()
+	var payload any = prefs
+	if prefs.IsZero() {
+		payload = nil
+	}
+	if err := SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, map[string]any{
+		"verify": payload,
+	}); err != nil {
+		return err
+	}
+	rt.warnIfProjectLocalConfigIgnored()
+	rt.cfg.Verify = prefs
+	if rt.agent != nil {
+		rt.agent.Config = rt.cfg
+	}
+	return nil
+}
+
+func normalizeVerifyConfigKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.ReplaceAll(key, "-", "_")
+	switch key {
+	case "msbuild_configuration", "configuration", "config", "msbuild_config":
+		return "msbuild_configuration"
+	case "msbuild_platform", "platform":
+		return "msbuild_platform"
+	case "cmake_config", "cmake", "cmake_configuration":
+		return "cmake_config"
+	case "all":
+		return "all"
+	default:
+		return key
+	}
+}
+
 func (rt *runtimeState) handleSetVerificationToolPathCommand(toolName, args string) error {
 	displayName := suggestedVerificationToolDisplayName(toolName)
 	current := currentVerificationToolPath(rt.cfg, toolName)

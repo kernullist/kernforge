@@ -39,7 +39,7 @@ func (a *Agent) buildTestImpactReport() TestImpactReport {
 		report.Normalize()
 		return report
 	}
-	plan := buildVerificationPlanWithTuning(a.Workspace.Root, codeChanged, VerificationAdaptive, VerificationTuning{})
+	plan := buildVerificationPlanWithTuning(a.Workspace.Root, codeChanged, VerificationAdaptive, VerificationTuning{}, a.Config)
 	for _, step := range plan.Steps {
 		command := strings.TrimSpace(step.Command)
 		if command != "" {

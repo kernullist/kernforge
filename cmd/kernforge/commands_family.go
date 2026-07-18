@@ -201,6 +201,8 @@ func (rt *runtimeState) handleVerifyFamilyCommand(args string) error {
 		return rt.handleVerifyDashboardHTMLCommand(rest)
 	case "tools":
 		return rt.handleVerifyToolsCommand(rest)
+	case "config":
+		return rt.handleVerifyConfigCommand(rest)
 	default:
 		return rt.handleVerifyCommand(args)
 	}
@@ -228,6 +230,28 @@ func (rt *runtimeState) handleVerifyToolsCommand(args string) error {
 		return rt.handleClearVerificationToolPathCommand(toolName)
 	default:
 		return fmt.Errorf("usage: /verify tools <detect|set|clear> [tool] [path]")
+	}
+}
+
+func (rt *runtimeState) handleVerifyConfigCommand(args string) error {
+	action, rest := commandSubcommandAndRest(args)
+	switch action {
+	case "", "show", "status":
+		return rt.handleShowVerifyConfigCommand()
+	case "set":
+		key, value := commandSubcommandAndRest(rest)
+		if key == "" || value == "" {
+			return fmt.Errorf("usage: /verify config set <msbuild-configuration|msbuild-platform|cmake-config> <value>")
+		}
+		return rt.handleSetVerifyConfigCommand(key, value)
+	case "clear":
+		key, _ := commandSubcommandAndRest(rest)
+		if key == "" {
+			key = "all"
+		}
+		return rt.handleClearVerifyConfigCommand(key)
+	default:
+		return fmt.Errorf("usage: /verify config [show|set|clear]")
 	}
 }
 

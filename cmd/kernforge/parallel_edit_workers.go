@@ -615,7 +615,7 @@ func (a *Agent) maybeStartParallelEditableVerification(ctx context.Context, plan
 			tuning = loaded
 		}
 	}
-	planSpec := buildVerificationPlanWithTuning(verifyRoot, changed, VerificationAdaptive, tuning)
+	planSpec := buildVerificationPlanWithTuning(verifyRoot, changed, VerificationAdaptive, tuning, a.Config)
 	commands := backgroundVerificationCommandsFromPlan(planSpec, 4)
 	if len(commands) == 0 {
 		return ""

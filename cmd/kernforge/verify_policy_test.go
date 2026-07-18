@@ -24,7 +24,7 @@ func TestBuildVerificationPlanWithPolicyCanPromoteDefaultStep(t *testing.T) {
 		t.Fatalf("write verify.json: %v", err)
 	}
 
-	plan := buildVerificationPlanWithTuning(root, []string{filepath.Join(root, "internal", "auth", "service.go")}, VerificationFull, VerificationTuning{})
+	plan := buildVerificationPlanWithTuning(root, []string{filepath.Join(root, "internal", "auth", "service.go")}, VerificationFull, VerificationTuning{}, Config{})
 	if len(plan.Steps) < 2 {
 		t.Fatalf("unexpected verification plan: %#v", plan.Steps)
 	}
@@ -56,7 +56,7 @@ func TestBuildVerificationPlanWithPolicyAddsCustomStep(t *testing.T) {
 		t.Fatalf("write verify.json: %v", err)
 	}
 
-	plan := buildVerificationPlanWithTuning(root, []string{"internal/auth/service.go"}, VerificationAdaptive, VerificationTuning{})
+	plan := buildVerificationPlanWithTuning(root, []string{"internal/auth/service.go"}, VerificationAdaptive, VerificationTuning{}, Config{})
 	found := false
 	for _, step := range plan.Steps {
 		if step.Command == "go test ./integration/..." {

@@ -267,6 +267,10 @@ type Config struct {
 	CMakePath                   string                        `json:"cmake_path,omitempty"`
 	CTestPath                   string                        `json:"ctest_path,omitempty"`
 	NinjaPath                   string                        `json:"ninja_path,omitempty"`
+	// Verify holds optional automatic/manual verification build preferences
+	// (for example MSBuild Configuration/Platform). Empty fields keep the
+	// built-in defaults (Release-first selection when the project lists it).
+	Verify                      VerifyConfig                  `json:"verify,omitempty"`
 	Command                     string                        `json:"command,omitempty"`
 	PermissionMode              string                        `json:"permission_mode"`
 	PermissionRules             PermissionRulesConfig         `json:"permission_rules,omitempty"`
@@ -315,6 +319,39 @@ type Config struct {
 type DaemonSchedulerConfig struct {
 	Enabled     bool `json:"enabled,omitempty"`
 	PollSeconds int  `json:"poll_seconds,omitempty"`
+}
+
+// VerifyConfig controls how automatic and manual verification pick native build
+// configurations. Product trees like Tavern often maintain only Release fully;
+// set msbuild_configuration/msbuild_platform (and optionally cmake_config) so
+// verification does not default into an incomplete Debug matrix.
+//
+// Example (.kernforge/config.json):
+//
+//	"verify": {
+//	  "msbuild_configuration": "Release",
+//	  "msbuild_platform": "x64",
+//	  "cmake_config": "Release"
+//	}
+type VerifyConfig struct {
+	MSBuildConfiguration string `json:"msbuild_configuration,omitempty"`
+	MSBuildPlatform      string `json:"msbuild_platform,omitempty"`
+	CMakeConfig          string `json:"cmake_config,omitempty"`
+}
+
+func (v VerifyConfig) IsZero() bool {
+	return strings.TrimSpace(v.MSBuildConfiguration) == "" &&
+		strings.TrimSpace(v.MSBuildPlatform) == "" &&
+		strings.TrimSpace(v.CMakeConfig) == ""
+}
+
+func (v *VerifyConfig) Normalize() {
+	if v == nil {
+		return
+	}
+	v.MSBuildConfiguration = strings.TrimSpace(v.MSBuildConfiguration)
+	v.MSBuildPlatform = strings.TrimSpace(v.MSBuildPlatform)
+	v.CMakeConfig = strings.TrimSpace(v.CMakeConfig)
 }
 
 // LSPConfig configures the opt-in lsp_nav code navigation tool. It is disabled
@@ -1562,6 +1599,15 @@ func mergeConfig(dst *Config, src Config) {
 	if src.NinjaPath != "" {
 		dst.NinjaPath = src.NinjaPath
 	}
+	if strings.TrimSpace(src.Verify.MSBuildConfiguration) != "" {
+		dst.Verify.MSBuildConfiguration = strings.TrimSpace(src.Verify.MSBuildConfiguration)
+	}
+	if strings.TrimSpace(src.Verify.MSBuildPlatform) != "" {
+		dst.Verify.MSBuildPlatform = strings.TrimSpace(src.Verify.MSBuildPlatform)
+	}
+	if strings.TrimSpace(src.Verify.CMakeConfig) != "" {
+		dst.Verify.CMakeConfig = strings.TrimSpace(src.Verify.CMakeConfig)
+	}
 	if src.PermissionMode != "" {
 		dst.PermissionMode = src.PermissionMode
 	}
@@ -1791,6 +1837,9 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_CMAKE_PATH", &cfg.CMakePath)
 	envString("KERNFORGE_CTEST_PATH", &cfg.CTestPath)
 	envString("KERNFORGE_NINJA_PATH", &cfg.NinjaPath)
+	envString("KERNFORGE_MSBUILD_CONFIGURATION", &cfg.Verify.MSBuildConfiguration)
+	envString("KERNFORGE_MSBUILD_PLATFORM", &cfg.Verify.MSBuildPlatform)
+	envString("KERNFORGE_CMAKE_CONFIG", &cfg.Verify.CMakeConfig)
 	envBool("KERNFORGE_AUTO_CHECKPOINT_EDITS", &cfg.AutoCheckpointEdits)
 	envBool("KERNFORGE_AUTO_VERIFY", &cfg.AutoVerify)
 	envBool("KERNFORGE_AUTO_LOCALE", &cfg.AutoLocale)
@@ -2725,6 +2774,12 @@ func configAutoVerify(cfg Config) bool {
 	return *cfg.AutoVerify
 }
 
+func configVerify(cfg Config) VerifyConfig {
+	out := cfg.Verify
+	out.Normalize()
+	return out
+}
+
 // configMaxToolIterations returns the configured tool-loop budget.
 // A return value of 0 (or any non-positive cfg.MaxToolIterations) means
 // "no cap" — the loop runs until the model produces a final answer or
@@ -3136,13 +3191,14 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		ShellTimeoutSecs    int      `json:"shell_timeout_seconds,omitempty"`
 		ReadHintSpans       int      `json:"read_hint_spans,omitempty"`
 		ReadCacheEntries    int      `json:"read_cache_entries,omitempty"`
-		MSBuildPath         string   `json:"msbuild_path,omitempty"`
-		CMakePath           string   `json:"cmake_path,omitempty"`
-		CTestPath           string   `json:"ctest_path,omitempty"`
-		NinjaPath           string   `json:"ninja_path,omitempty"`
-		SkillPaths          []string `json:"skill_paths,omitempty"`
-		EnabledSkills       []string `json:"enabled_skills,omitempty"`
-		CommandPaths        []string `json:"command_paths,omitempty"`
+		MSBuildPath         string       `json:"msbuild_path,omitempty"`
+		CMakePath           string       `json:"cmake_path,omitempty"`
+		CTestPath           string       `json:"ctest_path,omitempty"`
+		NinjaPath           string       `json:"ninja_path,omitempty"`
+		Verify              VerifyConfig `json:"verify,omitempty"`
+		SkillPaths          []string     `json:"skill_paths,omitempty"`
+		EnabledSkills       []string     `json:"enabled_skills,omitempty"`
+		CommandPaths        []string     `json:"command_paths,omitempty"`
 		TaskOwnership       struct {
 			Enabled  *bool                       `json:"enabled"`
 			Profiles []SpecialistSubagentProfile `json:"profiles"`
@@ -3162,9 +3218,15 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		CMakePath:           "",
 		CTestPath:           "",
 		NinjaPath:           "",
-		SkillPaths:          []string{"./.kernforge/skills"},
-		EnabledSkills:       []string{},
-		CommandPaths:        []string{"./.kernforge/commands"},
+		// Prefer Release for product trees that only maintain that matrix.
+		Verify: VerifyConfig{
+			MSBuildConfiguration: "Release",
+			MSBuildPlatform:      "x64",
+			CMakeConfig:          "Release",
+		},
+		SkillPaths:    []string{"./.kernforge/skills"},
+		EnabledSkills: []string{},
+		CommandPaths:  []string{"./.kernforge/commands"},
 		WorktreeIsolation: WorktreeIsolationConfig{
 			Enabled:                boolPtr(false),
 			RootDir:                filepath.Join("~", userConfigDirName, "worktrees"),
@@ -3689,8 +3751,14 @@ Verification And Checkpoints:
 /verify tools detect Detect and save workspace verification tool paths
 /verify tools set <msbuild|cmake|ctest|ninja> <path> Set a verification tool path override
 /verify tools clear <msbuild|cmake|ctest|ninja> Clear a verification tool path override
+/verify config Show MSBuild/CMake verification build configuration preferences
+/verify config set msbuild-configuration <name> Force MSBuild Configuration (e.g. Release)
+/verify config set msbuild-platform <name> Force MSBuild Platform (e.g. x64)
+/verify config set cmake-config <name> Force cmake --config / ctest -C value
+/verify config clear [msbuild-configuration|msbuild-platform|cmake-config|all]
 /set-auto-verify [on|off] Show or change automatic verification after edits
 - Quote paths that contain spaces. Example: /verify tools set msbuild "C:\Program Files\...\MSBuild.exe"
+- For product trees that only maintain Release, use verify.msbuild_configuration=Release in .kernforge/config.json or /verify config set
 /investigate [subcommand] Manage live investigation sessions and guide the next snapshot, simulation, or evidence step
 /investigate dashboard Show an investigation dashboard for this workspace
 /investigate dashboard --html Generate and open an HTML investigation dashboard
@@ -4358,6 +4426,18 @@ Verification and checkpoint commands help you validate changes and recover safel
 /verify tools clear ctest
 /verify tools clear ninja
 - Remove the corresponding workspace-specific executable override.
+
+/verify config
+- Show current MSBuild Configuration/Platform and CMake multi-config preferences.
+
+/verify config set msbuild-configuration Release
+/verify config set msbuild-platform x64
+/verify config set cmake-config Release
+- Force the configuration used by automatic and manual verification builds.
+- Useful when a product tree only maintains Release (or another matrix) fully.
+
+/verify config clear [msbuild-configuration|msbuild-platform|cmake-config|all]
+- Clear one forced preference or all of them (defaults return to Release-first auto selection).
 
 /set-auto-verify [on|off]
 - Show or change automatic verification after edits.

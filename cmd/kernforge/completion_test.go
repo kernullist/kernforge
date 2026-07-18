@@ -48,6 +48,8 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/verify dashboard --", wantBuffer: "/verify dashboard --html "},
 		{input: "/verify tools ", wantSuggest: []string{"/verify tools detect", "/verify tools set", "/verify tools clear"}},
 		{input: "/verify tools set ", wantSuggest: []string{"/verify tools set msbuild", "/verify tools set cmake", "/verify tools set ctest", "/verify tools set ninja"}},
+		{input: "/verify config ", wantSuggest: []string{"/verify config show", "/verify config set", "/verify config clear"}},
+		{input: "/verify config set ", wantSuggest: []string{"/verify config set msbuild-configuration", "/verify config set msbuild-platform", "/verify config set cmake-config", "/verify config set all"}},
 		{input: "/model ", wantSuggest: []string{"/model status", "/model main", "/model analysis", "/model analysis-worker", "/model analysis-reviewer", "/model cross-review", "/model clear", "/model task-owner"}},
 		{input: "/model analysis ", wantSuggest: []string{"/model analysis status", "/model analysis worker", "/model analysis reviewer", "/model analysis clear"}},
 		{input: "/model analysis worker ", wantSuggest: []string{"/model analysis worker 0", "/model analysis worker openai-codex-subscription", "/model analysis worker openai-codex-cli", "/model analysis worker openai-api", "/model analysis worker anthropic-claude-cli", "/model analysis worker anthropic-api", "/model analysis worker deepseek", "/model analysis worker openrouter", "/model analysis worker opencode", "/model analysis worker opencode-go", "/model analysis worker ollama", "/model analysis worker lmstudio", "/model analysis worker vllm", "/model analysis worker llama.cpp"}},

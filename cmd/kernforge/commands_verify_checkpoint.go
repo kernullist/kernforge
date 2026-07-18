@@ -42,7 +42,7 @@ func (rt *runtimeState) handleVerifyCommandContext(ctx context.Context, args str
 			tuning = loaded
 		}
 	}
-	plan := buildVerificationPlanWithTuning(rt.workspace.Root, changed, mode, tuning)
+	plan := buildVerificationPlanWithTuning(rt.workspace.Root, changed, mode, tuning, rt.cfg)
 	if len(plan.Steps) == 0 {
 		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("No recommended verification steps were found for this workspace."))
 		return nil

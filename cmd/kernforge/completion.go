@@ -201,6 +201,9 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"tools detect":     "Probe common MSBuild, CMake, CTest, and Ninja locations.",
 		"tools set":        "Set a verification tool path for this workspace.",
 		"tools clear":      "Clear a verification tool path override.",
+		"config":           "Show or set MSBuild/CMake verification build configuration preferences.",
+		"config set":       "Force MSBuild Configuration/Platform or CMake multi-config value.",
+		"config clear":     "Clear forced verification build configuration preferences.",
 	},
 	"finish": {
 		"--disclose": "Rewrite the blocked final answer with verification-not-run disclosure and complete when the gate allows.",
@@ -786,7 +789,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"profile":           {"list", "show", "status", "pin", "unpin", "rename", "delete"},
 		"analyze-project":   {"--mode", "--path"},
 		"analyze-dashboard": {"latest"},
-		"verify":            {"--full", "dashboard", "dashboard --html", "tools", "tools detect", "tools set", "tools clear"},
+		"verify":            {"--full", "dashboard", "dashboard --html", "tools", "tools detect", "tools set", "tools clear", "config", "config set", "config clear"},
 		"model":             {"status", "main", "analysis", "analysis-worker", "analysis-reviewer", "cross-review", "clear", "task-owner"},
 		"review":            {"change", "plan", "selection", "pr", "final", "goal", "analysis", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
 		"finish":            {"--disclose"},
@@ -916,6 +919,21 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		if len(fields) == 3 && strings.EqualFold(fields[0], "tools") &&
 			(strings.EqualFold(fields[1], "set") || strings.EqualFold(fields[1], "clear")) {
 			return []string{"msbuild", "cmake", "ctest", "ninja"}, 2, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "config") {
+			return []string{"show", "set", "clear"}, 1, true
+		}
+		if len(fields) == 3 && strings.EqualFold(fields[0], "config") &&
+			(strings.EqualFold(fields[1], "set") || strings.EqualFold(fields[1], "clear")) {
+			return []string{"msbuild-configuration", "msbuild-platform", "cmake-config", "all"}, 2, true
+		}
+		if len(fields) == 4 && strings.EqualFold(fields[0], "config") && strings.EqualFold(fields[1], "set") &&
+			(strings.EqualFold(fields[2], "msbuild-configuration") || strings.EqualFold(fields[2], "cmake-config")) {
+			return []string{"Release", "Debug"}, 3, true
+		}
+		if len(fields) == 4 && strings.EqualFold(fields[0], "config") && strings.EqualFold(fields[1], "set") &&
+			strings.EqualFold(fields[2], "msbuild-platform") {
+			return []string{"x64", "Win32", "ARM64"}, 3, true
 		}
 		return nil, 0, false
 	case "override":

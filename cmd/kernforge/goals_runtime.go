@@ -367,7 +367,7 @@ func (rt *runtimeState) handleGoalAdaptiveVerifyCommandContext(ctx context.Conte
 		iteration = 1
 	}
 	tuning.AdaptiveRuns = (iteration - 1) % defaultAdaptiveFullRegressionInterval
-	plan := buildVerificationPlanWithTuning(rt.workspace.Root, changed, VerificationAdaptive, tuning)
+	plan := buildVerificationPlanWithTuning(rt.workspace.Root, changed, VerificationAdaptive, tuning, rt.cfg)
 	if len(plan.Steps) == 0 {
 		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("No recommended verification steps were found for this workspace."))
 		return nil

@@ -4675,7 +4675,7 @@ func (s *kernforgeMCPServer) toolVerify(ctx context.Context, args map[string]any
 			tuning = loaded
 		}
 	}
-	plan := buildVerificationPlanWithTuning(s.rt.workspace.Root, changed, mode, tuning)
+	plan := buildVerificationPlanWithTuning(s.rt.workspace.Root, changed, mode, tuning, s.rt.cfg)
 	if len(plan.Steps) == 0 {
 		return "No recommended verification steps were found for this workspace.", nil
 	}
