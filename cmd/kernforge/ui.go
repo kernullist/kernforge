@@ -1311,6 +1311,8 @@ func (ui UI) renderAssistantStreamDelta(text string, ctx *assistantRenderContext
 // emitWrappedAssistantContent writes content for the current logical line,
 // inserting hard newlines + gutters before any segment that would exceed the
 // body width. rowCells tracks content cells already on the current physical row.
+// Breaks prefer spaces/tabs (same policy as wrapAssistantContentLine) so stream
+// and final-body rendering stay visually consistent.
 func (ui UI) emitWrappedAssistantContent(content string, kind assistantLineKind, ctx *assistantRenderContext, gutter string, bodyWidth int, rowCells *int, forceGutter bool) string {
 	if content == "" && !forceGutter {
 		return ""
@@ -1321,9 +1323,8 @@ func (ui UI) emitWrappedAssistantContent(content string, kind assistantLineKind,
 	}
 	// Render through a scratch context so partial physical segments do not
 	// advance cross-line block-comment state; callers advance on full lines.
-	runes := []rune(content)
-	i := 0
-	for i < len(runes) {
+	remaining := content
+	for remaining != "" {
 		room := bodyWidth - *rowCells
 		if room <= 0 {
 			out.WriteByte('\n')
@@ -1331,33 +1332,23 @@ func (ui UI) emitWrappedAssistantContent(content string, kind assistantLineKind,
 			*rowCells = 0
 			room = bodyWidth
 		}
-		// Take as many runes as fit in room.
-		segStart := i
-		segWidth := 0
-		for i < len(runes) {
-			w := runeWidth(runes[i])
-			if segWidth+w > room {
-				break
-			}
-			segWidth += w
-			i++
-		}
-		if i == segStart {
-			// Single wide rune cannot fit in remaining room: wrap first.
+		chunk, rest := splitDisplayPrefix(remaining, room)
+		if chunk == "" {
+			// Wide rune cannot fit in remaining room: wrap first, then force one.
 			if *rowCells > 0 {
 				out.WriteByte('\n')
 				out.WriteString(gutter)
 				*rowCells = 0
 				continue
 			}
-			// Force one rune even if wider than body (extreme narrow terminal).
-			i = segStart + 1
-			segWidth = runeWidth(runes[segStart])
+			rs := []rune(remaining)
+			chunk = string(rs[0])
+			rest = string(rs[1:])
 		}
-		segment := string(runes[segStart:i])
 		previewCtx := *ctx
-		out.WriteString(ui.renderAssistantLine(kind, segment, &previewCtx))
-		*rowCells += segWidth
+		out.WriteString(ui.renderAssistantLine(kind, chunk, &previewCtx))
+		*rowCells += visibleLen(chunk)
+		remaining = rest
 	}
 	return out.String()
 }
@@ -1377,14 +1368,21 @@ func assistantBodyContentWidth() int {
 	if termW <= 0 {
 		termW = 80
 	}
+	// Prefer a smaller COLUMNS value when present (SSH/tmux/resized shells).
+	if cols := strings.TrimSpace(os.Getenv("COLUMNS")); cols != "" {
+		if n, err := strconv.Atoi(cols); err == nil && n > 0 && n < termW {
+			termW = n
+		}
+	}
 	// " " + "┃" + " " is three cells; measure without ANSI paint.
 	gutterW := visibleLen(" " + assistantGutterBar + " ")
 	if gutterW <= 0 {
 		gutterW = 3
 	}
-	// Leave one cell of headroom: some Windows consoles soft-wrap when the
-	// cursor sits exactly on the last column, which would orphan the rail.
-	width := termW - gutterW - 1
+	// Leave two cells of headroom: Windows consoles often soft-wrap when the
+	// cursor lands on the last column (or when a scrollbar steals a cell),
+	// which would orphan the rail on the continuation row.
+	width := termW - gutterW - 2
 	if width < 16 {
 		return 16
 	}

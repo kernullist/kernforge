@@ -715,6 +715,56 @@ func TestAssistantStreamDeltaHardWrapsAcrossChunks(t *testing.T) {
 	}
 }
 
+func TestAssistantStreamDeltaPrefersWordBoundaryWrap(t *testing.T) {
+	ui := UI{color: true}
+	var ctx assistantRenderContext
+	prefix := ""
+	rowCells := 0
+
+	prev := assistantBodyWidthForTest
+	assistantBodyWidthForTest = 24
+	t.Cleanup(func() { assistantBodyWidthForTest = prev })
+
+	// Spaces should be preferred break points so we do not mid-cut words when
+	// a long prose line is streamed as one chunk.
+	out := ui.renderAssistantStreamDelta("hello world foo bar baz qux more\n", &ctx, &prefix, &rowCells)
+	rails := strings.Count(out, assistantGutterBar)
+	if rails < 2 {
+		t.Fatalf("expected wrapped prose to emit multiple rails, got %d in %q", rails, out)
+	}
+	// No physical row should start mid-word after a hard wrap (gutter + partial).
+	for i, row := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		plain := ansiPattern.ReplaceAllString(row, "")
+		plain = strings.TrimPrefix(plain, " "+assistantGutterBar+" ")
+		if plain == "" {
+			continue
+		}
+		// After the first row, wrapped continuations should start at a word
+		// boundary (letter after a prior space break), not mid-token leftovers
+		// like "orld". Heuristic: first rune of continuation is not a lowercase
+		// letter that would only appear mid-word from our fixture ("world" etc).
+		if i > 0 && strings.HasPrefix(plain, "orld") {
+			t.Fatalf("row %d appears mid-word after wrap: %q", i, plain)
+		}
+	}
+}
+
+func TestWrapAssistantContentLinePrefersSpaces(t *testing.T) {
+	parts := wrapAssistantContentLine("alpha beta gamma delta epsilon", 14)
+	if len(parts) < 2 {
+		t.Fatalf("expected multi-part wrap, got %#v", parts)
+	}
+	for i, part := range parts {
+		if visibleLen(part) > 14 {
+			t.Fatalf("part %d exceeds width: %q (vis=%d)", i, part, visibleLen(part))
+		}
+		// No part should contain a broken mid-word from the fixture set.
+		if strings.Contains(part, "alphab") || strings.Contains(part, "eta g") {
+			t.Fatalf("unexpected mid-word break in part %d: %q", i, part)
+		}
+	}
+}
+
 func TestAssistantClosingRailCarriesElapsed(t *testing.T) {
 	plain := UI{color: false}.assistantClosingRail(805 * time.Second)
 	if !strings.Contains(plain, assistantRailCorner) || !strings.Contains(plain, "13m25s") {
