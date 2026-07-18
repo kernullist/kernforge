@@ -1848,6 +1848,10 @@ func TestRenderRuntimeGateBlockedFeedbackGivesConcreteRemedy(t *testing.T) {
 	if !strings.Contains(staleFeedback, "What to do:") || !strings.Contains(staleFeedback, "/review") {
 		t.Fatalf("expected stale feedback to name a concrete action, got:\n%s", staleFeedback)
 	}
+	if !strings.Contains(staleFeedback, "completion/write-side only") ||
+		!strings.Contains(staleFeedback, "edit and read remain allowed") {
+		t.Fatalf("expected stale feedback to state write-side scope, got:\n%s", staleFeedback)
+	}
 
 	// Real findings -> tell the user to fix the findings and reference the report.
 	findingsLedger := RuntimeGateLedger{
@@ -1858,5 +1862,118 @@ func TestRenderRuntimeGateBlockedFeedbackGivesConcreteRemedy(t *testing.T) {
 	findingsFeedback := renderRuntimeGateBlockedFeedback(findingsLedger, runtimeGateActionGitWrite)
 	if !strings.Contains(findingsFeedback, "fix each listed finding") || !strings.Contains(findingsFeedback, "review-123") {
 		t.Fatalf("expected findings feedback to point at the report and fixes, got:\n%s", findingsFeedback)
+	}
+	if strings.Contains(findingsFeedback, "completion/write-side only") {
+		t.Fatalf("real findings must not use the freshness-only write-side scope wording, got:\n%s", findingsFeedback)
+	}
+}
+
+func TestRuntimeGateStalenessOnlyStatusCopyStatesWriteSideScope(t *testing.T) {
+	ledger := RuntimeGateLedger{
+		ID:          "runtime-gate-test",
+		Action:      runtimeGateActionFinalAnswer,
+		ReviewRunID: "review-stale",
+		Blockers:    []string{runtimeGateBlockerStaleReviewPrefix + " reviewed files changed since review: UserCommon.h"},
+		StaleReasons: []string{
+			"reviewed files changed since review: UserCommon.h",
+		},
+		NextCommands: []ReviewNextCommand{{Command: "/review", Reason: "latest review freshness is stale"}},
+	}
+	ledger.Normalize()
+	if ledger.Status != runtimeGateStatusBlocked {
+		t.Fatalf("expected machine status blocked, got %q", ledger.Status)
+	}
+	if !runtimeGateBlocksAction(ledger) {
+		t.Fatalf("final-answer action must still hard-block on stale review")
+	}
+
+	// Footer pill stays English and write-side scoped.
+	if got := statusOverviewGateLabel(ledger); got != "blocked for completion/git write" {
+		t.Fatalf("statusOverviewGateLabel = %q, want write-side scoped label", got)
+	}
+
+	// Localized /status gate line should not look like a full-session stop.
+	ko := runtimeGateStatusSummaryLocalized(Config{AutoLocale: boolPtr(true)}, ledger)
+	if !strings.Contains(ko, "완료·커밋 차단") || !strings.Contains(ko, "편집·읽기 가능") {
+		t.Fatalf("korean gate summary missing write-side scope wording: %q", ko)
+	}
+	en := runtimeGateStatusSummaryLocalized(Config{AutoLocale: boolPtr(false)}, ledger)
+	if !strings.Contains(en, "blocked for completion/git write") || !strings.Contains(en, "edit/read allowed") {
+		t.Fatalf("english gate summary missing write-side scope wording: %q", en)
+	}
+
+	// Operator blocker sentence must not classify stale as bare "missing evidence".
+	class := reviewBlockerClassForText(ledger.Blockers[0])
+	if class != reviewBlockerClassReviewFreshness {
+		t.Fatalf("stale blocker class = %q, want %q", class, reviewBlockerClassReviewFreshness)
+	}
+	sentence := humanizeBlockerSentence(ReviewOperatorBlocker{
+		Class:     class,
+		WhyBlocks: ledger.Blockers[0],
+	}, true)
+	if !strings.Contains(sentence, "리뷰 재실행 필요") ||
+		!strings.Contains(sentence, "편집·읽기는 가능") ||
+		strings.Contains(sentence, "근거 부족") {
+		t.Fatalf("korean stale sentence not write-side scoped: %q", sentence)
+	}
+}
+
+func TestRuntimeGateStatusPrintsBlockScopeForStalenessOnly(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{color: false},
+		cfg:    Config{AutoLocale: boolPtr(true)},
+		session: &Session{
+			RuntimeGateLedger: &RuntimeGateLedger{
+				ID:          "runtime-gate-print",
+				Action:      runtimeGateActionFinalAnswer,
+				ReviewRunID: "review-stale",
+				Blockers:    []string{runtimeGateBlockerStaleReviewPrefix + " reviewed files changed since review: UserCommon.h"},
+				StaleReasons: []string{
+					"reviewed files changed since review: UserCommon.h",
+				},
+				NextCommands: []ReviewNextCommand{{Command: "/review", Reason: "latest review freshness is stale"}},
+			},
+		},
+	}
+	// Prefer the prebuilt ledger path: inject via session and force print with
+	// a stub that uses the session ledger.
+	prev := runtimeGateGitBranchProvider
+	runtimeGateGitBranchProvider = func(string) string { return "main" }
+	t.Cleanup(func() { runtimeGateGitBranchProvider = prev })
+
+	// Overwrite session LastReview + changed files is heavy; print with the
+	// ledger already on session by calling writeRuntimeGateStatusWithDetail
+	// after building a real stale ledger.
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"UserCommon.h"})
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-stale",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Trigger:           "pre_write",
+		Branch:            "main",
+		ReviewFingerprint: "fp-1",
+		ChangeSet:         ReviewChangeSet{ChangedPaths: []string{"other.go"}},
+		Freshness:         ReviewFreshness{ReviewFingerprint: "fp-1"},
+		Gate:              GateDecision{Verdict: reviewVerdictApproved},
+	}
+	rt.session = session
+	rt.workspace = Workspace{Root: root, BaseRoot: root}
+	out.Reset()
+	rt.writeRuntimeGateStatusWithDetail(&out, runtimeGateActionFinalAnswer, false)
+	rendered := out.String()
+	if !strings.Contains(rendered, "차단 범위") ||
+		!strings.Contains(rendered, "편집·읽기·분석 가능") {
+		t.Fatalf("expected block-scope line in status output, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "완료·커밋 차단") {
+		t.Fatalf("expected write-side gate label, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "리뷰 재실행 필요") {
+		t.Fatalf("expected freshness class wording, got:\n%s", rendered)
 	}
 }

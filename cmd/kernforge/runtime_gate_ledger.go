@@ -1529,6 +1529,16 @@ func (rt *runtimeState) writeRuntimeGateStatusWithDetail(writer io.Writer, actio
 	// summary follows as a machine/debug detail keyed "runtime_gate".
 	korean := localePrefersKorean(rt.cfg)
 	fmt.Fprintln(writer, rt.ui.statusKV(localizedText(rt.cfg, "gate", "게이트"), runtimeGateStatusSummaryLocalized(rt.cfg, ledger)))
+	// Freshness-only blocks feel like a full-session stop sign in the footer.
+	// Make the write-side scope explicit so edit/read work can continue.
+	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
+		fmt.Fprintln(writer, rt.ui.statusKV(
+			localizedText(rt.cfg, "block scope", "차단 범위"),
+			localizedText(rt.cfg,
+				"final answer, git write, completion audit — edit/read/analysis allowed",
+				"최종 답변·git write·completion audit — 편집·읽기·분석 가능"),
+		))
+	}
 	// Compact mode (default): lead with the human verdict, then the top 1-2
 	// blockers as full sentences and the single next command. All raw enum /
 	// ledger / lifecycle codename lines move behind "/status detail".
@@ -1846,7 +1856,17 @@ func runtimeGateStatusSummaryLocalized(cfg Config, ledger RuntimeGateLedger) str
 		return humanizeGateStatus("unknown", korean)
 	}
 	ledger.Normalize()
-	parts := []string{humanizeGateStatus(valueOrDefault(ledger.Status, runtimeGateStatusReady), korean)}
+	statusWord := humanizeGateStatus(valueOrDefault(ledger.Status, runtimeGateStatusReady), korean)
+	// Freshness-only blocks are write-side gates. Prefer "completion/git write
+	// blocked" over a bare "blocked" so a new session does not look fully stuck.
+	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
+		if korean {
+			statusWord = "완료·커밋 차단"
+		} else {
+			statusWord = "blocked for completion/git write"
+		}
+	}
+	parts := []string{statusWord}
 	if ledger.ReviewRunID != "" {
 		parts = append(parts, localizedText(cfg, "review ", "리뷰 ")+ledger.ReviewRunID)
 	}
@@ -1855,6 +1875,13 @@ func runtimeGateStatusSummaryLocalized(cfg Config, ledger RuntimeGateLedger) str
 			parts = append(parts, fmt.Sprintf("차단 %d", len(ledger.Blockers)))
 		} else {
 			parts = append(parts, fmt.Sprintf("blockers %d", len(ledger.Blockers)))
+		}
+	}
+	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
+		if korean {
+			parts = append(parts, "편집·읽기 가능")
+		} else {
+			parts = append(parts, "edit/read allowed")
 		}
 	}
 	if len(ledger.Warnings) > 0 {
@@ -1949,7 +1976,7 @@ func runtimeGateBlockedRemedy(ledger RuntimeGateLedger) string {
 		}
 	}
 	if staleness {
-		steps = append(steps, "- The current changes are not covered by a fresh review. Run /review (read-only and safe) to create one. Note: an explicit user git commit proceeds without this with a warning; a final answer still needs it.")
+		steps = append(steps, "- The current changes are not covered by a fresh review. Run /review (read-only and safe) before claiming completion or doing write-side git/MCP actions. Edit, read, and analysis can continue. Note: an explicit user git commit may still proceed with a warning; a final answer still needs a fresh review or an honest disclosure.")
 	}
 	return strings.Join(steps, "\n")
 }
@@ -1957,7 +1984,12 @@ func runtimeGateBlockedRemedy(ledger RuntimeGateLedger) string {
 func renderRuntimeGateBlockedFeedback(ledger RuntimeGateLedger, action string) string {
 	ledger.Normalize()
 	var b strings.Builder
-	fmt.Fprintf(&b, "Runtime gate blocked %s.", normalizeRuntimeGateAction(action))
+	action = normalizeRuntimeGateAction(action)
+	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
+		fmt.Fprintf(&b, "Runtime gate blocked %s (completion/write-side only; edit and read remain allowed).", action)
+	} else {
+		fmt.Fprintf(&b, "Runtime gate blocked %s.", action)
+	}
 	if remedy := runtimeGateBlockedRemedy(ledger); remedy != "" {
 		b.WriteString("\n\nWhat to do:\n")
 		b.WriteString(remedy)
@@ -1992,7 +2024,11 @@ func renderRuntimeGateBlockedFeedback(ledger RuntimeGateLedger, action string) s
 			}
 		}
 	}
-	b.WriteString("\nDo not claim completion or perform write-side git/MCP actions until the ledger is fresh and blocker-free.")
+	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
+		b.WriteString("\nDo not claim completion or perform write-side git/MCP actions until the ledger is fresh. Edit, read, and analysis can continue.")
+	} else {
+		b.WriteString("\nDo not claim completion or perform write-side git/MCP actions until the ledger is fresh and blocker-free.")
+	}
 	return strings.TrimSpace(b.String())
 }
 

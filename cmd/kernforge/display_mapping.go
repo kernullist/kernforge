@@ -51,6 +51,11 @@ func humanizeBlockerClass(value string, korean bool) string {
 			return "리뷰어 경로 문제"
 		}
 		return "reviewer route problem"
+	case reviewBlockerClassReviewFreshness:
+		if korean {
+			return "리뷰 재실행 필요"
+		}
+		return "fresh review needed"
 	case reviewBlockerClassEvidenceGap:
 		if korean {
 			return "근거 부족"
@@ -87,6 +92,9 @@ func humanizeBlockerClass(value string, korean bool) string {
 func humanizeBlockerSentence(blocker ReviewOperatorBlocker, korean bool) string {
 	label := humanizeBlockerClass(blocker.Class, korean)
 	why := strings.TrimSpace(firstNonBlankString(blocker.WhyBlocks, blocker.Title))
+	if strings.EqualFold(strings.TrimSpace(blocker.Class), reviewBlockerClassReviewFreshness) {
+		why = humanizeReviewFreshnessWhy(why, korean)
+	}
 	if label == "" && why == "" {
 		return ""
 	}
@@ -97,6 +105,43 @@ func humanizeBlockerSentence(blocker ReviewOperatorBlocker, korean bool) string 
 		return why
 	}
 	return label + ": " + why
+}
+
+// humanizeReviewFreshnessWhy rewrites ledger stale/missing-review blockers into
+// plain language that states the real scope: completion and write-side actions
+// are blocked; edit/read/analysis can continue.
+func humanizeReviewFreshnessWhy(raw string, korean bool) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		if korean {
+			return "최신 리뷰가 현재 변경을 덮지 않습니다. 완료 주장·git write 전에 /review가 필요합니다. 편집·읽기는 가능합니다."
+		}
+		return "Latest review does not cover current changes. Run /review before completion claims or git write; edit and read remain allowed."
+	}
+	if korean {
+		detail := ""
+		lower := strings.ToLower(raw)
+		const changedPrefix = "reviewed files changed since review:"
+		const unreviewedPrefix = "unreviewed changed files:"
+		if idx := strings.Index(lower, changedPrefix); idx >= 0 {
+			detail = strings.TrimSpace(raw[idx+len(changedPrefix):])
+		} else if idx := strings.Index(lower, unreviewedPrefix); idx >= 0 {
+			detail = strings.TrimSpace(raw[idx+len(unreviewedPrefix):])
+		}
+		base := "최신 리뷰가 현재 변경과 어긋납니다"
+		if strings.EqualFold(raw, runtimeGateBlockerMissingReviewMessage) ||
+			strings.Contains(lower, "no latest review run covers") {
+			base = "현재 변경을 덮는 최신 리뷰가 없습니다"
+		}
+		if detail != "" {
+			base += " (리뷰 이후 변경: " + detail + ")"
+		}
+		return base + ". 완료 주장·git write 전에 /review가 필요합니다. 편집·읽기는 가능합니다."
+	}
+	if strings.HasSuffix(raw, ".") {
+		return raw + " Blocks completion claims and write-side git/MCP until /review; edit and read remain allowed."
+	}
+	return raw + ". Blocks completion claims and write-side git/MCP until /review; edit and read remain allowed."
 }
 
 // humanizeReviewVerdict maps review gate/result verdicts to plain language.

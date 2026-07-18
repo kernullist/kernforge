@@ -7734,6 +7734,11 @@ func statusOverviewGateLabel(ledger RuntimeGateLedger) string {
 		return humanizeGateStatus("unknown", false)
 	}
 	ledger.Normalize()
+	// Freshness-only blockers are write-side gates. Keep the machine status as
+	// blocked, but label the footer so a new session does not look fully stuck.
+	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
+		return "blocked for completion/git write"
+	}
 	label := humanizeGateStatus(valueOrDefault(ledger.Status, runtimeGateStatusReady), false)
 	if len(ledger.Blockers) > 0 {
 		label += fmt.Sprintf(" (%d blockers)", len(ledger.Blockers))

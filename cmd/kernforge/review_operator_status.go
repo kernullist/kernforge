@@ -28,6 +28,7 @@ const (
 	reviewLifecyclePhaseCompleted                = "completed"
 	reviewBlockerClassCodeRepair                 = "code_repair_blocker"
 	reviewBlockerClassReviewerRouteProblem       = "reviewer_route_problem"
+	reviewBlockerClassReviewFreshness            = "review_freshness"
 	reviewBlockerClassEvidenceGap                = "evidence_gap"
 	reviewBlockerClassVerificationGap            = "verification_gap"
 	reviewBlockerClassDocumentArtifactQuality    = "document_artifact_quality"
@@ -811,6 +812,11 @@ func reviewBlockerClassForText(text string) string {
 	switch {
 	case containsAny(lower, "reviewer", "review route", "cross reviewer", "route"):
 		return reviewBlockerClassReviewerRouteProblem
+	// Stale/missing review coverage is a completion/write gate, not an
+	// evidence-gap finding about the code under review.
+	case runtimeGateBlockerIsReviewStaleness(text) ||
+		containsAny(lower, "latest review is stale", "no latest review run covers", "review freshness"):
+		return reviewBlockerClassReviewFreshness
 	case containsAny(lower, "evidence", "freshness", "stale", "scope", "unreviewed"):
 		return reviewBlockerClassEvidenceGap
 	case containsAny(lower, "verification", "verify", "test", "build"):
@@ -860,6 +866,8 @@ func reviewBlockerDefaultNextAction(class string) string {
 		return "repair the blocking finding, then rerun /review"
 	case reviewBlockerClassReviewerRouteProblem:
 		return "switch or clear the reviewer route, or explicitly continue with single-model disclosure"
+	case reviewBlockerClassReviewFreshness:
+		return "run /review before claiming completion or write-side git/MCP actions; edit and read can continue"
 	case reviewBlockerClassEvidenceGap:
 		return "collect local evidence and rerun the review gate"
 	case reviewBlockerClassVerificationGap:
@@ -881,7 +889,7 @@ func reviewBlockerDefaultCommand(class string) string {
 		return "/session continuity continue from review"
 	case reviewBlockerClassReviewerRouteProblem:
 		return "/model cross-review"
-	case reviewBlockerClassEvidenceGap:
+	case reviewBlockerClassReviewFreshness, reviewBlockerClassEvidenceGap:
 		return "/review"
 	case reviewBlockerClassVerificationGap:
 		return "/verify --full"
@@ -924,6 +932,7 @@ func reviewBlockerClassOrder() []string {
 	return []string{
 		reviewBlockerClassCodeRepair,
 		reviewBlockerClassReviewerRouteProblem,
+		reviewBlockerClassReviewFreshness,
 		reviewBlockerClassEvidenceGap,
 		reviewBlockerClassVerificationGap,
 		reviewBlockerClassDocumentArtifactQuality,
