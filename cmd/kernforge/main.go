@@ -1406,6 +1406,7 @@ func (rt *runtimeState) printRuntimeGateRecoveryGuidance(ledger RuntimeGateLedge
 		case i == 0 && blocked:
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(line))
 		case strings.HasPrefix(line, "Do now:") || strings.HasPrefix(line, "지금 할 일:") ||
+			strings.HasPrefix(line, "Option ") || strings.HasPrefix(line, "방법 ") ||
 			strings.HasPrefix(line, "Or:") || strings.HasPrefix(line, "또는:"):
 			fmt.Fprintln(rt.writer, rt.ui.activityLine("next", line))
 		default:

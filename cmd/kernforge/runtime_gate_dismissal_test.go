@@ -179,8 +179,25 @@ func TestRuntimeGateRecoveryMentionsGateClear(t *testing.T) {
 	ledger.Normalize()
 	lines := runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(false)}, nil, ledger)
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "/gate clear") {
-		t.Fatalf("expected recovery lines to mention /gate clear, got:\n%s", joined)
+	if !strings.Contains(joined, "Option 1)") ||
+		!strings.Contains(joined, "Option 2)") ||
+		!strings.Contains(joined, "/gate clear") {
+		t.Fatalf("expected peer options including /gate clear, got:\n%s", joined)
+	}
+
+	// Already-dismissed gates should not keep advertising /gate clear.
+	session := &Session{
+		RuntimeGateDismissal: &RuntimeGateDismissal{
+			ClearedAt:              time.Now(),
+			ReviewRunID:            "review-old",
+			IgnoreReviewUntilNewer: true,
+			Scope:                  runtimeGateDismissalScopeSession,
+		},
+	}
+	lines = runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(false)}, session, ledger)
+	joined = strings.Join(lines, "\n")
+	if strings.Contains(joined, "/gate clear") {
+		t.Fatalf("active dismissal must not re-offer /gate clear, got:\n%s", joined)
 	}
 }
 

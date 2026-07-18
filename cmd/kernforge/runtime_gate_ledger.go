@@ -1990,6 +1990,7 @@ func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger Runti
 	korean := localePrefersKorean(cfg)
 	status := strings.ToLower(strings.TrimSpace(ledger.Status))
 	stalenessOnly := runtimeGateBlockersAreReviewStalenessOnly(ledger)
+	offerClear := runtimeGateShouldOfferClear(session, ledger)
 
 	var lines []string
 	switch {
@@ -2001,9 +2002,9 @@ func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger Runti
 		}
 	case status == runtimeGateStatusBlocked:
 		if korean {
-			lines = append(lines, "런타임 게이트가 막혀 있습니다. 아래 조치 후 다시 시도하세요.")
+			lines = append(lines, "런타임 게이트가 막혀 있습니다. 아래 조치 중 하나를 선택하세요.")
 		} else {
-			lines = append(lines, "Runtime gate is blocked. Resolve the steps below, then retry.")
+			lines = append(lines, "Runtime gate is blocked. Choose one of the steps below.")
 		}
 	default: // needs_review
 		if korean {
@@ -2029,13 +2030,24 @@ func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger Runti
 			next = "/review - refresh the latest review"
 		}
 	}
-	if korean {
+
+	// Surface /review and /gate clear as peer first-class actions so users see
+	// both options immediately when a blocked gate greets them at startup.
+	if offerClear {
+		if korean {
+			lines = append(lines, "방법 1) "+next)
+			lines = append(lines, "방법 2) /gate clear - 이전 세션 게이트 부담 해제 (리뷰 파일 유지, 편집 계속)")
+		} else {
+			lines = append(lines, "Option 1) "+next)
+			lines = append(lines, "Option 2) /gate clear - dismiss previous-session gate (keeps review files; continue editing)")
+		}
+	} else if korean {
 		lines = append(lines, "지금 할 일: "+next)
 	} else {
 		lines = append(lines, "Do now: "+next)
 	}
 
-	// Extra alternate next commands (skip duplicate of primary).
+	// Extra alternate next commands (skip duplicate of primary / gate clear).
 	primaryCmd := ""
 	if fields := strings.Fields(next); len(fields) > 0 {
 		primaryCmd = strings.ToLower(fields[0])
@@ -2050,7 +2062,11 @@ func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger Runti
 		if len(cmdFields) == 0 {
 			continue
 		}
-		if primaryCmd != "" && strings.EqualFold(cmdFields[0], primaryCmd) {
+		token := strings.ToLower(cmdFields[0])
+		if primaryCmd != "" && strings.EqualFold(token, primaryCmd) {
+			continue
+		}
+		if token == "/gate" {
 			continue
 		}
 		line := command
@@ -2070,21 +2086,45 @@ func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger Runti
 
 	if !strings.Contains(strings.ToLower(next), "/status") {
 		if korean {
-			lines = append(lines, "자세히: /status  또는  /status detail")
+			lines = append(lines, "자세히: /status  또는  /status detail  또는  /gate status")
 		} else {
-			lines = append(lines, "Details: /status  or  /status detail")
-		}
-	}
-	// Offer an explicit escape hatch for previous-session baggage so operators
-	// are not forced through /review when they only want to keep editing.
-	if status == runtimeGateStatusBlocked && (stalenessOnly || len(ledger.Blockers) > 0) {
-		if korean {
-			lines = append(lines, "또는: /gate clear - 이전 세션 게이트 부담 해제 (리뷰 파일 유지)")
-		} else {
-			lines = append(lines, "Or: /gate clear - dismiss previous-session gate baggage (keeps review files)")
+			lines = append(lines, "Details: /status  or  /status detail  or  /gate status")
 		}
 	}
 	return lines
+}
+
+// runtimeGateShouldOfferClear reports whether recovery copy should advertise
+// /gate clear as a first-class option. Skips when a dismissal is already active.
+func runtimeGateShouldOfferClear(session *Session, ledger RuntimeGateLedger) bool {
+	ledger.Normalize()
+	status := strings.ToLower(strings.TrimSpace(ledger.Status))
+	if status != runtimeGateStatusBlocked && status != runtimeGateStatusNeedsReview {
+		return false
+	}
+	if session != nil && session.RuntimeGateDismissal != nil {
+		session.RuntimeGateDismissal.Normalize()
+		if session.RuntimeGateDismissal.Active() {
+			return false
+		}
+	}
+	// Prefer offering clear for review-baggage / previous-session blocks.
+	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
+		return true
+	}
+	for _, blocker := range ledger.Blockers {
+		if runtimeGateBlockerIsReviewStaleness(blocker) {
+			return true
+		}
+	}
+	for _, warning := range ledger.Warnings {
+		if runtimeGateBlockerIsReviewStaleness(warning) ||
+			strings.Contains(strings.ToLower(warning), "stale") ||
+			strings.Contains(strings.ToLower(warning), "no latest review") {
+			return true
+		}
+	}
+	return strings.TrimSpace(ledger.ReviewRunID) != "" && status == runtimeGateStatusBlocked
 }
 
 func runtimeGateRecoveryReasonLine(ledger RuntimeGateLedger, korean bool) string {

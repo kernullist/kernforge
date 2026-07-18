@@ -1887,16 +1887,20 @@ func TestRuntimeGateRecoveryGuidanceLinesForStaleBlock(t *testing.T) {
 	}
 	joined := strings.Join(ko, "\n")
 	if !strings.Contains(joined, "완료·커밋") ||
-		!strings.Contains(joined, "지금 할 일:") ||
+		!strings.Contains(joined, "방법 1)") ||
 		!strings.Contains(joined, "/review") ||
+		!strings.Contains(joined, "방법 2)") ||
+		!strings.Contains(joined, "/gate clear") ||
 		!strings.Contains(joined, "/status") {
 		t.Fatalf("korean recovery guidance missing action steps:\n%s", joined)
 	}
 
 	en := runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(false)}, nil, ledger)
 	joinedEN := strings.Join(en, "\n")
-	if !strings.Contains(joinedEN, "Do now:") ||
+	if !strings.Contains(joinedEN, "Option 1)") ||
 		!strings.Contains(joinedEN, "/review") ||
+		!strings.Contains(joinedEN, "Option 2)") ||
+		!strings.Contains(joinedEN, "/gate clear") ||
 		!strings.Contains(joinedEN, "completion/git write") {
 		t.Fatalf("english recovery guidance missing action steps:\n%s", joinedEN)
 	}
@@ -1941,8 +1945,10 @@ func TestPrintOperatorFooterShowsRecoveryWhenGateBlocked(t *testing.T) {
 		t.Fatalf("expected status pills line, got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "WARN") ||
-		!strings.Contains(rendered, "지금 할 일:") ||
-		!strings.Contains(rendered, "/review") {
+		!strings.Contains(rendered, "방법 1)") ||
+		!strings.Contains(rendered, "/review") ||
+		!strings.Contains(rendered, "방법 2)") ||
+		!strings.Contains(rendered, "/gate clear") {
 		t.Fatalf("expected blocked-gate recovery steps in footer, got:\n%s", rendered)
 	}
 }
