@@ -211,9 +211,12 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"--disclose": "Rewrite the blocked final answer with verification-not-run disclosure and complete when the gate allows.",
 	},
 	"gate": {
-		"status":  "Show runtime gate status and any active /gate clear dismissal.",
-		"clear":   "Dismiss previous-session review baggage from the runtime gate (keeps review files).",
-		"restore": "Re-enable the dismissed review for runtime gate checks.",
+		"status":            "Show runtime gate status and any active /gate clear dismissal.",
+		"clear":             "Dismiss previous-session review baggage from the runtime gate (keeps review files).",
+		"clear --session":   "Dismiss the gate for this session only (do not write workspace dismissal).",
+		"clear --workspace": "Dismiss the gate for the whole workspace (default).",
+		"clear --reason":    "Attach a short operator reason to the dismissal.",
+		"restore":           "Re-enable the dismissed review for runtime gate checks.",
 	},
 	"review": {
 		"change":                    "Review the current workspace diff, patch transaction, or supplied diff/code.",
@@ -782,40 +785,43 @@ func availableAnalyzeProjectFlags(fields []string, firstLevel []string) []string
 
 func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []string, endsWithSpace bool) ([]string, int, bool) {
 	firstLevel := map[string][]string{
-		"permissions":       {"plan", "edit", "full"},
-		"locale-auto":       {"on", "off"},
-		"set-auto-verify":   {"on", "off"},
-		"progress-display":  {"auto", "compact", "stream"},
-		"worktree":          {"status", "list", "create", "enter", "attach", "leave", "cleanup"},
-		"specialists":       {"status", "assign", "cleanup"},
-		"suggest":           {"status", "list", "accept", "dismiss", "mode", "dashboard --html"},
-		"session":           {"status", "list", "search", "events", "continuity", "recover", "audit", "jobs", "handoff", "tasks", "dashboard --html"},
-		"provider":          append([]string{"status"}, providerChoiceCompletionTokens()...),
-		"effort":            {"undefined", "minimal", "low", "medium", "high", "xhigh"},
-		"codex-auth":        {"status", "login", "logout", "path"},
-		"profile":           {"list", "show", "status", "pin", "unpin", "rename", "delete"},
-		"analyze-project":   {"--mode", "--path"},
-		"analyze-dashboard": {"latest"},
-		"verify":            {"--full", "dashboard", "dashboard --html", "tools", "tools detect", "tools set", "tools clear", "config", "config set", "config clear"},
-		"model":             {"status", "main", "analysis", "analysis-worker", "analysis-reviewer", "cross-review", "clear", "task-owner"},
-		"review":            {"change", "plan", "selection", "pr", "final", "goal", "analysis", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
-		"finish":            {"--disclose"},
-		"goal":              {"--run", "--no-run", "--file GOAL.md", "@GOAL.md", "run latest", "status", "audit latest", "complete latest", "cancel latest"},
-		"review-soak":       {"--mode scripted", "--mode real-provider", "--turns", "--timeout"},
-		"memory":            {"loaded", "recent", "search", "show", "promote", "demote", "confirm", "tentative", "dashboard", "dashboard --html", "prune", "stats", "note", "notes", "note-show"},
-		"evidence":          {"recent", "search", "show", "dashboard", "dashboard --html"},
-		"override":          {"status", "add", "clear"},
-		"checkpoint":        {"auto", "diff", "list", "rollback"},
-		"new-feature":       {"next", "list"},
-		"investigate":       {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard --html"},
-		"simulate":          {"status", "show", "list", "dashboard", "dashboard --html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
-		"fuzz-func":         {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "<function-name> --source-scan focused", "<function-name> --source-scan full", "<function-name> --no-source-scan", "--from-candidate <id>", "--file <path>", "@<path>", "status", "show", "list", "continue", "continue --profile extended", "repro <crash>", "minimize <crash>", "language"},
-		"fuzz-campaign":     {"status", "run", "new", "list", "show"},
-		"source-scan":       {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
-		"create-driver-poc": {"<driver-name>", "<driver-name> --type objectfilter", "<driver-name> --type minifilter", "<driver-name> --type registryfilter", "<driver-name> --type wfpcallout"},
-		"automation":        {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
-		"init":              {"config", "hooks", "memory-policy", "skill", "verify"},
-		"mcp":               {"add", "remove", "enable", "disable", "auth"},
+		"permissions":         {"plan", "edit", "full"},
+		"locale-auto":         {"on", "off"},
+		"set-auto-verify":     {"on", "off"},
+		"progress-display":    {"auto", "compact", "stream"},
+		"worktree":            {"status", "list", "create", "enter", "attach", "leave", "cleanup"},
+		"specialists":         {"status", "assign", "cleanup"},
+		"suggest":             {"status", "list", "accept", "dismiss", "mode", "dashboard --html"},
+		"session":             {"status", "list", "search", "events", "continuity", "recover", "audit", "jobs", "handoff", "tasks", "dashboard --html"},
+		"provider":            append([]string{"status"}, providerChoiceCompletionTokens()...),
+		"effort":              {"undefined", "minimal", "low", "medium", "high", "xhigh"},
+		"codex-auth":          {"status", "login", "logout", "path"},
+		"profile":             {"list", "show", "status", "pin", "unpin", "rename", "delete"},
+		"analyze-project":     {"--mode", "--path"},
+		"analyze-dashboard":   {"latest"},
+		"verify":              {"--full", "dashboard", "dashboard --html", "tools", "tools detect", "tools set", "tools clear", "config", "config set", "config clear"},
+		"model":               {"status", "main", "analysis", "analysis-worker", "analysis-reviewer", "cross-review", "clear", "task-owner"},
+		"review":              {"change", "plan", "selection", "pr", "final", "goal", "analysis", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
+		"gate":                {"status", "clear", "restore"},
+		"finish":              {"--disclose"},
+		"goal":                {"--run", "--no-run", "--file GOAL.md", "@GOAL.md", "run latest", "status", "audit latest", "complete latest", "cancel latest"},
+		"review-soak":         {"--mode scripted", "--mode real-provider", "--turns", "--timeout"},
+		"memory":              {"loaded", "recent", "search", "show", "promote", "demote", "confirm", "tentative", "dashboard", "dashboard --html", "prune", "stats", "note", "notes", "note-show"},
+		"evidence":            {"recent", "search", "show", "dashboard", "dashboard --html"},
+		"override":            {"status", "add", "clear"},
+		"checkpoint":          {"auto", "diff", "list", "rollback"},
+		"new-feature":         {"next", "list"},
+		"investigate":         {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard --html"},
+		"simulate":            {"status", "show", "list", "dashboard", "dashboard --html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
+		"fuzz-func":           {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "<function-name> --source-scan focused", "<function-name> --source-scan full", "<function-name> --no-source-scan", "--from-candidate <id>", "--file <path>", "@<path>", "status", "show", "list", "continue", "continue --profile extended", "repro <crash>", "minimize <crash>", "language"},
+		"fuzz-campaign":       {"status", "run", "new", "list", "show"},
+		"source-scan":         {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
+		"create-driver-poc":   {"<driver-name>", "<driver-name> --type objectfilter", "<driver-name> --type minifilter", "<driver-name> --type registryfilter", "<driver-name> --type wfpcallout"},
+		"find-root-cause":     {"--pattern-pack"},
+		"root-cause-patterns": {"list", "match", "github-search", "normalize", "validate"},
+		"automation":          {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
+		"init":                {"config", "hooks", "memory-policy", "skill", "verify"},
+		"mcp":                 {"add", "remove", "enable", "disable", "auth"},
 	}
 
 	if len(fields) == 0 {
@@ -1066,6 +1072,27 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 				return reviewModes, 1, true
 			}
 			return nil, 0, false
+		}
+		return nil, 0, false
+	case "gate":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if strings.EqualFold(fields[0], "clear") {
+			if len(fields) == 2 {
+				return []string{"--session", "--workspace", "--reason"}, 1, true
+			}
+			return nil, 0, false
+		}
+		return nil, 0, false
+	case "root-cause-patterns":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
+	case "find-root-cause":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
 		}
 		return nil, 0, false
 	case "review-soak":

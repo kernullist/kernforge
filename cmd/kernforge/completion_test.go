@@ -91,6 +91,18 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/create-driver-poc Acme --type wf", wantBuffer: "/create-driver-poc Acme --type wfpcallout "},
 		{input: "/init ", wantSuggest: []string{"/init config", "/init hooks", "/init memory-policy", "/init skill", "/init verify"}},
 		{input: "/init m", wantBuffer: "/init memory-policy "},
+		{input: "/gate ", wantSuggest: []string{"/gate status", "/gate clear", "/gate restore"}},
+		{input: "/gate c", wantBuffer: "/gate clear "},
+		// Shared "--" prefix is completed first (same LCP behavior as other flag lists).
+		{input: "/gate clear ", wantBuffer: "/gate clear --"},
+		{input: "/gate clear --s", wantBuffer: "/gate clear --session "},
+		{input: "/gate clear --w", wantBuffer: "/gate clear --workspace "},
+		{input: "/gate clear --r", wantBuffer: "/gate clear --reason "},
+		{input: "/root-cause-patterns ", wantSuggest: []string{"/root-cause-patterns list", "/root-cause-patterns match", "/root-cause-patterns github-search", "/root-cause-patterns normalize", "/root-cause-patterns validate"}},
+		{input: "/root-cause-patterns m", wantBuffer: "/root-cause-patterns match "},
+		// Single first-level option is applied directly (buffer completion).
+		{input: "/find-root-cause ", wantBuffer: "/find-root-cause --pattern-pack "},
+		{input: "/find-root-cause --p", wantBuffer: "/find-root-cause --pattern-pack "},
 	}
 
 	for _, tc := range cases {
@@ -263,6 +275,10 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/codex-l", wantBuffer: "/codex-login "},
 		{input: "/sess", wantBuffer: "/session "},
 		{input: "/progress-d", wantBuffer: "/progress-display "},
+		{input: "/gat", wantBuffer: "/gate "},
+		{input: "/root-c", wantBuffer: "/root-cause-patterns "},
+		{input: "/retry-v", wantBuffer: "/retry-verify "},
+		{input: "/review-s", wantBuffer: "/review-soak "},
 	}
 
 	for _, tc := range cases {
@@ -272,6 +288,51 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		}
 		if gotBuffer != tc.wantBuffer {
 			t.Fatalf("%q: unexpected buffer: got %q want %q", tc.input, gotBuffer, tc.wantBuffer)
+		}
+	}
+}
+
+// TestSlashSubcommandDescriptionsHaveFirstLevelCompletions guards against the
+// recurring bug where a command gets docs in slashSubcommandDescriptions but
+// is omitted from the firstLevel map that actually drives Tab completion.
+func TestSlashSubcommandDescriptionsHaveFirstLevelCompletions(t *testing.T) {
+	// Free-form or dashboard-only commands may intentionally omit discrete
+	// first-level tokens; keep the exception list explicit and short.
+	freeFormOnly := map[string]bool{
+		// find-root-cause now offers --pattern-pack; keep no exceptions empty
+		// unless a command truly has no fixed first token.
+	}
+	// Build the same firstLevel key set the completer uses by probing each
+	// documented command with an empty argument list.
+	rt := &runtimeState{cfg: DefaultConfig(t.TempDir())}
+	for commandName := range slashSubcommandDescriptions {
+		if freeFormOnly[commandName] {
+			continue
+		}
+		options, _, ok := rt.slashArgumentSuggestions(commandName, nil, false)
+		if !ok || len(options) == 0 {
+			t.Fatalf("command %q has slashSubcommandDescriptions but no first-level Tab completion options", commandName)
+		}
+	}
+	// Every first-level option token should appear as a key prefix in the
+	// description map when that map lists discrete subcommands (best-effort:
+	// multi-word tokens like "dashboard --html" are allowed without a key).
+	for commandName, options := range map[string][]string{
+		"gate":                {"status", "clear", "restore"},
+		"root-cause-patterns": {"list", "match", "github-search", "normalize", "validate"},
+	} {
+		got, _, ok := rt.slashArgumentSuggestions(commandName, nil, false)
+		if !ok {
+			t.Fatalf("%s: expected first-level suggestions", commandName)
+		}
+		gotSet := map[string]bool{}
+		for _, item := range got {
+			gotSet[item] = true
+		}
+		for _, want := range options {
+			if !gotSet[want] {
+				t.Fatalf("%s: missing first-level option %q in %#v", commandName, want, got)
+			}
 		}
 	}
 }
