@@ -211,7 +211,11 @@ func buildSingleModelReviewPolicy(run ReviewRun, hasCrossReviewer bool) SingleMo
 	policy.NoCrossReviewReason = "single_model_mode"
 	policy.RequiresStructuredFindings = true
 	policy.RequiresPreWriteSelfReview = strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write")
-	policy.RequiresRFObligationStatus = policy.RequiresPreWriteSelfReview && len(run.RepairFindings) > 0
+	// Require RF resolution statuses only when a concrete repair obligation is
+	// actually carried -- note-level guidance findings (evidence_gap/test_gap)
+	// must not arm the single_model_policy blocker on their own.
+	policy.RequiresRFObligationStatus = policy.RequiresPreWriteSelfReview &&
+		len(reviewRepairFindingsRequiringResolutionStatus(run.RepairFindings)) > 0
 	policy.RecordsVerificationObligations = true
 	policy.Checklist = []string{
 		"correctness",

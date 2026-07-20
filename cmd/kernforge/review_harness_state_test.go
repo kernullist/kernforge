@@ -169,6 +169,107 @@ func TestSingleModelPreWriteWithoutUsableReviewerBlocksMissingRFObligationStatus
 	}
 }
 
+// TestSingleModelPreWriteDoesNotAddRFStatusBlockerForNoteLevelCarriedFinding
+// guards the fix for the ledger surface where a carried note-level finding
+// (evidence_gap guidance, explicitly not a code repair target) armed the
+// deterministic "lacks repair obligation status" blocker in the next pre-write
+// review: the finding has a RequiredFix, so an actionability-shaped filter
+// alone would still keep it -- the status requirement must use the stricter
+// concrete-obligation bar.
+func TestSingleModelPreWriteDoesNotAddRFStatusBlockerForNoteLevelCarriedFinding(t *testing.T) {
+	noteFinding := ReviewFinding{
+		ID:           "RF-001",
+		Source:       "deterministic",
+		ReviewerRole: "collector",
+		Severity:     reviewSeverityInfo,
+		Category:     "evidence_gap",
+		Title:        "Review evidence warning",
+		Evidence:     "The collected context may be incomplete.",
+		RequiredFix:  "Repeat /review with a narrower target if this warning affects the result.",
+	}
+	run := ReviewRun{
+		Trigger: "pre_write",
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:                    true,
+			RequiresRFObligationStatus: true,
+		},
+		RepairFindings: []ReviewFinding{noteFinding},
+	}
+	if got := singleModelPreWritePolicyFindings(run); len(got) != 0 {
+		t.Fatalf("note-level carried finding must not arm the RF status blocker, got %#v", got)
+	}
+
+	policyRun := ReviewRun{Trigger: "pre_write", RepairFindings: []ReviewFinding{noteFinding}}
+	policy := buildSingleModelReviewPolicy(policyRun, false)
+	if policy.RequiresRFObligationStatus {
+		t.Fatalf("note-level carried finding must not arm the RF obligation requirement, got %#v", policy)
+	}
+
+	concreteRun := ReviewRun{
+		Trigger: "pre_write",
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-100",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "main.cpp",
+			Title:       "return value is wrong",
+			RequiredFix: "return the requested value",
+		}},
+	}
+	concretePolicy := buildSingleModelReviewPolicy(concreteRun, false)
+	if !concretePolicy.RequiresRFObligationStatus {
+		t.Fatalf("concrete carried obligation must still arm the RF obligation requirement, got %#v", concretePolicy)
+	}
+	concreteRun.SingleModelPolicy = concretePolicy
+	if got := singleModelPreWritePolicyFindings(concreteRun); len(got) == 0 {
+		t.Fatalf("concrete carried obligation without status must still raise the RF status blocker")
+	}
+}
+
+// TestSingleModelPreWriteWithoutUsableReviewerIgnoresNoteLevelCarriedFinding
+// runs the full harness path with no usable reviewer: a carried note-level
+// finding must produce neither the RF status blocker nor any gate blocker,
+// mirroring the approved review artifact observed in the real session.
+func TestSingleModelPreWriteWithoutUsableReviewerIgnoresNoteLevelCarriedFinding(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main(){return 0;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	rt := reviewStateTestRuntime(root, nil)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:      "pre_write",
+		Target:       reviewTargetChange,
+		Request:      "fix main.cpp",
+		Paths:        []string{path},
+		ProvidedDiff: "- return 0;\n+ return 1;\n",
+		NoModel:      true,
+		RepairFindings: []ReviewFinding{{
+			ID:           "RF-001",
+			Source:       "deterministic",
+			ReviewerRole: "collector",
+			Severity:     reviewSeverityInfo,
+			Category:     "evidence_gap",
+			Title:        "Review evidence warning",
+			Evidence:     "The collected context may be incomplete.",
+			RequiredFix:  "Repeat /review with a narrower target if this warning affects the result.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if run.SingleModelPolicy.RequiresRFObligationStatus {
+		t.Fatalf("note-level carried finding must not arm the RF obligation requirement, got %#v", run.SingleModelPolicy)
+	}
+	if reviewFindingsContainTitle(run.Findings, "Single-model pre-write review lacks repair obligation status") {
+		t.Fatalf("note-level carried finding must not produce the RF status blocker, got %#v", run.Findings)
+	}
+	if len(run.Gate.BlockingFindings) != 0 {
+		t.Fatalf("note-level carried finding must not block the pre-write gate, got %#v", run.Gate.BlockingFindings)
+	}
+}
+
 func TestSingleModelPreWriteDoesNotAddRFStatusBlockerOnRequiredReviewerFailure(t *testing.T) {
 	run := ReviewRun{
 		Trigger: "pre_write",

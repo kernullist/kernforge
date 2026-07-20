@@ -286,7 +286,12 @@ func singleModelPreWritePolicyFindings(run ReviewRun) []ReviewFinding {
 	if reviewRunHasRequiredReviewerFailure(run) {
 		return nil
 	}
-	if !run.SingleModelPolicy.RequiresRFObligationStatus || repairFindingsHaveResolutionStatus(run.RepairFindings) {
+	// Only concrete repair obligations can require a resolution status.
+	// Checking raw RepairFindings would let a carried note-level finding
+	// (evidence_gap/test_gap guidance, review-meta noise) fabricate a
+	// deterministic blocker for a status it can never meaningfully hold.
+	if !run.SingleModelPolicy.RequiresRFObligationStatus ||
+		repairFindingsHaveResolutionStatus(reviewRepairFindingsRequiringResolutionStatus(run.RepairFindings)) {
 		return nil
 	}
 	findings := []ReviewFinding{{

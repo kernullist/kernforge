@@ -1055,6 +1055,78 @@ func TestReviewRepairFollowUpWithExplicitRFIDScopesRepairGuidance(t *testing.T) 
 	}
 }
 
+// TestReviewRepairFollowUpWithNoteLevelFindingKeepsGateHonest guards the fix
+// for a user referencing a note-level finding (info/advisory severity, which
+// the gate deliberately kept out of both BlockingFindings and
+// WarningFindings): the scoped repair guidance must not fabricate a gate
+// blocker out of it, the persisted gate must stay untouched, and the carried
+// RepairFindings must not arm the single-model RF-obligation blocker
+// downstream (the "latest review has unwaived blockers: RF-001" surface).
+func TestReviewRepairFollowUpWithNoteLevelFindingKeepsGateHonest(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:        "review-note-scope",
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "최신 리뷰 지적을 수정해줘",
+		Target:    reviewTargetChange,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-002"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:           "RF-001",
+				Source:       "deterministic",
+				ReviewerRole: "collector",
+				Severity:     reviewSeverityInfo,
+				Category:     "evidence_gap",
+				Title:        "Review evidence warning",
+				Evidence:     "The collected context may be incomplete.",
+				RequiredFix:  "Repeat /review with a narrower target if this warning affects the result.",
+			},
+			{
+				ID:          "RF-002",
+				Source:      "model",
+				Severity:    reviewSeverityHigh,
+				Category:    "correctness",
+				Title:       "CreateProcessW lpCommandLine const pointer",
+				RequiredFix: "수정 가능한 command line 버퍼를 전달하세요.",
+				BlocksGate:  true,
+			},
+		},
+	}
+	agent := &Agent{
+		Config:  DefaultConfig(root),
+		Session: session,
+		Store:   NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	scoped, ok := scopeReviewRunToRequestedRepairFindings(*session.LastReviewRun, "RF-001 수정해줘")
+	if !ok {
+		t.Fatalf("expected scoping to succeed for a referenced note finding")
+	}
+	if len(scoped.Gate.BlockingFindings) != 0 {
+		t.Fatalf("note-level finding must not be promoted into gate blockers, got %#v", scoped.Gate.BlockingFindings)
+	}
+	if len(scoped.RepairFindings) != 1 || scoped.RepairFindings[0].ID != "RF-001" {
+		t.Fatalf("referenced note finding should remain as repair guidance, got %#v", scoped.RepairFindings)
+	}
+
+	if !agent.maybePrimeRepairFromLastReview("RF-001 수정해줘", nil, false, true) {
+		t.Fatalf("expected note-finding repair follow-up to be injected")
+	}
+	if got := session.LastReviewRun.Gate.BlockingFindings; len(got) != 1 || got[0] != "RF-002" {
+		t.Fatalf("persisted gate must stay untouched by note-finding scoping, got %#v", got)
+	}
+	if len(session.LastReviewRun.RepairFindings) != 1 || session.LastReviewRun.RepairFindings[0].ID != "RF-001" {
+		t.Fatalf("expected carried repair findings to hold the referenced note finding, got %#v", session.LastReviewRun.RepairFindings)
+	}
+	if candidates := reviewRepairFindingsRequiringResolutionStatus(session.LastReviewRun.RepairFindings); len(candidates) != 0 {
+		t.Fatalf("note-level carried finding must not require a resolution status, got %#v", candidates)
+	}
+}
+
 func TestReviewBeforeFixUsesFileMentionAsFileEvidence(t *testing.T) {
 	root := t.TempDir()
 	rt := &runtimeState{

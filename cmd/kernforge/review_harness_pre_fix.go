@@ -358,14 +358,14 @@ func scopeReviewRunToRequestedRepairFindings(run ReviewRun, userText string) (Re
 	scoped.RepairFindings = normalizeReviewFindingCopies(selected)
 	scoped.Gate.BlockingFindings = filterReviewFindingIDs(run.Gate.BlockingFindings, requestedSet)
 	scoped.Gate.WarningFindings = filterReviewFindingIDs(run.Gate.WarningFindings, requestedSet)
-	if len(scoped.Gate.BlockingFindings) == 0 && len(scoped.Gate.WarningFindings) == 0 {
-		for _, finding := range selected {
-			finding.Normalize()
-			if strings.TrimSpace(finding.ID) != "" {
-				scoped.Gate.BlockingFindings = append(scoped.Gate.BlockingFindings, finding.ID)
-			}
-		}
-	}
+	// A referenced finding that sits in neither gate list is a note-level
+	// (info/advisory) item -- warnings only count high/medium/low severities.
+	// Promoting it into BlockingFindings would fabricate a gate-inconsistent
+	// state (severity/BlocksGate say non-blocking while the gate lists it as a
+	// blocker) and, once carried into RepairFindings, would trip the
+	// single-model RF-obligation blocker downstream. Keep the gate honest:
+	// the finding stays in Findings/RepairFindings as the user-requested
+	// repair guidance, but the gate reflects actual gate membership only.
 	scoped.Gate.BlockingFindings = normalizeTaskStateList(scoped.Gate.BlockingFindings, 64)
 	scoped.Gate.WarningFindings = normalizeTaskStateList(scoped.Gate.WarningFindings, 64)
 	scoped.RepairPlan = buildReviewRepairPlan(scoped)

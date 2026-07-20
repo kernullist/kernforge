@@ -2,6 +2,16 @@
 
 의미 있는 변경 이력. 날짜는 절대 형식(YYYY-MM-DD), 최신 항목이 위에 온다.
 
+## 2026-07-21
+
+### note 수준 finding이 gate blocker로 표면화되는 경로 차단
+
+- 계획서: [[docs/plan/2026-07-21-note-finding-blocker-surface.md]] (2026-07-19 계획서 후속 이슈 2 해결)
+- `scopeReviewRunToRequestedRepairFindings`의 fallback 제거: 사용자가 "RF-001 수정해줘"처럼 note 수준(info/advisory) finding을 참조하면 gate 양쪽 목록에 없다는 이유로 `BlockingFindings`에 무조건 승격시키던 날조를 차단. finding은 Findings/RepairFindings 지침 채널에 유지하고 gate는 실제 소속만 반영.
+- single-model RF-obligation policy 필터 일원화: `buildSingleModelReviewPolicy`의 `RequiresRFObligationStatus` 산정과 `singleModelPreWritePolicyFindings`의 status 검사가 `reviewRepairFindingsRequiringResolutionStatus`(evidence_gap/test_gap 제외 2-leg 필터)를 사용. carried note finding이 resolution status 부재로 deterministic "lacks repair obligation status" blocker를 유발해 `latest review has unwaived blockers: RF-001`로 표면화되던 경로 차단.
+- obligation ledger 필터를 `reviewRepairObligationCandidateFindings` 헬퍼로 추출(동작 변경 없음). status 요구 필터에서 `reviewFindingLooksActionableForRepairGate` leg 제외 — RequiredFix만 있는 note finding("Repeat /review...")까지 잡아내 실물 케이스를 걸러내지 못함을 확인.
+- 회귀 테스트 3개 추가.
+
 ## 2026-07-19
 
 ### 자동 검증 out-of-scope 하드 중단 제거 및 scope 판정 일관화

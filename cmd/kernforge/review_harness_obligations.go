@@ -20,6 +20,50 @@ const (
 	reviewObligationStatusDisclosedFinal       = "disclosed_in_final_answer"
 )
 
+// reviewRepairObligationCandidateFindings filters carried repair findings down
+// to concrete repair obligations: review-meta items and non-actionable
+// placeholders are user-visible guidance, not obligations that can feed this
+// ledger.
+func reviewRepairObligationCandidateFindings(findings []ReviewFinding) []ReviewFinding {
+	out := make([]ReviewFinding, 0, len(findings))
+	for _, finding := range findings {
+		finding.Normalize()
+		if strings.TrimSpace(finding.ID) == "" {
+			continue
+		}
+		if !preWritePreFixFindingIsConcreteRepairObligation(finding) &&
+			!preWritePreFixWarningIsConcreteRepairObligation(finding) &&
+			!reviewFindingLooksActionableForRepairGate(finding) {
+			continue
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
+// reviewRepairFindingsRequiringResolutionStatus narrows carried repair
+// findings to the ones the single-model RF-obligation policy may demand a
+// resolution status for. This bar is stricter than the obligation-ledger
+// candidate filter: evidence_gap/test_gap items are explicitly not code
+// repair targets (see formatReviewerGateUnavailableRepairFollowUpFeedback),
+// so a carried note-level finding must never arm the deterministic
+// "lacks repair obligation status" blocker on its own.
+func reviewRepairFindingsRequiringResolutionStatus(findings []ReviewFinding) []ReviewFinding {
+	out := make([]ReviewFinding, 0, len(findings))
+	for _, finding := range findings {
+		finding.Normalize()
+		if strings.TrimSpace(finding.ID) == "" {
+			continue
+		}
+		if !preWritePreFixFindingIsConcreteRepairObligation(finding) &&
+			!preWritePreFixWarningIsConcreteRepairObligation(finding) {
+			continue
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
 func buildReviewObligationLedger(run ReviewRun) ReviewObligationLedger {
 	var ledger ReviewObligationLedger
 	seen := map[string]int{}
@@ -38,16 +82,7 @@ func buildReviewObligationLedger(run ReviewRun) ReviewObligationLedger {
 		ledger.Items = append(ledger.Items, obligation)
 	}
 
-	for _, finding := range run.RepairFindings {
-		finding.Normalize()
-		if strings.TrimSpace(finding.ID) == "" {
-			continue
-		}
-		if !preWritePreFixFindingIsConcreteRepairObligation(finding) &&
-			!preWritePreFixWarningIsConcreteRepairObligation(finding) &&
-			!reviewFindingLooksActionableForRepairGate(finding) {
-			continue
-		}
+	for _, finding := range reviewRepairObligationCandidateFindings(run.RepairFindings) {
 		add(reviewObligationFromFinding(run, finding, reviewObligationTypeRepair))
 	}
 
