@@ -374,11 +374,20 @@ func completionAuditVerification(session *Session, artifact *CompletionAuditArti
 	}
 	report := *session.LastVerification
 	if report.HasFailures() {
+		// Match the runtime gate ledger: only failures tied to the current
+		// patch scope (and not build-config/environment-only issues) block the
+		// audit. Ambient failures degrade to a warning so a successful scoped
+		// edit can still complete.
+		status := completionAuditStatusBlocked
 		evidence := compactPromptSection(firstNonBlankString(report.FailureSummary(), report.RenderShort()), 500)
+		if !verificationFailureTouchesChangedPaths(report, artifact.ChangedFiles) || verificationReportIsOnlyNonCodeBuildIssue(report) {
+			status = completionAuditStatusWarning
+			evidence = "ambient/config verification failure remains outside the current patch scope: " + evidence
+		}
 		completionAuditAddItem(artifact, CompletionAuditItem{
 			Requirement: completionAuditVerificationRequirement,
 			Evidence:    evidence,
-			Status:      completionAuditStatusBlocked,
+			Status:      status,
 			Source:      "verification",
 		})
 		return
@@ -386,13 +395,16 @@ func completionAuditVerification(session *Session, artifact *CompletionAuditArti
 	completionAuditAddItem(artifact, CompletionAuditItem{
 		Requirement: completionAuditVerificationRequirement,
 		Evidence:    completionAuditVerificationEvidence(report),
-		Status:      completionAuditVerificationStatus(report),
+		Status:      completionAuditVerificationStatus(report, artifact.ChangedFiles),
 		Source:      "verification",
 	})
 }
 
-func completionAuditVerificationStatus(report VerificationReport) string {
+func completionAuditVerificationStatus(report VerificationReport, changedPaths []string) string {
 	if report.HasFailures() {
+		if !verificationFailureTouchesChangedPaths(report, changedPaths) || verificationReportIsOnlyNonCodeBuildIssue(report) {
+			return completionAuditStatusWarning
+		}
 		return completionAuditStatusBlocked
 	}
 	if !completionAuditVerificationHasPassedStep(report) {
@@ -733,7 +745,7 @@ func completionAuditChangedFiles(session *Session, artifact *CompletionAuditArti
 	if completionAuditGeneratedDocumentArtifactGateAccepted(session, artifact) {
 		status = completionAuditStatusPassed
 		evidence = "Generated document artifact quality gate accounted for changed files: " + evidence
-	} else if session != nil && session.LastVerification != nil && completionAuditVerificationStatus(*session.LastVerification) == completionAuditStatusPassed {
+	} else if session != nil && session.LastVerification != nil && completionAuditVerificationStatus(*session.LastVerification, artifact.ChangedFiles) == completionAuditStatusPassed {
 		status = completionAuditStatusPassed
 		evidence = "Changed files listed for final review; latest verification: " + session.LastVerification.SummaryLine() + "; files: " + evidence
 	}
@@ -774,7 +786,7 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 		if len(artifact.ChangedFiles) == 0 {
 			status = completionAuditStatusPassed
 			evidence = "No changed files detected and no review run is required."
-		} else if session != nil && session.LastVerification != nil && completionAuditVerificationStatus(*session.LastVerification) == completionAuditStatusPassed {
+		} else if session != nil && session.LastVerification != nil && completionAuditVerificationStatus(*session.LastVerification, artifact.ChangedFiles) == completionAuditStatusPassed {
 			status = completionAuditStatusPassed
 			evidence = "No common review run is recorded, but latest verification passed; run /review for an explicit typed gate before git writes."
 		}

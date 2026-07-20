@@ -530,3 +530,54 @@ func completionAuditChecklistItem(artifact CompletionAuditArtifact, requirement 
 	}
 	return CompletionAuditItem{}, false
 }
+
+// Regression (2026-07-21, F2): an ambient (out-of-patch-scope) verification
+// failure must degrade the completion audit item to a warning, matching the
+// runtime gate ledger -- the audit must not be stricter than the ledger for
+// the same action.
+func TestCompletionAuditAmbientVerificationFailureIsWarningNotBlocked(t *testing.T) {
+	session := NewSession(t.TempDir(), "provider", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		ChangedPaths: []string{"main.go"},
+		Steps: []VerificationStep{{
+			Label:       "other package tests",
+			Command:     "go test ./other/pkg/...",
+			Status:      VerificationFailed,
+			FailureKind: "compile_error",
+			Output:      "other/pkg/x.go:9:2: undefined: Other",
+		}},
+	}
+	artifact := &CompletionAuditArtifact{ChangedFiles: []string{"main.go"}}
+	completionAuditVerification(session, artifact)
+	item := completionAuditFindItem(artifact.Checklist, "verification")
+	if item == nil {
+		t.Fatalf("expected verification audit item")
+	}
+	if item.Status != completionAuditStatusWarning {
+		t.Fatalf("ambient verification failure must warn, not block, got %#v", item)
+	}
+}
+
+// Control: a patch-scoped verification failure must keep blocking the audit.
+func TestCompletionAuditPatchScopedVerificationFailureStaysBlocked(t *testing.T) {
+	session := NewSession(t.TempDir(), "provider", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		ChangedPaths: []string{"main.go"},
+		Steps: []VerificationStep{{
+			Label:       "package tests",
+			Command:     "go test ./...",
+			Status:      VerificationFailed,
+			FailureKind: "compile_error",
+			Output:      "main.go:12:2: undefined: Foo",
+		}},
+	}
+	artifact := &CompletionAuditArtifact{ChangedFiles: []string{"main.go"}}
+	completionAuditVerification(session, artifact)
+	item := completionAuditFindItem(artifact.Checklist, "verification")
+	if item == nil {
+		t.Fatalf("expected verification audit item")
+	}
+	if item.Status != completionAuditStatusBlocked {
+		t.Fatalf("patch-scoped verification failure must keep blocking, got %#v", item)
+	}
+}

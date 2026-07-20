@@ -90,6 +90,7 @@ type FinalGateVerificationResult struct {
 	Skipped      bool     `json:"skipped"`
 	Missing      bool     `json:"missing"`
 	Unresolved   bool     `json:"unresolved"`
+	Ambient      bool     `json:"ambient,omitempty"`
 	ChangedPaths []string `json:"changed_paths,omitempty"`
 }
 
@@ -239,7 +240,12 @@ func DecideFinalGate(input FinalGateInput) FinalGateDecision {
 			return set(FinalGateNeedsRecovery, "draft-only goal prompt request was promoted to execution", "Return goal prompt text only; do not activate, run, commit, or push a goal.")
 		}
 	}
-	if input.Verification.Unresolved && !input.GeneratedDocumentHarnessOwnsIt {
+	// An unresolved verification state blocks only while the reply does not
+	// own it: a final answer that honestly reports the failure or the not-run
+	// state satisfies the gate, mirroring how the legacy turn readiness
+	// resolves the VerificationUnresolved intervention on the same phrases.
+	if input.Verification.Unresolved && !input.GeneratedDocumentHarnessOwnsIt &&
+		!replyMentionsVerificationBlocker(input.Reply) && !replyMentionsVerificationNotRun(input.Reply) {
 		return set(FinalGateNeedsVerification, "verification is missing, skipped, or failing for changed files", "Run the relevant verification or clearly preserve the unresolved verification blocker in the final answer.")
 	}
 	if input.Review.BlocksFinal {
@@ -315,7 +321,15 @@ func finalGateVerificationResult(session *Session, envelope RequestEnvelope, cha
 		result.ChangedPaths = normalizeTaskStateList(report.ChangedPaths, 128)
 	}
 	result.Missing = envelope.RequiresVerification && len(result.ChangedPaths) > 0 && !result.Passed && !result.Failed && !result.Skipped
-	result.Unresolved = result.Missing || result.Failed || result.Skipped
+	// Follow the same scope policy as the runtime gate ledger and the coding
+	// harness: only failures attributable to the current patch scope (and not
+	// build-config/environment-only issues) count as unresolved. Ambient
+	// failures stay visible for observability but must not block the gate.
+	patchScopedFailure := result.Failed &&
+		verificationFailureTouchesChangedPaths(report, result.ChangedPaths) &&
+		!verificationReportIsOnlyNonCodeBuildIssue(report)
+	result.Ambient = result.Failed && !patchScopedFailure
+	result.Unresolved = result.Missing || patchScopedFailure || result.Skipped
 	return result
 }
 

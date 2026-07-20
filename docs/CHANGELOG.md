@@ -4,6 +4,13 @@
 
 ## 2026-07-21
 
+### v2 final gate / completion audit의 verification 차단 scope 일관화
+
+- 계획서: [[docs/plan/2026-07-21-finalgate-verification-scope.md]], 감사: [[docs/research/overblock-audit.md]]
+- v2 structured final gate: `finalGateVerificationResult`가 모든 verification 실패를 `Unresolved`로 계산하던 것을 patch-scoped 실패(ambient/config·환경성 실패 제외)로 한정. `DecideFinalGate` verification 분기에 정직 고지(disclosure) 탈출 추가 — "verification failed/미실행"을 명시한 최종 답변은 차단하지 않음(legacy turn readiness와 동일 조건). request runtime v2 활성화 시 7/19에 제거한 교착 클래스가 부활할 수 있던 latent 결함 해소.
+- completion audit: `completionAuditVerification`/`completionAuditVerificationStatus`가 ambient/config 실패를 `blocked` 대신 `warning`으로 강등 — runtime gate ledger와 동일 기준. 사용자 명시 `VerificationRequired` contract 분기는 엄격 유지.
+- 회귀 테스트 6개 추가(실패-재현 확인 후 구현).
+
 ### note 수준 finding이 gate blocker로 표면화되는 경로 차단
 
 - 계획서: [[docs/plan/2026-07-21-note-finding-blocker-surface.md]] (2026-07-19 계획서 후속 이슈 2 해결)
