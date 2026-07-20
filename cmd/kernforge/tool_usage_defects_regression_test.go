@@ -284,7 +284,7 @@ func TestTurnToolExposurePlanDisablesGoalToolsForGoalDraftOnly(t *testing.T) {
 		AllowsWebResearch:   true,
 		GoalPromptDraftOnly: true,
 	}
-	plan := agent.buildTurnToolExposurePlanForEnvelope(map[string]bool{}, envelope, false, false, false, false, true, false)
+	plan := agent.buildTurnToolExposurePlanForEnvelope(map[string]bool{}, envelope, false, false, false, true, false)
 	if !plan.toolDisabled("create_goal") {
 		t.Fatalf("goal-prompt-draft-only turn must disable create_goal, got %#v", plan.DisabledTools)
 	}

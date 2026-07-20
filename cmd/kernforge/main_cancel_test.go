@@ -1338,7 +1338,7 @@ func TestRuntimeStatePrintAssistantWhileThinkingUsesFooterPanelWhenInteractive(t
 	for time.Now().Before(deadline) {
 		rendered := out.String()
 		if strings.Contains(rendered, "[thinking]") {
-			if !strings.Contains(rendered, "[next") {
+			if !strings.Contains(rendered, "[thought") {
 				t.Fatalf("expected assistant preamble to render in footer panel, got %q", rendered)
 			}
 			if strings.Contains(rendered, "  | ") {
@@ -1365,8 +1365,8 @@ func TestRuntimeStatePrintAssistantWhileThinkingFallsBackToProgressLineWhenNonIn
 	rt.printAssistantWhileThinking("I am going to inspect the auth flow first.")
 
 	rendered := out.String()
-	if !strings.Contains(rendered, "[next") {
-		t.Fatalf("expected non-interactive assistant preamble to render as next-step activity, got %q", rendered)
+	if !strings.Contains(rendered, "[thought") {
+		t.Fatalf("expected non-interactive assistant preamble to render as thought activity, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "  | ") {
 		t.Fatalf("expected non-interactive assistant preamble to use persistent progress lines, got %q", rendered)

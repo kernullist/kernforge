@@ -654,7 +654,7 @@ func requestRuntimeShadowLogRef(path string) string {
 	return filepath.ToSlash(filepath.Join(requestRuntimeShadowDirName, name))
 }
 
-func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntime *TurnRuntimeState, finalDecision FinalGateDecision, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool, reply string, finalCtx TurnRuntimeFinalContext) {
+func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntime *TurnRuntimeState, finalDecision FinalGateDecision, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool, reply string, finalCtx TurnRuntimeFinalContext) {
 	if a == nil || a.Session == nil {
 		return
 	}
@@ -663,7 +663,7 @@ func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntim
 	if !runtimeShadow && !semanticShadow {
 		return
 	}
-	plan := a.buildTurnToolExposurePlanForEnvelope(nil, envelope, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, verificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+	plan := a.buildTurnToolExposurePlanForEnvelope(nil, envelope, unresolvedVerification, finalAnswerOnlyCorrection, verificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
 	legacy := buildRequestRuntimeDecisionSummary("legacy", envelope, plan, turnRuntime, finalDecision, a.Tools)
 	v2 := buildRequestRuntimeDecisionSummary("v2", envelope, plan, turnRuntime, finalDecision, a.Tools)
 	comparison := compareRequestRuntimeDecisions(legacy, v2)
@@ -676,7 +676,7 @@ func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntim
 	comparison.EnabledPath = requestRuntimeClassForEnvelope(envelope)
 	if semanticShadow {
 		semanticEnvelope := *a.Session.LastSemanticRequestEnvelope
-		semanticPlan := a.buildTurnToolExposurePlanForEnvelope(nil, semanticEnvelope, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, verificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+		semanticPlan := a.buildTurnToolExposurePlanForEnvelope(nil, semanticEnvelope, unresolvedVerification, finalAnswerOnlyCorrection, verificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
 		semanticFinalCtx := finalCtx
 		semanticFinalCtx.ExplicitEditRequest = semanticEnvelope.ExplicitEditRequest
 		semanticFinalCtx.GeneratedDocumentHarnessOwnsIt = semanticEnvelope.DocumentAuthoring && finalCtx.GeneratedDocumentHarnessOwnsIt

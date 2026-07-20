@@ -1758,10 +1758,11 @@ func TestVerificationRepairScopeIgnoresArchivedPatchFromPreviousTurn(t *testing.
 
 func TestAgentDoesNotBroadenRepairForOutOfScopeVerificationFailure(t *testing.T) {
 	root := t.TempDir()
+	finalReply := "Changed files: main.go. Self-review: no code blocker found. Validation: verification failed in an unrelated project (go test ./...); the failure is ambient and outside the patch scope. Remaining risk: the unrelated project failure remains as ambient verification risk; main.go itself has no known remaining blocker."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
-			{Message: Message{Role: "assistant", Text: "Updated main.go. Verification failed in an unrelated project, so that blocker remains disclosed."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -1794,7 +1795,7 @@ func TestAgentDoesNotBroadenRepairForOutOfScopeVerificationFailure(t *testing.T)
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "unrelated project") {
+	if !strings.Contains(reply, "ambient verification risk") {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if len(provider.requests) != 2 {
@@ -1807,15 +1808,21 @@ func TestAgentDoesNotBroadenRepairForOutOfScopeVerificationFailure(t *testing.T)
 	if strings.Contains(lastPrompt, "continue repairing only the current patch scope") {
 		t.Fatalf("out-of-scope failure must not use in-scope repair prompt:\n%s", lastPrompt)
 	}
+	// The guided continuation must leave the stop/continue decision to the
+	// model instead of forcing a final-answer-only turn.
+	if !strings.Contains(lastPrompt, "Do not stop the turn") && !strings.Contains(lastPrompt, "턴을 중단하지 말고") {
+		t.Fatalf("expected guided continuation that keeps the turn alive, got:\n%s", lastPrompt)
+	}
 }
 
-func TestAgentBlocksVerificationRetryAfterOutOfScopeAutomaticFailure(t *testing.T) {
+func TestAgentAllowsVerificationRetryAfterOutOfScopeAutomaticFailure(t *testing.T) {
 	root := t.TempDir()
+	finalReply := "Changed files: main.go. Self-review: no code blocker found. Validation: verification failed when rerunning go test ./...; the failure is ambient and outside the patch scope. Remaining risk: the unrelated project failure remains as ambient verification risk; main.go itself has no known remaining blocker."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
 			toolCallResponse("run_shell", map[string]any{"command": "go test ./..."}),
-			{Message: Message{Role: "assistant", Text: "Updated main.go. Verification failed outside the patch scope, so I am reporting that blocker instead of rerunning verification."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -1860,54 +1867,40 @@ func TestAgentBlocksVerificationRetryAfterOutOfScopeAutomaticFailure(t *testing.
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "outside the patch scope") {
+	if !strings.Contains(reply, "ambient verification risk") {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
-	if len(provider.requests) < 2 {
-		t.Fatalf("expected a final-answer-only retry request")
+	// The retry must reach the shell confirmation instead of being blocked as
+	// NOT_EXECUTED by the out-of-scope verification state.
+	if confirmCount != 1 {
+		t.Fatalf("expected the verification retry to reach shell confirmation once, got %d prompts", confirmCount)
 	}
-	if got := len(provider.requests[1].Tools); got != 0 {
-		t.Fatalf("expected tools to be disabled after out-of-scope automatic verification failure, got %d tool definitions", got)
-	}
-	if confirmCount != 0 {
-		t.Fatalf("out-of-scope verification retry must be blocked before shell confirmation, got %d prompts", confirmCount)
-	}
-	blocked := 0
+	var shellMsg Message
+	foundShell := false
 	for _, msg := range session.Messages {
-		if msg.Role == "tool" && msg.ToolName == "run_shell" && strings.Contains(msg.Text, "NOT_EXECUTED: automatic verification already failed outside the current patch scope") {
-			blocked++
-			if !msg.IsError {
-				t.Fatalf("blocked verification retry must be an error tool result: %#v", msg)
-			}
-			if toolMetaBool(msg.ToolMeta, "success") {
-				t.Fatalf("blocked verification retry must not be successful evidence: %#v", msg.ToolMeta)
-			}
-			if toolMetaBool(msg.ToolMeta, "verification_evidence") {
-				t.Fatalf("blocked verification retry must not count as verification evidence: %#v", msg.ToolMeta)
-			}
-			if !toolMetaBool(msg.ToolMeta, "verification_out_scope") {
-				t.Fatalf("blocked verification retry should carry out-of-scope metadata: %#v", msg.ToolMeta)
-			}
+		if msg.Role == "tool" && msg.ToolName == "run_shell" {
+			shellMsg = msg
+			foundShell = true
+			break
 		}
 	}
-	if blocked != 1 {
-		t.Fatalf("expected one blocked out-of-scope verification retry, got %d", blocked)
+	if !foundShell {
+		t.Fatalf("expected run_shell tool result in session")
 	}
-	if !sessionContainsText(session, "Do not call run_shell") &&
-		!sessionContainsText(session, "final-answer-only") &&
-		!sessionContainsText(session, "최종 답변 전용") {
-		t.Fatalf("expected follow-up guidance to tell the model not to rerun verification")
+	if strings.Contains(shellMsg.Text, "NOT_EXECUTED") {
+		t.Fatalf("out-of-scope verification state must not block the retry as NOT_EXECUTED: %#v", shellMsg)
 	}
 }
 
-func TestAgentBlocksAllToolsAfterOutOfScopeAutomaticFailure(t *testing.T) {
+func TestAgentAllowsToolsAfterOutOfScopeAutomaticFailure(t *testing.T) {
 	root := t.TempDir()
 	readTool := &staticTool{name: "read_file", output: "source"}
+	finalReply := "Changed files: main.go. Self-review: no code blocker found. Validation: verification failed in an unrelated project (go test ./...); the failure is ambient and outside the patch scope. Remaining risk: the unrelated project failure remains as ambient verification risk; main.go itself has no known remaining blocker."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
 			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
-			{Message: Message{Role: "assistant", Text: "Updated main.go. Verification failed outside the patch scope, so no further tools were used."}},
+			{Message: Message{Role: "assistant", Text: finalReply}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -1942,34 +1935,23 @@ func TestAgentBlocksAllToolsAfterOutOfScopeAutomaticFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "outside the patch scope") {
+	if !strings.Contains(reply, "ambient verification risk") {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
-	if readTool.calls != 0 {
-		t.Fatalf("post out-of-scope read_file must be blocked, got %d calls", readTool.calls)
+	// Out-of-scope verification failure must not enter a final-answer-only
+	// turn: follow-up tools stay visible and execute.
+	if readTool.calls != 1 {
+		t.Fatalf("post out-of-scope read_file must execute, got %d calls", readTool.calls)
 	}
 	if len(provider.requests) < 2 {
-		t.Fatalf("expected a retry request")
+		t.Fatalf("expected a follow-up request")
 	}
-	if got := len(provider.requests[1].Tools); got != 0 {
-		t.Fatalf("expected all tools to be disabled in the post out-of-scope retry request, got %d", got)
-	}
-	var blockedRead Message
-	for _, msg := range session.Messages {
-		if msg.Role == "tool" && msg.ToolName == "read_file" {
-			blockedRead = msg
-			break
-		}
-	}
-	if !blockedRead.IsError || !strings.Contains(blockedRead.Text, "final-answer-only") {
-		t.Fatalf("expected read_file to be blocked as final-answer-only, got %#v", blockedRead)
-	}
-	if !toolMetaBool(blockedRead.ToolMeta, "verification_out_scope") {
-		t.Fatalf("expected out-of-scope metadata on blocked read_file, got %#v", blockedRead.ToolMeta)
+	if got := len(provider.requests[1].Tools); got == 0 {
+		t.Fatalf("tools must stay enabled after an out-of-scope automatic verification failure")
 	}
 }
 
-func TestAgentReturnsFinalWithoutPostChangeReviewAfterOutOfScopeAutomaticFailure(t *testing.T) {
+func TestAgentReturnsFinalWithoutPostChangeReviewWhenUserChoosesFinishAtOutOfScopePrompt(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
@@ -1997,6 +1979,7 @@ func TestAgentReturnsFinalWithoutPostChangeReviewAfterOutOfScopeAutomaticFailure
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
+	promptCount := 0
 	agent := &Agent{
 		Config:    Config{},
 		Client:    provider,
@@ -2004,6 +1987,10 @@ func TestAgentReturnsFinalWithoutPostChangeReviewAfterOutOfScopeAutomaticFailure
 		Workspace: ws,
 		Session:   session,
 		Store:     store,
+		PromptResolveOutOfScopeVerification: func(report VerificationReport, decision verificationRepairScopeDecision) (OutOfScopeVerificationResolution, error) {
+			promptCount++
+			return OutOfScopeVerificationFinish, nil
+		},
 		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
 			_ = ctx
 			return VerificationReport{
@@ -2023,17 +2010,150 @@ func TestAgentReturnsFinalWithoutPostChangeReviewAfterOutOfScopeAutomaticFailure
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
+	if promptCount != 1 {
+		t.Fatalf("expected the out-of-scope prompt to be asked once, got %d", promptCount)
+	}
 	if !strings.Contains(reply, "Verification note") && !strings.Contains(reply, "검증 참고") {
 		t.Fatalf("expected out-of-scope verification disclosure to be appended, got %q", reply)
 	}
 	if len(provider.requests) != 2 {
-		t.Fatalf("terminal out-of-scope state must not run post-change review or final review turns, got %d requests", len(provider.requests))
-	}
-	if got := len(provider.requests[1].Tools); got != 0 {
-		t.Fatalf("expected all tools to be disabled in terminal out-of-scope final request, got %d", got)
+		t.Fatalf("terminal out-of-scope finish must not run post-change review or final review turns, got %d requests", len(provider.requests))
 	}
 	if session.LastReviewRun != nil && strings.EqualFold(session.LastReviewRun.Trigger, "post_change") {
-		t.Fatalf("post-change review must not run after terminal out-of-scope verification, got %#v", session.LastReviewRun)
+		t.Fatalf("post-change review must not run after the user chose finish for out-of-scope verification, got %#v", session.LastReviewRun)
+	}
+}
+
+func TestAgentContinuesRepairWhenUserChoosesContinueAtOutOfScopePrompt(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "source"}
+	finalReply := "Changed files: main.go. Self-review: no code blocker found. Validation: verification failed in an unrelated project (go test ./...); the failure is ambient and outside the patch scope. Remaining risk: the unrelated project failure remains as ambient verification risk; main.go itself has no known remaining blocker."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			{Message: Message{Role: "assistant", Text: finalReply}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	promptCount := 0
+	agent := &Agent{
+		Config: Config{},
+		Client: provider,
+		Tools: NewToolRegistry(
+			NewWriteFileTool(ws),
+			readTool,
+		),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		PromptResolveOutOfScopeVerification: func(report VerificationReport, decision verificationRepairScopeDecision) (OutOfScopeVerificationResolution, error) {
+			promptCount++
+			return OutOfScopeVerificationContinueRepair, nil
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				ChangedPaths: []string{"main.go"},
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Scope:  "workspace",
+					Stage:  "workspace",
+					Status: VerificationFailed,
+					Output: "other/package_test.go: error: pre-existing failure",
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected the out-of-scope prompt to be asked once per turn, got %d", promptCount)
+	}
+	// A continue decision must keep tools available: the model investigated
+	// with read_file before finishing.
+	if readTool.calls != 1 {
+		t.Fatalf("read_file must execute after a continue decision, got %d calls", readTool.calls)
+	}
+	if !strings.Contains(reply, "ambient verification risk") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected a follow-up request")
+	}
+	lastPrompt := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Text
+	if !strings.Contains(lastPrompt, "Do not stop the turn") && !strings.Contains(lastPrompt, "턴을 중단하지 말고") {
+		t.Fatalf("expected guided continuation after a continue decision, got:\n%s", lastPrompt)
+	}
+}
+
+func TestVerificationRepairScopeTreatsGoPackageCompileFailureAsPatchScoped(t *testing.T) {
+	agent := &Agent{}
+	report := VerificationReport{
+		ChangedPaths: []string{"cmd/kernforge/main_cancel_test.go"},
+		Steps: []VerificationStep{{
+			Label:       "go test ./cmd/kernforge/...",
+			Command:     "go test ./cmd/kernforge/...",
+			Scope:       "./cmd/kernforge/...",
+			Stage:       "targeted",
+			Status:      VerificationFailed,
+			FailureKind: "compile_error",
+			Output: strings.Join([]string{
+				"# kernforge/cmd/kernforge",
+				`.\\other_test.go:42:2: undefined: missingSymbol`,
+				"FAIL\tkernforge/cmd/kernforge [build failed]",
+			}, "\n"),
+		}},
+	}
+
+	decision := agent.verificationFailureRepairScope(report)
+	if !decision.ShouldRepair {
+		t.Fatalf("a compile failure in the Go package covered by a targeted go test step must be patch-scoped, got %#v", decision)
+	}
+}
+
+func TestVerificationRepairScopeKeepsWorkspaceGoRunAmbient(t *testing.T) {
+	agent := &Agent{}
+	report := VerificationReport{
+		ChangedPaths: []string{"cmd/kernforge/main_cancel_test.go"},
+		Steps: []VerificationStep{{
+			Label:       "go test ./...",
+			Command:     "go test ./...",
+			Scope:       "workspace",
+			Stage:       "workspace",
+			Status:      VerificationFailed,
+			FailureKind: "compile_error",
+			Output: strings.Join([]string{
+				"# kernforge/other",
+				`.\\other_test.go:42:2: undefined: missingSymbol`,
+				"FAIL\tkernforge/other [build failed]",
+			}, "\n"),
+		}},
+	}
+
+	decision := agent.verificationFailureRepairScope(report)
+	if decision.ShouldRepair {
+		t.Fatalf("workspace-wide go test failures in unrelated packages must stay ambient, got %#v", decision)
+	}
+}
+
+func TestVerificationTextMentionsPathSegmentBoundaries(t *testing.T) {
+	if !verificationTextMentionsPathSegment("go test cmd/app/...", "cmd/app") {
+		t.Fatalf("directory segment followed by a path separator must match")
+	}
+	if !verificationTextMentionsPathSegment("cmd/app", "cmd/app") {
+		t.Fatalf("exact directory segment must match")
+	}
+	if verificationTextMentionsPathSegment("go test cmd/app2/...", "cmd/app") {
+		t.Fatalf("directory segment must not match a longer sibling name")
+	}
+	if verificationTextMentionsPathSegment("mycmd/app", "cmd/app") {
+		t.Fatalf("directory segment must not match inside a longer name")
 	}
 }
 
@@ -8708,7 +8828,7 @@ func TestToolExposureHidesWebResearchForPreservedContinuationSteering(t *testing
 	}
 
 	latestUser := sessionEffectiveUserRequestText(session)
-	plan := agent.buildTurnToolExposurePlan(nil, latestUser, false, false, false, false, false, shouldUseLocalCodeToolPolicy(session))
+	plan := agent.buildTurnToolExposurePlan(nil, latestUser, false, false, false, false, shouldUseLocalCodeToolPolicy(session))
 	if !plan.DisabledTools["mcp__web_research__search_web"] {
 		t.Fatalf("preserved local-code continuation should hide web research tools, got %#v", plan.DisabledTools)
 	}
@@ -14042,7 +14162,7 @@ func TestAgentKeepsGeneratedDocumentFinalOnlyAfterGenericFollowup(t *testing.T) 
 	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(genericFollowup, []ToolCall{{Name: "read_file", Arguments: `{"path":"SampleGame/BugReport.md"}`}}) {
 		t.Fatalf("accepted document-artifact harness should block post-completion inspection churn")
 	}
-	plan := agent.buildTurnToolExposurePlan(nil, genericFollowup, false, false, false, false, false, false)
+	plan := agent.buildTurnToolExposurePlan(nil, genericFollowup, false, false, false, false, false)
 	if !plan.GeneratedDocumentFinalOnly || !plan.SuppressInteractiveWorkers {
 		t.Fatalf("accepted document-artifact harness should force final-only exposure, got %#v", plan)
 	}
@@ -14101,7 +14221,7 @@ func TestAgentClearsGeneratedDocumentFinalOnlyForBroaderScopeSteering(t *testing
 	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(steering, []ToolCall{{Name: "read_file", Arguments: `{"path":"cmd/kernforge/agent.go"}`}}) {
 		t.Fatalf("broader-scope steering should keep inspection tools available")
 	}
-	plan := agent.buildTurnToolExposurePlan(nil, steering, false, false, false, false, false, false)
+	plan := agent.buildTurnToolExposurePlan(nil, steering, false, false, false, false, false)
 	if plan.GeneratedDocumentFinalOnly || plan.SuppressInteractiveWorkers {
 		t.Fatalf("broader-scope steering should not force document final-only exposure, got %#v", plan)
 	}
@@ -14415,7 +14535,7 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 		),
 	}
 
-	plan := agent.buildTurnToolExposurePlan(nil, "fix code", false, true, false, false, false, true)
+	plan := agent.buildTurnToolExposurePlan(nil, "fix code", false, true, false, false, true)
 	if !plan.SuppressInteractiveWorkers {
 		t.Fatalf("final-answer-only correction must suppress interactive workers")
 	}
@@ -14428,7 +14548,7 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 		t.Fatalf("ordinary answer-only correction should not be classified as generated-document finalization")
 	}
 
-	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, false, false, false, true)
+	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, false, false, true)
 	if plan.SuppressInteractiveWorkers {
 		t.Fatalf("ordinary local-code web policy should not suppress interactive workers")
 	}
@@ -14441,17 +14561,7 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 		}
 	}
 
-	plan = agent.buildTurnToolExposurePlan(nil, "fix code", false, false, true, false, false, false)
-	if !plan.SuppressInteractiveWorkers {
-		t.Fatalf("out-of-scope verification final-only state must suppress interactive workers")
-	}
-	for _, name := range []string{"read_file", "apply_patch", "mcp__web_research__search_web", "dispatch_only"} {
-		if !plan.DisabledTools[name] {
-			t.Fatalf("out-of-scope verification final-only state must disable %s, got %#v", name, plan.DisabledTools)
-		}
-	}
-
-	plan = agent.buildTurnToolExposurePlan(nil, "fix code", true, false, false, true, false, false)
+	plan = agent.buildTurnToolExposurePlan(nil, "fix code", true, false, true, false, false)
 	if !plan.SuppressInteractiveWorkers {
 		t.Fatalf("skipped verification final-only state must suppress interactive workers")
 	}
@@ -15340,7 +15450,7 @@ func TestAgentPreservesGeneratedDocumentArtifactStateWithoutPatchTransactionPath
 	}}) {
 		t.Fatalf("expected accepted document artifact quality to block post-completion validation without patch paths")
 	}
-	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false, false)
+	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false)
 	if !plan.GeneratedDocumentFinalOnly {
 		t.Fatalf("expected accepted document artifact quality to force final-only tools without patch paths")
 	}
@@ -15394,7 +15504,7 @@ func TestAgentRecoversGeneratedDocumentArtifactStateFromAcceptedHarnessWithoutRe
 	if !agent.changesAreGeneratedDocumentArtifactsForTurn("Please provide the final answer now.") {
 		t.Fatalf("expected accepted artifact harness to recover document-artifact state for final-answer follow-up")
 	}
-	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false, false)
+	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false)
 	if !plan.GeneratedDocumentFinalOnly {
 		t.Fatalf("expected accepted document artifact state to force final-only tools")
 	}
@@ -15667,7 +15777,7 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoFreshFollowupIntent(
 		if agent.changesAreGeneratedDocumentArtifactsForTurn(request) {
 			t.Fatalf("fresh follow-up %q should not revive stale generated document final-only state", request)
 		}
-		plan := agent.buildTurnToolExposurePlan(nil, request, false, false, false, false, false, false)
+		plan := agent.buildTurnToolExposurePlan(nil, request, false, false, false, false, false)
 		if plan.GeneratedDocumentFinalOnly || plan.SuppressInteractiveWorkers {
 			t.Fatalf("fresh follow-up %q should keep normal orchestration, got %#v", request, plan)
 		}

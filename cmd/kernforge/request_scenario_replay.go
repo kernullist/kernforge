@@ -168,7 +168,7 @@ func ReplayRequestScenario(root string, scenario RequestScenario, registry *Tool
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 	envelope := agent.latestRequestEnvelopeFor(scenario.UserText)
-	plan := agent.buildTurnToolExposurePlanForEnvelope(nil, envelope, scenario.SessionState.UnresolvedVerification, false, false, false, envelope.AllowsWebResearch, false)
+	plan := agent.buildTurnToolExposurePlanForEnvelope(nil, envelope, scenario.SessionState.UnresolvedVerification, false, false, envelope.AllowsWebResearch, false)
 	turnRuntime := NewTurnRuntimeState(envelope)
 	extraInterventions := applyRequestScenarioRuntimeSignals(turnRuntime, envelope, scenario, registry, session)
 	finalInput := BuildFinalGateInput(root, session, envelope, turnRuntime, requestScenarioLastOutputText(scenario), TurnRuntimeFinalContext{
@@ -196,7 +196,7 @@ func replayRequestScenarioSemantic(root string, agent *Agent, scenario RequestSc
 	}
 	classification := *scenario.SemanticClassification
 	semanticEnvelope := semanticRequestClassificationCandidate(envelope, classification, RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeEnabled})
-	semanticPlan := agent.buildTurnToolExposurePlanForEnvelope(nil, semanticEnvelope, scenario.SessionState.UnresolvedVerification, false, false, false, semanticEnvelope.AllowsWebResearch, false)
+	semanticPlan := agent.buildTurnToolExposurePlanForEnvelope(nil, semanticEnvelope, scenario.SessionState.UnresolvedVerification, false, false, semanticEnvelope.AllowsWebResearch, false)
 	semanticFinalInput := BuildFinalGateInput(root, agent.Session, semanticEnvelope, turnRuntime, requestScenarioLastOutputText(scenario), TurnRuntimeFinalContext{
 		GeneratedDocumentHarnessOwnsIt: scenario.SessionState.GeneratedDocumentHarnessOwnsIt && semanticEnvelope.DocumentAuthoring,
 		ExplicitEditRequest:            semanticEnvelope.ExplicitEditRequest,

@@ -133,7 +133,7 @@ func TestEditAuthorityKeepsEditToolsExposedInEditMode(t *testing.T) {
 			t.Fatalf("precondition: review-only request should classify read-only, got %#v", env)
 		}
 		a.applyEditAuthorityToEnvelope(&env)
-		return a.buildTurnToolExposurePlanForEnvelope(nil, env, false, false, false, false, false, false)
+		return a.buildTurnToolExposurePlanForEnvelope(nil, env, false, false, false, false, false)
 	}
 	for _, mode := range []Mode{ModeAcceptEdits, ModeBypass} {
 		plan := exposeAfterAuthority(mk(mode))

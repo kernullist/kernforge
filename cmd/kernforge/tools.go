@@ -476,6 +476,28 @@ func normalizeToolJSONSchemaMap(schema map[string]any) {
 	if raw, ok := schema["anyOf"]; ok {
 		schema["anyOf"] = normalizeToolJSONSchemaValue(raw)
 	}
+	// Some providers (e.g. Moonshot/kimi-k3) reject schemas where a parent
+	// declares both "type" and "anyOf": "when using anyOf, type should be
+	// defined in anyOf items instead of the parent schema".  Move the parent
+	// type (and object/array defaults) into each anyOf branch that lacks its
+	// own type, then drop the parent type so the schema is universally valid.
+	if rawAnyOf, ok := schema["anyOf"]; ok {
+		if branches, ok := rawAnyOf.([]any); ok && len(branches) > 0 {
+			parentType, hasType := schema["type"]
+			if hasType {
+				for _, branch := range branches {
+					branchMap, ok := branch.(map[string]any)
+					if !ok {
+						continue
+					}
+					if _, exists := branchMap["type"]; !exists {
+						branchMap["type"] = parentType
+					}
+				}
+				delete(schema, "type")
+			}
+		}
+	}
 	for _, key := range []string{"$defs", "definitions"} {
 		if raw, ok := schema[key]; ok {
 			if definitions, ok := raw.(map[string]any); ok {
@@ -502,7 +524,7 @@ func normalizeToolJSONSchemaMap(schema map[string]any) {
 			return
 		}
 	}
-	if toolSchemaHasType(schema, "object") || (schema["type"] == nil && toolSchemaInfersObject(schema)) {
+	if toolSchemaHasType(schema, "object") || (schema["type"] == nil && schema["anyOf"] == nil && toolSchemaInfersObject(schema)) {
 		if raw, ok := schema["properties"]; !ok || raw == nil {
 			schema["properties"] = map[string]any{}
 		}

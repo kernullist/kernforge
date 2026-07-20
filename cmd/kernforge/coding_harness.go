@@ -1934,7 +1934,11 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, flags ...bool) Outcome
 			Title:    "Verification was not run disclosure missing",
 			Detail:   "The latest verification was skipped or declined, but the final answer does not clearly state that verification was not run.",
 		})
-	} else if (unresolvedVerification || patchScopedVerificationFailures) && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+	} else if patchScopedVerificationFailures && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+		// Only failures tied to the current patch scope hard-block completion.
+		// An out-of-scope failure keeps the turn in guided continuation
+		// (unresolvedVerification may be true), but it must not be relabeled
+		// as an in-scope blocker here; the ambient-risk branch below owns it.
 		report.Findings = append(report.Findings, CodingHarnessFinding{
 			Severity: "blocker",
 			Title:    "Unresolved verification failure",

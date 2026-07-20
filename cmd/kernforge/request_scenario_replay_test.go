@@ -165,7 +165,7 @@ func TestRequestRuntimeDisabledModeHasNoShadowSideEffects(t *testing.T) {
 		Session:   session,
 	}
 	envelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
-	agent.observeRequestRuntimeShadow(envelope, NewTurnRuntimeState(envelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false, "완료했습니다.", TurnRuntimeFinalContext{})
+	agent.observeRequestRuntimeShadow(envelope, NewTurnRuntimeState(envelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, "완료했습니다.", TurnRuntimeFinalContext{})
 	if session.LastRequestRuntimeShadow != nil {
 		t.Fatalf("disabled mode should not record shadow comparison, got %#v", session.LastRequestRuntimeShadow)
 	}
@@ -188,7 +188,7 @@ func TestSemanticClassifierShadowRecordsCandidateDecision(t *testing.T) {
 	envelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
 	semanticCandidate := sanitizeSemanticRequestEnvelopeCandidate(buildRequestEnvelope("main.go를 분석만 해. 파일은 수정하지 마"))
 	session.LastSemanticRequestEnvelope = &semanticCandidate
-	agent.observeRequestRuntimeShadow(envelope, NewTurnRuntimeState(envelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
+	agent.observeRequestRuntimeShadow(envelope, NewTurnRuntimeState(envelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
 		AttemptedEditTool:   true,
 		ExplicitEditRequest: true,
 	})
@@ -243,13 +243,13 @@ func TestRequestRuntimeShadowStatsAccumulatesSemanticObservations(t *testing.T) 
 	editEnvelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
 	sameCandidate := sanitizeSemanticRequestEnvelopeCandidate(editEnvelope)
 	session.LastSemanticRequestEnvelope = &sameCandidate
-	agent.observeRequestRuntimeShadow(editEnvelope, NewTurnRuntimeState(editEnvelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
+	agent.observeRequestRuntimeShadow(editEnvelope, NewTurnRuntimeState(editEnvelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
 		AttemptedEditTool:   true,
 		ExplicitEditRequest: true,
 	})
 	readOnlyCandidate := sanitizeSemanticRequestEnvelopeCandidate(buildRequestEnvelope("main.go를 분석만 해. 파일은 수정하지 마"))
 	session.LastSemanticRequestEnvelope = &readOnlyCandidate
-	agent.observeRequestRuntimeShadow(editEnvelope, NewTurnRuntimeState(editEnvelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
+	agent.observeRequestRuntimeShadow(editEnvelope, NewTurnRuntimeState(editEnvelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
 		AttemptedEditTool:   true,
 		ExplicitEditRequest: true,
 	})

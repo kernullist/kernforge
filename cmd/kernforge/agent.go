@@ -45,6 +45,12 @@ type Agent struct {
 	PromptConfirmAutoVerify        func(VerificationPlan) (bool, error)
 	PromptConfirmModelReview       func(ModelReviewConsentRequest) ModelReviewConsentDecision
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
+	// PromptResolveOutOfScopeVerification asks the user once per turn how to
+	// handle an automatic verification failure that is not clearly tied to the
+	// current patch scope. Nil (non-interactive) falls back to guided
+	// continuation: the model decides from the guidance text and the edit-loop
+	// retry budget bounds repeats.
+	PromptResolveOutOfScopeVerification func(VerificationReport, verificationRepairScopeDecision) (OutOfScopeVerificationResolution, error)
 	PromptContinueReviewRepair     func(string) (bool, error)
 	// PromptUsePriorReviewArtifacts asks the user once per session whether the
 	// model may read review artifacts produced by a PRIOR session. It receives the
@@ -81,6 +87,22 @@ const (
 	AutoVerifyFailureNoAction AutoVerifyFailureResolution = ""
 	AutoVerifyFailureDisable  AutoVerifyFailureResolution = "disable"
 	AutoVerifyFailureRetry    AutoVerifyFailureResolution = "retry"
+)
+
+// OutOfScopeVerificationResolution is the user's decision for an automatic
+// verification failure that is not clearly tied to the current patch scope.
+type OutOfScopeVerificationResolution string
+
+const (
+	// OutOfScopeVerificationNoAction means nobody was asked (non-interactive)
+	// or the prompt was canceled: fall back to guided continuation.
+	OutOfScopeVerificationNoAction OutOfScopeVerificationResolution = ""
+	// OutOfScopeVerificationContinueRepair keeps the repair loop open so the
+	// failure can be investigated and fixed even though it looks ambient.
+	OutOfScopeVerificationContinueRepair OutOfScopeVerificationResolution = "continue_repair"
+	// OutOfScopeVerificationFinish discloses the failure as ambient
+	// verification risk and lets the turn converge to the final answer.
+	OutOfScopeVerificationFinish OutOfScopeVerificationResolution = "finish"
 )
 
 const (
@@ -199,7 +221,6 @@ var (
 )
 
 var errVerificationFollowupBlocked = errors.New("verification follow-up blocked after verification was declined or skipped")
-var errVerificationOutOfScopeFollowupBlocked = errors.New("verification follow-up blocked after verification failed outside the current patch scope")
 var errReadOnlyAnalysisToolBlocked = errors.New("read-only analysis blocked a tool that can mutate external state")
 var errTurnDisabledToolBlocked = errors.New("turn tool exposure blocked a disabled tool")
 var errPreWriteReviewReanchorRequired = errors.New("pre-write blocked proposal requires current file reanchor before next edit")
@@ -1333,8 +1354,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	sawToolResultThisTurn := false
 	verificationDeclinedThisTurn := false
 	automaticVerificationSkippedFinalOnly := false
-	verificationOutOfScopeThisTurn := false
-	verificationOutOfScopeFinalOnly := false
+	// Out-of-scope automatic verification failures no longer force a
+	// final-answer-only turn. verificationOutOfScopeFinishThisTurn is set only
+	// when the user explicitly chose "finish and disclose" at the prompt, and
+	// the prompted resolution is cached so the user is asked at most once per
+	// turn.
+	verificationOutOfScopeFinishThisTurn := false
+	outOfScopeVerificationPrompted := false
+	outOfScopeVerificationResolution := OutOfScopeVerificationNoAction
 	repeatedToolFailureRecoveryTurns := 0
 	syntaxFixNudges := 0
 	stallEditBiasReadNudges := 0
@@ -1521,7 +1548,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if err := a.syncTaskExecutorFocus(); err != nil {
 			return "", err
 		}
-		toolExposurePlan := a.buildTurnToolExposurePlanForEnvelope(disabledTools, requestEnvelope, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+		toolExposurePlan := a.buildTurnToolExposurePlanForEnvelope(disabledTools, requestEnvelope, unresolvedVerification, finalAnswerOnlyCorrection, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
 		if !toolExposurePlan.SuppressInteractiveWorkers {
 			_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "executor")
 			_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
@@ -2772,24 +2799,24 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
-				if verificationOutOfScopeFinalOnly {
-					reply = a.ensureOutOfScopeVerificationFinalDisclosure(reply)
-					if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
-						a.Session.Messages[continuedReplyMessageIndex].Text = reply
-					} else if len(a.Session.Messages) > 0 {
-						a.Session.Messages[len(a.Session.Messages)-1].Text = reply
-					}
-					a.acceptRecentFinalAnswerCandidate(reply)
-					a.finalizeTaskStateOnAcceptedFinalAnswer(reply, false)
-					a.finalizePatchTransactionOnReturn()
-					a.finalizeEditLoopOnReturn(reply, false)
-					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
-					if err := a.Store.Save(a.Session); err != nil {
-						return "", err
-					}
-					markRuntimeCompleted("out_of_scope_verification_final")
-					return reply, nil
+			if verificationOutOfScopeFinishThisTurn {
+				reply = a.ensureOutOfScopeVerificationFinalDisclosure(reply)
+				if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
+					a.Session.Messages[continuedReplyMessageIndex].Text = reply
+				} else if len(a.Session.Messages) > 0 {
+					a.Session.Messages[len(a.Session.Messages)-1].Text = reply
 				}
+				a.acceptRecentFinalAnswerCandidate(reply)
+				a.finalizeTaskStateOnAcceptedFinalAnswer(reply, false)
+				a.finalizePatchTransactionOnReturn()
+				a.finalizeEditLoopOnReturn(reply, false)
+				a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				markRuntimeCompleted("out_of_scope_verification_final")
+				return reply, nil
+			}
 				// Run post-change review BEFORE the pre-final harness whenever a
 				// successful edit landed. Otherwise the harness demands a "Review
 				// result" (and the ledger treats the pre-write review as stale)
@@ -3052,7 +3079,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				finalGateInput := a.buildFinalGateInput(requestEnvelope, turnRuntime, reply, finalGateContext)
 				finalGateDecision := a.recordFinalGateDecision(finalGateInput)
-				a.observeRequestRuntimeShadow(requestEnvelope, turnRuntime, finalGateDecision, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn, reply, finalGateContext)
+				a.observeRequestRuntimeShadow(requestEnvelope, turnRuntime, finalGateDecision, unresolvedVerification, finalAnswerOnlyCorrection, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn, reply, finalGateContext)
 				if requestRuntimeV2EnabledForEnvelope(a.Config, requestEnvelope) && !finalGateDecision.Ready {
 					if turnRuntime.Counters.FinalAnswerNudges >= 2 {
 						// Keep the internal codename only in the runtime transition
@@ -3267,9 +3294,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		parallelBatchExecuted := false
 		if implementationDecisionCallIndex < 0 &&
 			!deferEditToolsInBatch &&
-			!verificationOutOfScopeFinalOnly &&
 			!verificationDeclinedThisTurn &&
-			!verificationOutOfScopeThisTurn &&
 			!preWriteReviewRequiresReanchor &&
 			!editTargetMismatchRequiresReanchor &&
 			preWriteReviewRepairBlocks == 0 &&
@@ -3356,32 +3381,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
-			if verificationOutOfScopeFinalOnly {
-				result := outOfScopeVerificationFinalOnlyBlockedResult(call)
-				toolMsg := Message{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					ToolName:   call.Name,
-					Text:       result.DisplayText,
-					ToolMeta:   result.Meta,
-					IsError:    true,
-				}
-				a.setToolExecutionResult(toolMsgIndex, toolMsg)
-				a.noteToolConversationBlockedResult(call, result, errVerificationOutOfScopeFollowupBlocked)
-				a.noteToolExecutionResultDetailed(call, result, errVerificationOutOfScopeFollowupBlocked)
-				if a.EmitProgress != nil {
-					a.EmitProgress(localizedText(a.Config, "Tool call blocked: verification already failed outside the current patch scope; final answer only.", "도구 호출을 차단했습니다: 검증이 현재 patch scope 밖에서 실패했으므로 최종 답변만 허용합니다."))
-				}
-				sawToolResultThisTurn = true
-				a.Session.AddMessage(internalUserMessage(verificationOutOfScopeFinalOnlyGuidance(a.Config)))
-				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: automatic verification already failed outside the current patch scope; no further tools are available in this turn, provide the final answer.")
-				if saveErr := a.Store.Save(a.Session); saveErr != nil {
-					return "", saveErr
-				}
-				lastToolError = ""
-				lastToolErrorCount = 0
-				break
-			}
 			if automaticVerificationSkippedFinalOnly {
 				result := skippedVerificationFinalOnlyBlockedResult(call)
 				toolMsg := Message{
@@ -3424,29 +3423,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				sawToolResultThisTurn = true
 				a.Session.AddMessage(internalUserMessage(verificationFollowupBlockedGuidance(a.Config)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier verification command was already skipped or declined in this turn; do not retry verification until the user explicitly approves it.")
-				if saveErr := a.Store.Save(a.Session); saveErr != nil {
-					return "", saveErr
-				}
-				lastToolError = ""
-				lastToolErrorCount = 0
-				break
-			}
-			if verificationOutOfScopeThisTurn && toolCallIsVerificationRetryOrPoll(call, a.Session) {
-				result := outOfScopeVerificationFollowupBlockedResult(call)
-				toolMsg := Message{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					ToolName:   call.Name,
-					Text:       result.DisplayText,
-					ToolMeta:   result.Meta,
-					IsError:    true,
-				}
-				a.setToolExecutionResult(toolMsgIndex, toolMsg)
-				a.noteToolConversationBlockedResult(call, result, errVerificationOutOfScopeFollowupBlocked)
-				a.noteToolExecutionResultDetailed(call, result, errVerificationOutOfScopeFollowupBlocked)
-				sawToolResultThisTurn = true
-				a.Session.AddMessage(internalUserMessage(verificationOutOfScopeFollowupBlockedGuidance(a.Config)))
-				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: automatic verification already failed outside the current patch scope; do not retry build, test, or verification commands in this turn.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
@@ -4371,7 +4347,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
 					})
 				}
-				toolExposurePlan := a.buildTurnToolExposurePlanForEnvelope(disabledTools, requestEnvelope, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+				toolExposurePlan := a.buildTurnToolExposurePlanForEnvelope(disabledTools, requestEnvelope, unresolvedVerification, finalAnswerOnlyCorrection, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
 				if !toolExposurePlan.SuppressInteractiveWorkers {
 					_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 					_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
@@ -4636,20 +4612,33 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							a.Session.AddMessage(internalUserMessage("Automatic verification has been disabled for this workspace after repeated verification tool startup failures. Do not spend more turns trying to repair the local verification environment unless the user explicitly asks for that. Continue with the task and summarize any unverified risk briefly if needed."))
 						}
 					}
-					if !autoVerifyDisabledAfterPrompt {
-						scopeDecision := a.verificationFailureRepairScope(report)
-						if !scopeDecision.ShouldRepair {
-							// Ambient / out-of-scope failure: the user request is not
-							// a hard failure. Stop expanding repair, disclose risk, and
-							// keep the gate/edit-loop from treating compile noise as a
-							// blocked completion.
+				if !autoVerifyDisabledAfterPrompt {
+					scopeDecision := a.verificationFailureRepairScope(report)
+					if !scopeDecision.ShouldRepair {
+						// Out-of-scope failure: ask the user once per turn how
+						// to proceed. A Finish decision converges to the final
+						// answer with the ambient risk disclosed; anything
+						// else (continue, non-interactive, canceled) keeps the
+						// turn alive with scope-aware repair guidance, bounded
+						// by the edit-loop retry budget.
+						if !outOfScopeVerificationPrompted {
+							outOfScopeVerificationPrompted = true
+							if a.PromptResolveOutOfScopeVerification != nil {
+								markUserInputRequestedDuringTurn()
+								resolution, promptErr := a.PromptResolveOutOfScopeVerification(report, scopeDecision)
+								if promptErr != nil {
+									return "", promptErr
+								}
+								outOfScopeVerificationResolution = resolution
+							}
+						}
+						if outOfScopeVerificationResolution == OutOfScopeVerificationFinish {
 							unresolvedVerification = false
 							syncRuntimeFlags()
-							verificationOutOfScopeThisTurn = true
-							verificationOutOfScopeFinalOnly = true
+							verificationOutOfScopeFinishThisTurn = true
 							a.recordEditLoopAmbientVerification(report, scopeDecision)
 							if a.Session.TaskState != nil {
-								a.Session.TaskState.RecordEvent("verification_terminal", strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode), "verify", "Automatic verification failed outside the current patch scope; disclose as ambient risk and complete without expanding repair.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"), "risk", true)
+								a.Session.TaskState.RecordEvent("verification_terminal", strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode), "verify", "Automatic verification failed outside the current patch scope; user chose to disclose as ambient risk and complete without expanding repair.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"), "risk", true)
 							}
 							a.Session.AddMessage(internalUserMessage(automaticVerificationOutOfScopeMessage(a.Config, report, scopeDecision)))
 							if a.EmitProgress != nil {
@@ -4657,6 +4646,27 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 								a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "Verification failed outside the patch scope. Summarize the edit and disclose the ambient verification risk; do not treat the user request as failed.", "검증이 patch scope 밖에서 실패했습니다. 수정 내용을 요약하고 환경성 검증 risk를 밝히세요. 사용자 요청 자체는 실패로 취급하지 마세요.")
 							}
 						} else {
+							if outOfScopeVerificationResolution == OutOfScopeVerificationContinueRepair {
+								a.recordEditLoopRisk("User chose to continue repairing an out-of-scope verification failure.", report.FailureSummary())
+							}
+							text := automaticVerificationOutOfScopeContinueGuidance(a.Config, report, scopeDecision)
+							failureSummary := strings.TrimSpace(report.FailureSummary())
+							repairGuidance := strings.TrimSpace(report.RepairGuidance())
+							if repairGuidance != "" {
+								text += "\n\nSuggested repair strategy:\n" + repairGuidance
+							}
+							text = a.appendFailureRepairPrompt(text)
+							if decision := a.recordEditLoopRetry("Verification failed outside the clear patch scope; continue with scope-aware repair guidance.", strings.Join([]string{failureSummary, repairGuidance}, "\n")); decision != nil {
+								if policy := editLoopRetryDecisionPrompt(*decision); policy != "" {
+									text += "\n\nRetry loop policy:\n" + policy
+								}
+							}
+							a.Session.AddMessage(internalUserMessage(text))
+							if a.EmitProgress != nil {
+								a.emitRepairWorkflowProgress(latestUser, 2, "revise edit proposal", "수정안 재작성", "Verification failed outside the clear patch scope. Continue repairing if the failure blocks the user request; otherwise disclose it as ambient risk and finish.", "검증이 현재 patch scope와 명확히 연결되지 않은 채 실패했습니다. 실패가 사용자 요청을 막으면 수리를 계속하고, 아니면 환경성 risk로 밝히고 마무리하세요.")
+							}
+						}
+					} else {
 							failureSummary := strings.TrimSpace(report.FailureSummary())
 							repairGuidance := strings.TrimSpace(report.RepairGuidance())
 							text := "The latest verification failed within the current patch scope. Investigate the failure and continue repairing only the current patch scope. Do not broaden into unrelated files or project settings unless the failure output directly names them as part of the current patch."
@@ -5537,11 +5547,11 @@ type turnToolExposurePlan struct {
 	SuppressInteractiveWorkers bool
 }
 
-func (a *Agent) buildTurnToolExposurePlan(baseDisabled map[string]bool, request string, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool) turnToolExposurePlan {
-	return a.buildTurnToolExposurePlanForEnvelope(baseDisabled, a.latestRequestEnvelopeFor(request), unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, verificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+func (a *Agent) buildTurnToolExposurePlan(baseDisabled map[string]bool, request string, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool) turnToolExposurePlan {
+	return a.buildTurnToolExposurePlanForEnvelope(baseDisabled, a.latestRequestEnvelopeFor(request), unresolvedVerification, finalAnswerOnlyCorrection, verificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
 }
 
-func (a *Agent) buildTurnToolExposurePlanForEnvelope(baseDisabled map[string]bool, envelope RequestEnvelope, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool) turnToolExposurePlan {
+func (a *Agent) buildTurnToolExposurePlanForEnvelope(baseDisabled map[string]bool, envelope RequestEnvelope, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool) turnToolExposurePlan {
 	disabled := cloneDisabledTools(baseDisabled)
 	var registry *ToolRegistry
 	if a != nil {
@@ -5556,7 +5566,7 @@ func (a *Agent) buildTurnToolExposurePlanForEnvelope(baseDisabled map[string]boo
 	disableRequestEnvelopeForbiddenTools(disabled, registry, envelope, mcp)
 	generatedDocumentFinalOnly := a.shouldUseGeneratedDocumentArtifactFinalOnlyTools(request, unresolvedVerification)
 	suppressInteractiveWorkers := a.shouldSuppressInteractiveWorkersForTurn(request)
-	if finalAnswerOnlyCorrection || verificationOutOfScopeFinalOnly || verificationSkippedFinalOnly || generatedDocumentFinalOnly {
+	if finalAnswerOnlyCorrection || verificationSkippedFinalOnly || generatedDocumentFinalOnly {
 		disableAllTools(disabled, registry)
 		suppressInteractiveWorkers = true
 	}
@@ -6197,20 +6207,6 @@ func verificationFollowupBlockedGuidance(cfg Config) string {
 	return localizedText(cfg,
 		"A build, test, or verification command was already skipped or declined in this turn. Do not call run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, or check_shell_bundle for the same verification again unless the user explicitly approves verification. Use the existing code, diff, review, and tool-output evidence and provide the final answer now. State that verification was not run; do not describe it as a tool outage. Keep verification gaps separate from code findings: do not relabel resolved code-review findings as remaining bugs only because verification is missing.",
 		"이번 턴에서 빌드/테스트/검증 명령이 이미 생략되었거나 거절되었습니다. 사용자가 명시적으로 검증 실행을 승인하기 전에는 같은 검증을 위해 run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, check_shell_bundle를 다시 호출하지 마세요. 기존 코드, diff, 리뷰, 도구 출력 근거만 사용해 지금 최종 답변을 작성하세요. 검증은 실행하지 않았다고 밝히되, 도구 장애로 표현하지 마세요. 검증 공백과 코드 finding은 분리하세요. 검증 증거가 없다는 이유만으로 해결된 코드 리뷰 finding을 남은 버그처럼 다시 표시하지 마세요.",
-	)
-}
-
-func verificationOutOfScopeFollowupBlockedGuidance(cfg Config) string {
-	return localizedText(cfg,
-		"Automatic verification already failed outside the current patch scope. Do not call run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, or check_shell_bundle to rerun or probe build/test/verification in this turn. Use the existing code, diff, review, and verification output evidence and provide the final answer now. Disclose the verification failure as an external or ambient blocker/risk, and do not broaden the repair into unrelated files or project settings unless the user explicitly approves a new verification or scope expansion.",
-		"자동 검증이 이미 현재 patch scope 밖의 실패로 판정되었습니다. 이 턴에서는 build/test/verification을 다시 실행하거나 탐색하기 위해 run_shell, run_shell_background, run_shell_bundle_background, check_shell_job, check_shell_bundle를 호출하지 마세요. 기존 코드, diff, 리뷰, 검증 출력 근거만 사용해 지금 최종 답변을 작성하세요. 검증 실패는 외부/환경성 blocker 또는 risk로 명시하고, 사용자가 새 검증이나 범위 확장을 명시적으로 승인하기 전에는 관련 없는 파일이나 프로젝트 설정으로 수리 범위를 넓히지 마세요.",
-	)
-}
-
-func verificationOutOfScopeFinalOnlyGuidance(cfg Config) string {
-	return localizedText(cfg,
-		"Automatic verification already failed outside the current patch scope, so this turn is now final-answer-only. Do not request more tools, do not retry verification, and do not broaden the repair. Use the accepted patch/review evidence and disclose the out-of-scope verification blocker or risk in the final answer.",
-		"자동 검증이 현재 patch scope 밖의 실패로 판정되었으므로 이 턴은 이제 최종 답변 전용입니다. 추가 도구를 요청하지 말고, 검증을 재시도하지 말고, 수리 범위를 넓히지 마세요. 승인된 패치/리뷰 근거를 기준으로 최종 답변을 작성하고 out-of-scope 검증 blocker 또는 risk만 명시하세요.",
 	)
 }
 
@@ -10834,50 +10830,6 @@ func skippedVerificationFinalOnlyBlockedResult(call ToolCall) ToolExecutionResul
 			"verification_evidence":    false,
 			"verification_approved":    false,
 			"verification_declined":    true,
-			"command_execution_status": "blocked_final_answer_only",
-			"success":                  false,
-		},
-	}
-}
-
-func outOfScopeVerificationFollowupBlockedResult(call ToolCall) ToolExecutionResult {
-	name := strings.TrimSpace(call.Name)
-	if name == "" {
-		name = "unknown"
-	}
-	return ToolExecutionResult{
-		DisplayText: "NOT_EXECUTED: automatic verification already failed outside the current patch scope. Do not retry or probe build, test, or verification commands in this turn; disclose the external or ambient verification blocker/risk instead of broadening the repair.",
-		Meta: map[string]any{
-			"tool_name":                name,
-			"plan_effect":              "none",
-			"result_class":             "verification_skipped",
-			"verification_like":        true,
-			"verification_status":      string(VerificationSkipped),
-			"verification_evidence":    false,
-			"verification_approved":    false,
-			"verification_out_scope":   true,
-			"command_execution_status": "blocked_out_of_scope",
-			"success":                  false,
-		},
-	}
-}
-
-func outOfScopeVerificationFinalOnlyBlockedResult(call ToolCall) ToolExecutionResult {
-	name := strings.TrimSpace(call.Name)
-	if name == "" {
-		name = "unknown"
-	}
-	return ToolExecutionResult{
-		DisplayText: "NOT_EXECUTED: automatic verification already failed outside the current patch scope, so this turn is final-answer-only. No further tools are available; provide the final answer from the existing patch, review, and verification evidence.",
-		Meta: map[string]any{
-			"tool_name":                name,
-			"plan_effect":              "none",
-			"result_class":             "final_answer_only",
-			"verification_like":        toolCallIsVerificationRetryOrPoll(call, nil),
-			"verification_status":      string(VerificationSkipped),
-			"verification_evidence":    false,
-			"verification_approved":    false,
-			"verification_out_scope":   true,
 			"command_execution_status": "blocked_final_answer_only",
 			"success":                  false,
 		},

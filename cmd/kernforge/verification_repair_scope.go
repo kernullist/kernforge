@@ -84,6 +84,17 @@ func verificationStepIsPatchScoped(step VerificationStep, changed []string) bool
 	if verificationTextMentionsChangedPath(text, changed) {
 		return true
 	}
+	// A Go package-scoped step ("go test ./cmd/app/...") compiles the whole
+	// package that contains the changed files, so any compile failure in that
+	// package blocks verifying the current patch even when the failing line
+	// names a sibling file. Treat a concrete Go package scope that covers the
+	// changed file's directory as in-scope. This is deliberately Go-only:
+	// MSBuild/vcxproj sibling failures stay ambient (see
+	// TestVerificationRepairScopeDoesNotTreatProjectBuildSiblingFailureAsPatchScoped),
+	// and workspace-wide runs ("go test ./...") keep the ambient default.
+	if verificationGoPackageScopeCoversChangedDir(step, changed) {
+		return true
+	}
 	return verificationTextMentionsChangedPath(verificationFailureEvidenceText(step.Output), changed)
 }
 
@@ -173,6 +184,62 @@ func verificationTextMentionsChangedPath(text string, changed []string) bool {
 	return false
 }
 
+// verificationGoPackageScopeCoversChangedDir reports whether a Go verification
+// step carries a concrete package scope (for example "./cmd/app/...") that
+// covers the directory of a changed file. Go package scopes are derived from
+// the changed directories by buildGoVerificationSteps, so such a scope means
+// the step exists precisely because the patch touched that package.
+func verificationGoPackageScopeCoversChangedDir(step VerificationStep, changed []string) bool {
+	command := strings.ToLower(" " + strings.TrimSpace(step.Command) + " " + strings.TrimSpace(step.Label) + " ")
+	if !strings.Contains(command, " go test ") && !strings.Contains(command, " go build ") && !strings.Contains(command, " go vet ") {
+		return false
+	}
+	scope := normalizeVerificationComparablePath(step.Scope)
+	if scope == "" || scope == "workspace" || scope == "targeted" || scope == "..." {
+		return false
+	}
+	for _, raw := range changed {
+		dir := normalizeVerificationComparablePath(filepath.Dir(strings.TrimSpace(raw)))
+		if dir == "" || dir == "." || dir == "/" {
+			continue
+		}
+		if verificationTextMentionsPathSegment(scope, dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// verificationTextMentionsPathSegment reports whether text contains segment
+// as a whole path segment: it must not be preceded or followed by additional
+// file-name characters (letters, digits, '_', '-', '.'). Path separators and
+// wildcards around the segment still count as a match.
+func verificationTextMentionsPathSegment(text string, segment string) bool {
+	if segment == "" {
+		return false
+	}
+	offset := 0
+	for offset <= len(text) {
+		idx := strings.Index(text[offset:], segment)
+		if idx < 0 {
+			return false
+		}
+		start := offset + idx
+		end := start + len(segment)
+		beforeOK := start == 0 || !isVerificationNameChar(text[start-1])
+		afterOK := end >= len(text) || !isVerificationNameChar(text[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
+func isVerificationNameChar(b byte) bool {
+	return b == '_' || b == '-' || b == '.' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
 func automaticVerificationOutOfScopeMessage(cfg Config, report VerificationReport, decision verificationRepairScopeDecision) string {
 	var lines []string
 	lines = append(lines, localizedText(
@@ -198,5 +265,44 @@ func automaticVerificationOutOfScopeMessage(cfg Config, report VerificationRepor
 		"Do not broaden the repair into unrelated build files, project settings, or other source paths. Stop editing unless a failure line directly references the current patch. In the final answer, disclose this as ambient verification risk; the scoped edit may still complete successfully.",
 		"관련 없는 빌드 파일, 프로젝트 설정, 다른 소스 경로로 수정 범위를 넓히지 마십시오. 실패 라인이 현재 patch를 직접 가리키지 않으면 편집을 중단하고, 최종 답변에서 환경성 검증 risk로 명시하십시오. 범위 안 편집은 성공으로 마무리할 수 있습니다.",
 	))
+	return strings.Join(lines, "\n")
+}
+
+// automaticVerificationOutOfScopeContinueGuidance is the guided-continuation
+// message used when an out-of-scope verification failure does NOT force the
+// turn to stop. The model decides with the user's request in mind: keep
+// repairing when the failure blocks the request, or finish with an ambient
+// risk disclosure when the failure is genuinely unrelated. The edit-loop
+// retry budget still bounds repeated attempts of the same failure.
+func automaticVerificationOutOfScopeContinueGuidance(cfg Config, report VerificationReport, decision verificationRepairScopeDecision) string {
+	var lines []string
+	lines = append(lines, localizedText(
+		cfg,
+		"Automatic verification failed, and the failure is not clearly tied to the current patch scope. Do not stop the turn; decide with the user's request in mind:",
+		"자동 검증이 실패했고, 실패 근거가 현재 patch scope와 명확히 연결되어 있지 않습니다. 턴을 중단하지 말고 사용자 요청 기준으로 판단하십시오:",
+	))
+	lines = append(lines, localizedText(
+		cfg,
+		"- If this failure blocks completing the user's request (for example the package no longer builds, or the user asked you to fix these failures), keep repairing: investigate the failure output, fix the responsible files, and rerun verification.",
+		"- 이 실패가 사용자 요청 완료를 막는 경우(예: 패키지가 더 이상 빌드되지 않거나, 사용자가 이 실패들을 고치라고 요청한 경우) 수리를 계속하십시오. 실패 출력을 조사하고 책임 파일을 고친 뒤 검증을 다시 실행하십시오.",
+	))
+	lines = append(lines, localizedText(
+		cfg,
+		"- If the failure is genuinely unrelated to the user's request (pre-existing breakage in unrelated projects or files), do not broaden the repair into them. Provide the final answer and disclose the failure as ambient verification risk; the user request itself is not failed.",
+		"- 실패가 사용자 요청과 정말 무관한 경우(무관한 프로젝트나 파일의 기존 breakage) 수리를 그쪽으로 넓히지 마십시오. 최종 답변을 작성하고 환경성 검증 risk로 고지하십시오. 사용자 요청 자체는 실패가 아닙니다.",
+	))
+	if len(decision.ChangedPaths) > 0 {
+		lines = append(lines, localizedText(cfg, "Current patch scope: ", "현재 patch scope: ")+strings.Join(limitStrings(decision.ChangedPaths, 8), ", "))
+	}
+	if strings.TrimSpace(decision.Reason) != "" {
+		lines = append(lines, localizedText(cfg, "Scope decision: ", "scope 판정: ")+decision.Reason)
+	}
+	if anchor := strings.TrimSpace(decision.Anchor); anchor != "" {
+		lines = append(lines, localizedText(cfg, "Failure anchor: ", "실패 anchor: ")+compactPromptSection(anchor, 260))
+	}
+	if failure := strings.TrimSpace(report.FailureSummary()); failure != "" {
+		lines = append(lines, localizedText(cfg, "Verification failure summary:", "검증 실패 요약:"))
+		lines = append(lines, failure)
+	}
 	return strings.Join(lines, "\n")
 }

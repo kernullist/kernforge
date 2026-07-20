@@ -499,6 +499,9 @@ func run(args []string) error {
 		PromptResolveAutoVerifyFailure: func(report VerificationReport) (AutoVerifyFailureResolution, error) {
 			return rt.promptResolveAutoVerifyFailure(report)
 		},
+		PromptResolveOutOfScopeVerification: func(report VerificationReport, decision verificationRepairScopeDecision) (OutOfScopeVerificationResolution, error) {
+			return rt.promptResolveOutOfScopeVerification(report, decision)
+		},
 		EmitAssistant: func(text string) {
 			rt.printAssistantWhileThinking(text)
 		},
@@ -9731,6 +9734,58 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 			return AutoVerifyFailureDisable, nil
 		case "", "n", "no":
 			return AutoVerifyFailureNoAction, nil
+		}
+	}
+}
+
+// promptResolveOutOfScopeVerification asks the user how to handle an
+// automatic verification failure that is not clearly tied to the current
+// patch scope. Non-interactive runs cannot ask, so they return NoAction and
+// the agent falls back to guided continuation.
+func (rt *runtimeState) promptResolveOutOfScopeVerification(report VerificationReport, decision verificationRepairScopeDecision) (OutOfScopeVerificationResolution, error) {
+	if !rt.interactive {
+		return OutOfScopeVerificationNoAction, nil
+	}
+	var lines []string
+	lines = append(lines, rt.ui.warnLine("Automatic verification failed outside the current patch scope."))
+	if len(decision.ChangedPaths) > 0 {
+		lines = append(lines, rt.ui.statusKV("patch scope", strings.Join(limitStrings(decision.ChangedPaths, 8), ", ")))
+	}
+	if summary := strings.TrimSpace(report.FailureSummary()); summary != "" {
+		lines = append(lines, rt.ui.dim(compactPromptSection(summary, 300)))
+	}
+	rt.writeOutputLines(lines...)
+	label := rt.ui.warnLine("Continue repairing this failure?") + " " + rt.ui.dim("[y=keep repairing (default), n=finish and disclose as ambient risk, Esc=cancel]")
+	for {
+		var answer string
+		err := rt.withPinnedPrompt(func() error {
+			var usedInteractive bool
+			var err error
+			answer, usedInteractive, err = rt.readInteractiveLine(label+" ", "", nil, true)
+			if !usedInteractive {
+				fmt.Fprint(rt.writer, label+" ")
+				answer, err = rt.reader.ReadString('\n')
+				if err != nil {
+					return err
+				}
+				answer = strings.TrimSpace(answer)
+				return nil
+			}
+			return err
+		})
+		if err != nil {
+			if errors.Is(err, ErrPromptCanceled) {
+				return OutOfScopeVerificationNoAction, nil
+			}
+			return OutOfScopeVerificationNoAction, err
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "", "y", "yes":
+			rt.writeOutputLines(rt.ui.infoLine("Continuing the repair loop for the out-of-scope verification failure."))
+			return OutOfScopeVerificationContinueRepair, nil
+		case "n", "no":
+			rt.writeOutputLines(rt.ui.infoLine("Finishing with the out-of-scope verification failure disclosed as ambient risk."))
+			return OutOfScopeVerificationFinish, nil
 		}
 	}
 }

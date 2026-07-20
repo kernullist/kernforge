@@ -65,8 +65,22 @@ func TestImplementationDecisionToolDefinitionUsesObjectSchemaForCaptureAndResume
 		t.Fatalf("decision tool definition count=%d, want 1", len(definitions))
 	}
 	schema := definitions[0].InputSchema
-	if schema["type"] != "object" {
-		t.Fatalf("decision tool schema must be a top-level object: %#v", schema)
+	// Moonshot/kimi-k3 and similar providers reject a parent schema that
+	// declares both "type" and "anyOf".  Normalization moves the parent type
+	// into each anyOf branch and drops it from the parent, so the top-level
+	// schema no longer carries "type" directly.
+	branches, ok := schema["anyOf"].([]any)
+	if !ok || len(branches) != 2 {
+		t.Fatalf("decision tool schema must retain capture and resume branches: %#v", schema)
+	}
+	for _, branch := range branches {
+		branchMap, ok := branch.(map[string]any)
+		if !ok {
+			t.Fatalf("decision tool anyOf branch must be a schema object: %#v", branch)
+		}
+		if branchMap["type"] != "object" {
+			t.Fatalf("decision tool anyOf branch must be an object schema: %#v", branchMap)
+		}
 	}
 	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
@@ -93,10 +107,6 @@ func TestImplementationDecisionToolDefinitionUsesObjectSchemaForCaptureAndResume
 		if _, ok := optionProperties[name]; !ok {
 			t.Fatalf("decision tool schema lost option field %q: %#v", name, items)
 		}
-	}
-	branches, ok := schema["anyOf"].([]any)
-	if !ok || len(branches) != 2 {
-		t.Fatalf("decision tool schema must retain capture and resume branches: %#v", schema)
 	}
 }
 

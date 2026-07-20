@@ -18,7 +18,7 @@ func TestRequestEnvelopeClassifiesReviewOnlyKoreanAsReadOnly(t *testing.T) {
 	if envelope.AllowsFileMutation || envelope.ExplicitEditRequest {
 		t.Fatalf("review-only request must not allow file mutation, got %#v", envelope)
 	}
-	plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false, false)
+	plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false)
 	if !plan.toolDisabled("apply_patch") {
 		t.Fatalf("review-only request must not expose apply_patch")
 	}
@@ -54,7 +54,7 @@ func TestRequestEnvelopeClassifiesAnswerOnlyComparisonAsReadOnly(t *testing.T) {
 	if !strings.EqualFold(envelope.ReviewLifecycleKind, reviewLifecycleKindAnalysis) {
 		t.Fatalf("expected analysis lifecycle kind, got %#v", envelope)
 	}
-	plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false, false)
+	plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false)
 	if !plan.toolDisabled("apply_patch") || !plan.toolDisabled("write_file") {
 		t.Fatalf("answer-only comparison request must disable edit tools, got %#v", plan.DisabledTools)
 	}
@@ -68,7 +68,7 @@ func TestRequestEnvelopeTreatsNegatedKoreanEditAsReadOnly(t *testing.T) {
 	if envelope.ExplicitEditRequest || envelope.AllowsFileMutation {
 		t.Fatalf("negated edit request must not allow file mutation, got %#v", envelope)
 	}
-	plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false, false)
+	plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false)
 	if !plan.toolDisabled("apply_patch") || !plan.toolDisabled("write_file") {
 		t.Fatalf("negated edit request must disable edit tools, got %#v", plan.DisabledTools)
 	}
@@ -89,7 +89,7 @@ func TestRequestEnvelopeClassifiesExplicitEditRequiresVerification(t *testing.T)
 		if !envelope.RequiresVerification {
 			t.Fatalf("explicit edit request %q should require verification, got %#v", request, envelope)
 		}
-		plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false, false)
+		plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false)
 		if plan.toolDisabled("apply_patch") || plan.toolDisabled("write_file") {
 			t.Fatalf("explicit edit request %q should expose edit tools, got %#v", request, plan.DisabledTools)
 		}
@@ -161,7 +161,7 @@ func TestRequestEnvelopeGatesGitMutationOnExplicitRequest(t *testing.T) {
 	if implicit.AllowsGitMutation {
 		t.Fatalf("implicit completion request must not allow git mutation, got %#v", implicit)
 	}
-	implicitPlan := agent.buildTurnToolExposurePlanForEnvelope(nil, implicit, false, false, false, false, false, false)
+	implicitPlan := agent.buildTurnToolExposurePlanForEnvelope(nil, implicit, false, false, false, false, false)
 	if !implicitPlan.toolDisabled("git_commit") || !implicitPlan.toolDisabled("git_push") {
 		t.Fatalf("implicit request must not expose git mutation tools, got %#v", implicitPlan.DisabledTools)
 	}
@@ -170,7 +170,7 @@ func TestRequestEnvelopeGatesGitMutationOnExplicitRequest(t *testing.T) {
 	if !explicit.AllowsGitMutation || !explicit.ExplicitGitRequest {
 		t.Fatalf("explicit git request should allow git mutation, got %#v", explicit)
 	}
-	explicitPlan := agent.buildTurnToolExposurePlanForEnvelope(nil, explicit, false, false, false, false, false, false)
+	explicitPlan := agent.buildTurnToolExposurePlanForEnvelope(nil, explicit, false, false, false, false, false)
 	if explicitPlan.toolDisabled("git_commit") || explicitPlan.toolDisabled("git_push") {
 		t.Fatalf("explicit git request should expose git mutation tools, got %#v", explicitPlan.DisabledTools)
 	}
