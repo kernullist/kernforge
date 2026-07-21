@@ -40,6 +40,27 @@ func TestGateClearDismissesPreviousReviewFromRuntimeGate(t *testing.T) {
 	}
 
 	session := NewSession(root, "provider", "model", "", "default")
+	// The final-answer gate uses the tracked patch scope only (2026-07-21), so
+	// the fixture records the dirty file in a current-turn patch transaction.
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "UserCommon.h를 수정해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-tx-dismiss",
+		Goal:      "UserCommon.h를 수정해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-dismiss-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "UserCommon.h",
+				Operation: "modify",
+			}},
+		}},
+	}}
 	session.LastReviewRun = &run
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 
@@ -92,8 +113,29 @@ func TestGateClearDismissesPreviousReviewFromRuntimeGate(t *testing.T) {
 	if err := rt.handleGateCommand("restore"); err != nil {
 		t.Fatalf("gate restore: %v", err)
 	}
-	// Re-attach the review as a new session would from disk.
+	// Re-attach the review as a new session would from disk. The final-answer
+	// gate only sees the tracked patch scope, so the same current-turn edit
+	// fixture is required for the stale review to matter again.
 	session2b := NewSession(root, "provider", "model", "", "default")
+	session2b.Messages = []Message{{
+		Role: "user",
+		Text: "UserCommon.h를 수정해",
+	}}
+	session2b.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-tx-dismiss-restore",
+		Goal:      "UserCommon.h를 수정해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-dismiss-restore-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "UserCommon.h",
+				Operation: "modify",
+			}},
+		}},
+	}}
 	restored := buildRuntimeGateLedger(root, session2b, runtimeGateActionFinalAnswer)
 	if restored.Status != runtimeGateStatusBlocked {
 		t.Fatalf("expected restore to re-enable stale block, got %#v", restored)

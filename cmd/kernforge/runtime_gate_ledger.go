@@ -504,59 +504,19 @@ func runtimeGateChangedPathsForAction(root string, session *Session, action stri
 			includeGitChanged = false
 		}
 	} else if strings.EqualFold(action, runtimeGateActionFinalAnswer) {
-		includeGitChanged = runtimeGateFinalAnswerShouldUseGitChangedFallback(session)
+		// The final-answer gate uses the same scope as the turn-level verdict:
+		// the tracked patch scope only. Pulling every dirty git file in would
+		// attach stale-review / unwaived-blocker / verification blockers to
+		// files this turn never touched (ambient WIP from other work) and leave
+		// a gate:blocked advisory the turn cannot clear -- the asymmetry the
+		// out-of-scope hard-stop removal eliminated. Git write actions keep the
+		// whole-tree scope because committing/pushing acts on the tree itself.
+		includeGitChanged = false
 	}
 	if includeGitChanged && strings.TrimSpace(root) != "" && runtimeGateGitStatusUsableProvider(root) {
 		paths = append(paths, filterReviewablePaths(runtimeGateChangedFilesProvider(root))...)
 	}
 	return normalizeCompletionAuditReviewPaths(paths)
-}
-
-func runtimeGateFinalAnswerShouldUseGitChangedFallback(session *Session) bool {
-	if session == nil {
-		return false
-	}
-	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(session.Messages)))
-	if generatedDocumentArtifactRequestContextForTurn(session, latestUser) != "" {
-		return false
-	}
-	if latestUser != "" && !looksLikeInternalReviewFeedbackUserMessage(latestUser) {
-		if classifyTurnIntent(latestUser) == TurnIntentEditCode {
-			return true
-		}
-		if !controlRequestContinuesCurrentWorkContext(latestUser) {
-			return false
-		}
-		effective := strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session)))
-		if effective == "" || strings.EqualFold(effective, latestUser) {
-			return false
-		}
-		if generatedDocumentArtifactRequestContextForTurn(session, effective) != "" {
-			return false
-		}
-		return classifyTurnIntent(effective) == TurnIntentEditCode ||
-			requestModeLooksCodeChanging(effective)
-	}
-	if latestUser == "" && session.AcceptanceContract == nil && session.TaskState == nil {
-		return true
-	}
-	if session.AcceptanceContract != nil {
-		contract := *session.AcceptanceContract
-		contract.Normalize()
-		if generatedDocumentArtifactRequestContextForTurn(session, contract.SourcePrompt) != "" {
-			return false
-		}
-		if strings.EqualFold(contract.Mode, "inspect_and_fix") {
-			return true
-		}
-		if classifyTurnIntent(contract.SourcePrompt) == TurnIntentEditCode {
-			return true
-		}
-	}
-	if session.TaskState != nil {
-		return classifyTurnIntent(session.TaskState.Goal) == TurnIntentEditCode
-	}
-	return false
 }
 
 func runtimeGateActionMayUseArchivedPatchScope(action string) bool {

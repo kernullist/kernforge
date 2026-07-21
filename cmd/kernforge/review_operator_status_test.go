@@ -93,6 +93,27 @@ func TestOperatorStatusCompactOutputIncludesLifecycleGatesBlockersAndNextCommand
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
+	// The final-answer gate uses the tracked patch scope only (2026-07-21), so
+	// the fixture records the edit in a current-turn patch transaction.
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "main.go를 수정해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-tx-ops",
+		Goal:      "main.go를 수정해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-ops-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "modify",
+			}},
+		}},
+	}}
 	run := testOperatorStatusReviewRun()
 	session.LastReviewRun = &run
 	var output bytes.Buffer

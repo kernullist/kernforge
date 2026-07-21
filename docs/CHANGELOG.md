@@ -2,6 +2,15 @@
 
 의미 있는 변경 이력. 날짜는 절대 형식(YYYY-MM-DD), 최신 항목이 위에 온다.
 
+## 2026-07-22
+
+### final_answer 게이트 changed-path scope를 턴 판정과 동일화
+
+- 계획서: [[docs/plan/2026-07-21-gate-finalanswer-scope-narrowing.md]], 감사: [[docs/research/overblock-audit.md]] F3 (2026-07-19 후속 이슈 1)
+- `runtimeGateChangedPathsForAction`: final_answer 액션의 git changed-files fallback 제거. 추적된 patch scope만 사용 — ambient dirty(세션 밖 WIP)로 stale review / unwaived blocker가 `gate:blocked`를 남기던 비대칭 해소.
+- `runtimeGateFinalAnswerShouldUseGitChangedFallback` 삭제. git_write/mcp_write는 전체 트리 scope 유지.
+- 회귀 테스트 기대 반전 및 status/hooks/dismissal fixture에 current-turn patch transaction 보강.
+
 ## 2026-07-21
 
 ### v2 final gate / completion audit의 verification 차단 scope 일관화
@@ -30,4 +39,4 @@
 - `coding_harness.go`: "Unresolved verification failure" blocker가 patch-scoped 실패에만 발동하도록 수정 — out-of-scope 실패가 in-scope 문구 blocker로 오표시되던 문제 해소.
 - 루프 상한은 기존 retry budget(같은 실패 fingerprint 2회 → change_strategy, 3회 → escalate_reviewer)에 위임.
 - 문서(README/FEATURE_USAGE_GUIDE, 영/한)의 `NOT_EXECUTED` 서술을 새 동작으로 갱신.
-- 후속 이슈(별도 작업): gate ledger changed-path 집합과 턴 판정 집합의 차이로 ambient Finish 시 `gate:blocked` advisory가 남을 수 있음, note 수준 evidence_gap finding(RF-001)이 "unwaived blockers"로 표면화되는 경로.
+- 후속 이슈: gate ledger changed-path 집합과 턴 판정 집합의 차이로 ambient Finish 시 `gate:blocked` advisory가 남을 수 있음 → 2026-07-22 해결([[docs/plan/2026-07-21-gate-finalanswer-scope-narrowing.md]]). note 수준 evidence_gap finding(RF-001)이 "unwaived blockers"로 표면화되는 경로 → 2026-07-21 해결.

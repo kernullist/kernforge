@@ -85,7 +85,7 @@
 
 - [x] out-of-scope 메시지 문구를 "수리 계속 허용"으로 바꿀 때, 사용자가 명시적으로 범위를 제한한 경우(예: "이 파일만 고쳐")와 충돌하지 않는지 — guided continuation 문구에 "사용자 요청 기준으로 판단"을 명시하고, 무관한 범위 확장 금지 조항을 유지하는 것으로 처리. 사용자 범위 제한 지시는 세션 프롬프트 계층에서 별도로 강제되므로 이 메시지가 덮어쓰지 않음.
 - [x] `verificationOutOfScopeThisTurn`을 완전 제거할지 — 완전 제거로 결정. verification-retry 완충은 edit-loop retry budget(같은 fingerprint 2회 전략 변경, 3회 리뷰어 에스컬레이션)에 위임.
-- [ ] (후속, 별도 작업) gate ledger의 changed-path 집합(git changed files fallback)은 여전히 턴 판정 집합보다 넓다. 하드 스톱 제거로 교착은 해소됐지만, 사용자가 Finish를 선택한 ambient 실패는 상태바 `gate:blocked`를 남길 수 있다(완료/git-write에 대한 advisory이며 턴 반환은 막지 않음). 사용해 보고 거슬리면 gate 쪽도 턴과 같은 scope 집합을 쓰도록 좁히는 안을 검토.
+- [x] (후속, 별도 작업) gate ledger의 changed-path 집합(git changed files fallback)은 여전히 턴 판정 집합보다 넓다. 하드 스톱 제거로 교착은 해소됐지만, 사용자가 Finish를 선택한 ambient 실패는 상태바 `gate:blocked`를 남길 수 있다(완료/git-write에 대한 advisory이며 턴 반환은 막지 않음). → 2026-07-22 해결: [[docs/plan/2026-07-21-gate-finalanswer-scope-narrowing.md]] (final_answer git fallback 제거, 턴 판정과 동일 scope).
 - [x] (후속, 별도 작업) 최종 답변이 게이트에 막힌 뒤 재시도 과정에서 note 수준 evidence_gap finding(RF-001)이 "latest review has unwaived blockers"로 표면화하는 경로가 있다. 게이트 의도(참고 수준은 비차단)와 표현이 어긋나 보이므로 별도 조사 필요. → 2026-07-21 해결: [[docs/plan/2026-07-21-note-finding-blocker-surface.md]] (scope fallback blocker 날조 + single-model RF-obligation policy 필터 비일관, 2-결함 연쇄 수정).
 
 ## 8. 진행 로그

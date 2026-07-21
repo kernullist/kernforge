@@ -62,5 +62,5 @@
 ## 미해결
 
 - [x] F1/F2 수정 (2026-07-21 완료: [[docs/plan/2026-07-21-finalgate-verification-scope.md]]).
-- [ ] F3: gate ledger changed-path 집합이 턴 판정보다 넓은 문제 (2026-07-19 계획서 후속 이슈 1, 별도 작업으로 큐잉됨).
+- [x] F3: gate ledger changed-path 집합이 턴 판정보다 넓은 문제 (2026-07-19 계획서 후속 이슈 1). → 2026-07-22 해결: [[docs/plan/2026-07-21-gate-finalanswer-scope-narrowing.md]] (final_answer git fallback 제거).
 - [ ] pre_write evidence_gap 승격 키워드의 오탐 여지 — 모델이 "does not implement X"를 evidence 부족으로 오보하는 경우. 현재 blocker-verification pass(runReviewBlockerVerificationPass)가 refuted blocker를 info로 강등하므로 완화됨. 실사용 관찰 유지.

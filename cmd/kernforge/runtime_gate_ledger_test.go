@@ -65,7 +65,12 @@ func useRuntimeGateGitFixture(t *testing.T, branch string, changed []string) {
 	})
 }
 
-func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
+// TestRuntimeGateFinalAnswerIgnoresAmbientUnreviewedDirtyFiles pins the 2026-07-21
+// scope alignment: the final-answer gate uses the tracked patch scope only, so
+// ambient git-dirty files this turn never touched (no patch transaction, only
+// an edit-intent message) must not stale the review or block the gate. Git
+// write actions still use the whole-tree scope.
+func TestRuntimeGateFinalAnswerIgnoresAmbientUnreviewedDirtyFiles(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"main.go", "other.go"})
 	session := NewSession(root, "provider", "model", "", "default")
@@ -94,19 +99,14 @@ func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
 
 	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
 
-	if ledger.Status != runtimeGateStatusBlocked || ledger.Ready {
-		t.Fatalf("expected stale review to block final answer, got %#v", ledger)
+	if len(ledger.ChangedPaths) != 0 {
+		t.Fatalf("expected final-answer gate to ignore ambient dirty files, got %#v", ledger.ChangedPaths)
 	}
-	if !strings.Contains(strings.Join(ledger.StaleReasons, " "), "other.go") {
-		t.Fatalf("expected stale reason to mention unreviewed file, got %#v", ledger.StaleReasons)
+	if ledger.Status != runtimeGateStatusReady || !ledger.Ready {
+		t.Fatalf("expected ambient unreviewed files not to block the final-answer gate, got %#v", ledger)
 	}
-	if len(ledger.NextCommands) == 0 || ledger.NextCommands[0].Command != "/review" {
-		t.Fatalf("expected /review recovery command, got %#v", ledger.NextCommands)
-	}
-	if ledger.StaleContextSummary == nil ||
-		ledger.StaleContextSummary.Status != staleContextStatusBlocked ||
-		ledger.StaleContextSummary.Counts[staleContextKindChangedFilesAfterReview] == 0 {
-		t.Fatalf("expected stale context summary for changed files after review, got %#v", ledger.StaleContextSummary)
+	if len(ledger.StaleReasons) != 0 {
+		t.Fatalf("expected no stale reasons from ambient files, got %#v", ledger.StaleReasons)
 	}
 }
 
@@ -657,7 +657,7 @@ func TestRuntimeGateFinalAnswerIgnoresArchivedPatchFromPreviousTurn(t *testing.T
 	}
 }
 
-func TestRuntimeGateFinalAnswerDoesNotUseArchivedPatchTimeForGitFallback(t *testing.T) {
+func TestRuntimeGateFinalAnswerIgnoresAmbientDirtyFilesAndArchivedPatch(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	now := time.Now()
@@ -725,17 +725,20 @@ func TestRuntimeGateFinalAnswerDoesNotUseArchivedPatchTimeForGitFallback(t *test
 	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
 
 	if ledger.PatchTransactionID != "" {
-		t.Fatalf("expected final-answer git fallback not to attach previous-turn patch transaction, got %#v", ledger)
+		t.Fatalf("expected final-answer gate not to attach previous-turn patch transaction, got %#v", ledger)
 	}
-	if !slices.Equal(ledger.ChangedPaths, []string{"main.go"}) {
-		t.Fatalf("expected final-answer git fallback to use current dirty file only, got %#v", ledger.ChangedPaths)
+	if len(ledger.ChangedPaths) != 0 {
+		t.Fatalf("expected final-answer gate to ignore ambient dirty file without a tracked patch scope, got %#v", ledger.ChangedPaths)
 	}
 	if len(ledger.Warnings) != 0 || !ledger.Ready {
-		t.Fatalf("expected stale archived patch time not to stale the current final-answer ledger, got %#v", ledger)
+		t.Fatalf("expected ambient dirty file not to warn or block the final-answer ledger, got %#v", ledger)
 	}
 }
 
-func TestRuntimeGateFinalAnswerUsesGitFallbackForPreservedCodeContinuation(t *testing.T) {
+// Under the 2026-07-21 scope alignment the final-answer gate no longer falls
+// back to git changed files: a preserved code continuation whose dirty files
+// are only visible via git (no patch transaction) has an empty gate scope.
+func TestRuntimeGateFinalAnswerDoesNotUseGitFallbackForPreservedCodeContinuation(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	original := "main.go 버그를 수정해"
@@ -782,8 +785,8 @@ func TestRuntimeGateFinalAnswerUsesGitFallbackForPreservedCodeContinuation(t *te
 
 	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
 
-	if !slices.Equal(ledger.ChangedPaths, []string{"main.go"}) {
-		t.Fatalf("expected preserved code continuation to use git changed fallback, got %#v", ledger.ChangedPaths)
+	if len(ledger.ChangedPaths) != 0 {
+		t.Fatalf("expected preserved code continuation not to use git changed fallback, got %#v", ledger.ChangedPaths)
 	}
 	if ledger.Status != runtimeGateStatusReady || !ledger.Ready {
 		t.Fatalf("expected reviewed preserved code continuation to be ready, got %#v", ledger)
@@ -1008,7 +1011,7 @@ func TestRuntimeGateAmbientVerificationFailureIsWarningNotBlocker(t *testing.T) 
 	}}
 	session.PatchTransactions = []PatchTransaction{{
 		ID:            "patch-tx-dll",
-		Goal:          "DllInjectionFiltering",
+		Goal:          "TavernKernel/FileFilter.cpp 에 DllInjectionFiltering 구조를 구현해",
 		Status:        patchTransactionStatusCommitted,
 		WorkspaceRoot: root,
 		StartedAt:     now.Add(-time.Minute),
@@ -1643,6 +1646,23 @@ func TestRuntimeGateStatusOutputShowsRecoveryCommand(t *testing.T) {
 		Role: "user",
 		Text: "main.go를 수정해",
 	}}
+	// The final-answer gate uses the tracked patch scope only (2026-07-21), so
+	// the fixture records the edit in a current-turn patch transaction.
+	session.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-tx-status",
+		Goal:      "main.go를 수정해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-status-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "modify",
+			}},
+		}},
+	}}
 	var output bytes.Buffer
 	rt := &runtimeState{
 		writer:  &output,
@@ -1785,6 +1805,27 @@ func TestHooksStatusIncludesRuntimeGateSummary(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
+	// The final-answer gate uses the tracked patch scope only (2026-07-21), so
+	// the fixture records the edit in a current-turn patch transaction.
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "main.go를 수정해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-tx-hooks",
+		Goal:      "main.go를 수정해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-hooks-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "modify",
+			}},
+		}},
+	}}
 	var output bytes.Buffer
 	rt := &runtimeState{
 		writer:  &output,
@@ -2034,6 +2075,27 @@ func TestRuntimeGateStatusPrintsBlockScopeForStalenessOnly(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"UserCommon.h"})
 	session := NewSession(root, "provider", "model", "", "default")
+	// The final-answer gate uses the tracked patch scope only (2026-07-21), so
+	// the fixture records the dirty file in a current-turn patch transaction.
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "UserCommon.h를 수정해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-tx-usercommon",
+		Goal:      "UserCommon.h를 수정해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-usercommon-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "UserCommon.h",
+				Operation: "modify",
+			}},
+		}},
+	}}
 	session.LastReviewRun = &ReviewRun{
 		ID:                "review-stale",
 		SchemaVersion:     reviewSchemaVersion,
