@@ -606,6 +606,15 @@ func toolCallResponse(name string, args map[string]any) ChatResponse {
 	}
 }
 
+// turnPlanAnnounceReply satisfies the optional tool-less turn-orientation
+// preflight so scripted provider tests do not consume their first real reply.
+func turnPlanAnnounceReply() ChatResponse {
+	return ChatResponse{
+		Message:    Message{Role: "assistant", Text: "I'll inspect and update the target files."},
+		StopReason: "stop",
+	}
+}
+
 func TestAgentRunsParallelSafeReadOnlyToolCallsConcurrently(t *testing.T) {
 	root := t.TempDir()
 	tool := &parallelBarrierTool{name: "readonly_parallel"}
@@ -6554,6 +6563,7 @@ func TestAgentPromptsRereadAfterEditTargetMismatch(t *testing.T) {
 	}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
+			turnPlanAnnounceReply(),
 			toolCallResponse("replace_in_file", map[string]any{
 				"path":    "completion.go",
 				"search":  "missing",
@@ -6581,25 +6591,32 @@ func TestAgentPromptsRereadAfterEditTargetMismatch(t *testing.T) {
 	if reply != "I need to re-read the file before editing it." {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
-	if len(provider.requests) != 2 {
-		t.Fatalf("expected a follow-up turn after edit target mismatch, got %d", len(provider.requests))
+	if len(provider.requests) < 3 {
+		t.Fatalf("expected turn-plan + mismatch + follow-up turns, got %d", len(provider.requests))
 	}
-	lastTurn := provider.requests[1]
-	if len(lastTurn.Messages) == 0 {
-		t.Fatalf("expected reread guidance before second turn")
+	foundGuidance := false
+	for _, req := range provider.requests[1:] {
+		for _, msg := range req.Messages {
+			if msg.Role == "user" && strings.Contains(msg.Text, "First read the exact file again from the same path") {
+				foundGuidance = true
+				if !strings.Contains(msg.Text, "expected/current context diagnostics") {
+					t.Fatalf("expected mismatch diagnostic guidance, got %#v", msg)
+				}
+				if !strings.Contains(msg.Text, "Do not repeat or lightly reformat the previous patch text") {
+					t.Fatalf("expected previous patch reuse warning, got %#v", msg)
+				}
+				if !strings.Contains(msg.Text, "multiple related hunks or files") {
+					t.Fatalf("expected cohesive root-repair guidance, got %#v", msg)
+				}
+				break
+			}
+		}
+		if foundGuidance {
+			break
+		}
 	}
-	lastMessage := lastTurn.Messages[len(lastTurn.Messages)-1]
-	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "First read the exact file again from the same path") {
-		t.Fatalf("expected reread guidance, got %#v", lastMessage)
-	}
-	if !strings.Contains(lastMessage.Text, "tool error's expected/current context diagnostics") {
-		t.Fatalf("expected mismatch diagnostic guidance, got %#v", lastMessage)
-	}
-	if !strings.Contains(lastMessage.Text, "Do not repeat or lightly reformat the previous patch text") {
-		t.Fatalf("expected previous patch reuse warning, got %#v", lastMessage)
-	}
-	if !strings.Contains(lastMessage.Text, "multiple related hunks or files") {
-		t.Fatalf("expected cohesive root-repair guidance, got %#v", lastMessage)
+	if !foundGuidance {
+		t.Fatalf("expected reread guidance after edit target mismatch, got %#v", provider.requests)
 	}
 }
 
@@ -6610,6 +6627,7 @@ func TestAgentAllowsCohesiveApplyPatchAfterEditTargetMismatchReanchor(t *testing
 	}
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
+			turnPlanAnnounceReply(),
 			toolCallResponse("apply_patch", map[string]any{
 				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// stale attempt\n*** End Patch\n",
 			}),
@@ -6663,6 +6681,7 @@ func TestAgentBlocksImmediateApplyPatchAfterEditTargetMismatchUntilReanchor(t *t
 	broadPatch := "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// first broad hunk\n*** Add File: other.go\n+package main\n*** End Patch\n"
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
+			turnPlanAnnounceReply(),
 			toolCallResponse("apply_patch", map[string]any{
 				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// stale attempt\n*** End Patch\n",
 			}),
@@ -11126,6 +11145,7 @@ func TestAgentReanchorEarnsAnotherEditAttemptAfterMismatch(t *testing.T) {
 	// tool-budget cap still bounds the loop, so this stays deadlock-safe.
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
+			turnPlanAnnounceReply(),
 			toolCallResponse("replace_in_file", map[string]any{"path": "main.go", "search": "missing", "replace": "present"}),
 			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
 			toolCallResponse("replace_in_file", map[string]any{"path": "main.go", "search": "missing", "replace": "present"}),

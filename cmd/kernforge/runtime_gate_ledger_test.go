@@ -1928,20 +1928,24 @@ func TestRuntimeGateRecoveryGuidanceLinesForStaleBlock(t *testing.T) {
 	}
 	joined := strings.Join(ko, "\n")
 	if !strings.Contains(joined, "완료·커밋") ||
-		!strings.Contains(joined, "번호로 고르면") ||
+		!strings.Contains(joined, "지금은 편집") ||
+		!strings.Contains(joined, "선택지") ||
+		strings.Contains(joined, "번호로 고르면") ||
 		strings.Contains(joined, "/review") ||
 		strings.Contains(joined, "/gate clear") ||
 		strings.Contains(joined, "/status") {
-		t.Fatalf("korean recovery CTA should be command-free:\n%s", joined)
+		t.Fatalf("korean recovery CTA should say what to do now (no phantom numbers/commands):\n%s", joined)
 	}
 
 	en := runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(false)}, nil, ledger)
 	joinedEN := strings.Join(en, "\n")
-	if !strings.Contains(joinedEN, "numbered option") ||
+	if !strings.Contains(joinedEN, "keep editing") ||
+		!strings.Contains(joinedEN, "choices appear") ||
 		!strings.Contains(joinedEN, "Completion and git write") ||
+		strings.Contains(joinedEN, "numbered option") ||
 		strings.Contains(joinedEN, "/review") ||
 		strings.Contains(joinedEN, "/gate clear") {
-		t.Fatalf("english recovery CTA should be command-free:\n%s", joinedEN)
+		t.Fatalf("english recovery CTA should say what to do now (no phantom numbers/commands):\n%s", joinedEN)
 	}
 
 	// Ready gate must stay silent.
@@ -2008,10 +2012,12 @@ func TestPrintOperatorFooterShowsRecoveryWhenGateBlocked(t *testing.T) {
 		t.Fatalf("everyday footer must not include gate: pill, got:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "WARN") ||
-		!strings.Contains(rendered, "번호로 고르면") ||
+		!strings.Contains(rendered, "지금은 편집") ||
+		!strings.Contains(rendered, "선택지") ||
+		strings.Contains(rendered, "번호로 고르면") ||
 		strings.Contains(rendered, "/review") ||
 		strings.Contains(rendered, "/gate clear") {
-		t.Fatalf("expected command-free blocked CTA in footer, got:\n%s", rendered)
+		t.Fatalf("expected actionable command-free blocked CTA in footer, got:\n%s", rendered)
 	}
 }
 

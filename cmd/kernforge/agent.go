@@ -1987,6 +1987,27 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					turnRuntime.Counters.RepeatedToolCallRecoveryTurns = 0
 				}
 				if lastToolCallSignatureCount >= repeatedToolCallAbortThreshold {
+					// Document/analysis deliverables: one automatic push toward
+					// write_file/apply_patch instead of opening a stall card that
+					// looks like total failure while evidence may already be enough.
+					if maybePushAnalysisDeliverableInsteadOfReadChurnAbort(a, analysisOnlyTurn, documentDeliverableTurn, &analysisDeliverableWritePushed, readChurnSeenPaths, resp.Message.ToolCalls, turnCount) {
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:      RuntimeInterventionRepeatedTool,
+							Reason:    "repeated identical tool calls reached abort; switched document/analysis turn to write the deliverable",
+							Guidance:  "write the answer/document from gathered evidence",
+							ToolCalls: resp.Message.ToolCalls,
+							Count:     lastToolCallSignatureCount,
+							Iteration: turnCount,
+						})
+						lastToolCallSignature = ""
+						lastToolCallSignatureCount = 0
+						turnRuntime.Counters.RepeatedToolCallNudges = 0
+						turnRuntime.Counters.RepeatedToolCallRecoveryTurns = 0
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
 					baseReply := operatorStallBaseReply(a.Config, harnessRecoveryCauseRepeatedToolCalls, lastToolCallSummary)
 					reply := a.finalizeOperatorStallReply(harnessRecoveryCauseRepeatedToolCalls, baseReply, nil)
 					recordRuntimeIntervention(RuntimeIntervention{
@@ -3714,11 +3735,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				(editTargetMismatchReanchorTool(call) || editToolIsWholeFileRewrite(call.Name)) {
 				editTargetMismatchRequiresReanchor = false
 				editTargetMismatchReanchorBlocks = 0
-				delete(disabledTools, "replace_in_file")
-				// Document turns may have disabled apply_patch after mismatch; restore
-				// once the workspace was re-anchored or fully rewritten.
 				if editToolIsWholeFileRewrite(call.Name) {
+					// Whole-file rewrite is the document escape hatch: restore both
+					// context-edit tools only after write_file lands.
+					delete(disabledTools, "replace_in_file")
 					delete(disabledTools, "apply_patch")
+				} else if !documentDeliverableTurn {
+					// Non-doc turns may resume replace_in_file after a fresh read.
+					// Document turns keep apply_patch/replace_in_file disabled until
+					// write_file so reanchor cannot reopen the weak context tool.
+					delete(disabledTools, "replace_in_file")
 				}
 			}
 			if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -4033,6 +4059,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					return reply, nil
 				}
+				// Every mismatch (not only the first) requires a fresh reanchor
+				// before another context edit, so the failure budget cannot be
+				// burned by consecutive guesses that skip re-reading.
+				editTargetMismatchRequiresReanchor = true
 				if editTargetMismatchFailures == maxEditTargetMismatchFailuresPerTurn {
 					// The next mismatch ends the turn, so steer the model off the
 					// context-patch strategy while it still has one attempt left.
@@ -4093,7 +4123,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: document context patch mismatched; use write_file with the complete final content.")
 				} else {
 					disabledTools["replace_in_file"] = true
-					a.Session.AddMessage(internalUserMessage("Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. After that re-anchor, build a cohesive standalone apply_patch against the current workspace state. The patch may include multiple related hunks or files when that is the smallest complete repair for the root cause; do not split only because the previous attempt mismatched. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing. If the edit's goal is to rewrite most or all of the file, prefer write_file with the complete final content over another context patch; it does not depend on matching stale context and passes the same review gates."))
+					a.Session.AddMessage(internalUserMessage("Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path and confirm the current contents. The tool error includes expected/current context diagnostics when available—use those lines, or copy exact lines from the fresh read, when rebuilding the edit. After that re-anchor, build a cohesive standalone apply_patch against the current workspace state. The patch may include multiple related hunks or files when that is the smallest complete repair for the root cause; do not split only because the previous attempt mismatched. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing. If the edit's goal is to rewrite most or all of the file, prefer write_file with the complete final content over another context patch; it does not depend on matching stale context and passes the same review gates."))
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response targeted stale file contents; retry from the next model turn.")
 				}
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -4308,6 +4338,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					editTargetMismatchFailures = 0
 					editTargetMismatchRetries = 0
 					editTargetMismatchReanchorBlocks = 0
+					editTargetMismatchRequiresReanchor = false
+					// Document turns keep context-edit tools disabled after a
+					// mismatch until write_file lands. Do not reopen them on a
+					// successful apply_edit_proposal / other non-rewrite edit.
+					if !documentDeliverableTurn || editToolIsWholeFileRewrite(call.Name) {
+						delete(disabledTools, "replace_in_file")
+						delete(disabledTools, "apply_patch")
+					}
 					// D-B: count genuine workspace mutations so the rotating-reread
 					// detector can distinguish real progress from non-mutating
 					// non-read tool batches (failing git_status/git_diff, etc.).
@@ -9564,7 +9602,7 @@ func editTargetMismatchDocumentWriteFileGuidance(cfg Config, appliedPaths []stri
 // still has an attempt left. write_file is the escape hatch for whole-file
 // rewrites because it does not depend on reproducing stale context and still
 // passes the same pre-write review and preview gates.
-const editTargetMismatchWriteFileEscalationGuidance = "The edit mismatched again even after a refresh, and the next mismatch stops this turn. Change strategy now instead of resending another context patch: re-read the target file first, then either (a) copy the exact current lines from that fresh read into one narrow apply_patch hunk, or (b) if the goal is to rewrite most or all of the file, submit the complete final file content in a single write_file call. write_file does not depend on matching stale context and passes the same pre-write review and preview gates. Do not resend the previous patch text with cosmetic changes."
+const editTargetMismatchWriteFileEscalationGuidance = "The edit mismatched again even after a refresh, and the next mismatch stops this turn. Change strategy now instead of resending another context patch: re-read the target file first, then either (a) copy the exact current lines from that fresh read (or from the tool error's expected/current context diagnostics) into one narrow apply_patch hunk, or (b) if the goal is to rewrite most or all of the file, submit the complete final file content in a single write_file call. write_file does not depend on matching stale context and passes the same pre-write review and preview gates. Do not resend the previous patch text with cosmetic changes."
 
 func editTargetMismatchReanchorRequiredResult(call ToolCall) ToolExecutionResult {
 	args := toolCallArgumentsMap(call)

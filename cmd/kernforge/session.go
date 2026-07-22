@@ -106,6 +106,10 @@ type Session struct {
 	// review for runtime-gate attachment. Workspace-scoped dismissals live in
 	// .kernforge/runtime_gate_dismissal.json and are used when this is nil.
 	RuntimeGateDismissal *RuntimeGateDismissal `json:"runtime_gate_dismissal,omitempty"`
+	// RuntimeGateClearedReview holds the LastReviewRun removed by /gate clear so
+	// /gate restore can re-attach it in this session without depending on disk
+	// auto-inheritance (which no longer exists).
+	RuntimeGateClearedReview *ReviewRun `json:"runtime_gate_cleared_review,omitempty"`
 	ActiveFailureRepair            *FailureRepairAttempt           `json:"active_failure_repair,omitempty"`
 	FailureRepairAttempts          []FailureRepairAttempt          `json:"failure_repair_attempts,omitempty"`
 	LastSelection                  *ViewerSelection                `json:"last_selection,omitempty"`

@@ -15,10 +15,10 @@ const (
 	runtimeGateDismissalFileName       = "runtime_gate_dismissal.json"
 )
 
-// RuntimeGateDismissal records an explicit operator decision to stop a prior
-// review from blocking the runtime gate. Artifacts on disk are kept; only gate
-// attachment is suppressed until a newer review is recorded or the dismissal is
-// restored.
+// RuntimeGateDismissal records an explicit operator decision to stop this
+// session's review from blocking the runtime gate. Artifacts on disk are kept;
+// only gate attachment is suppressed until a newer review is recorded or the
+// dismissal is restored. New sessions never auto-inherit disk latest.json.
 type RuntimeGateDismissal struct {
 	ClearedAt   time.Time `json:"cleared_at,omitempty"`
 	ReviewRunID string    `json:"review_run_id,omitempty"`
@@ -43,9 +43,9 @@ func (d *RuntimeGateDismissal) Normalize() {
 	case runtimeGateDismissalScopeSession, runtimeGateDismissalScopeWorkspace:
 	default:
 		if d.Scope == "" {
-			d.Scope = runtimeGateDismissalScopeWorkspace
+			d.Scope = runtimeGateDismissalScopeSession
 		} else {
-			d.Scope = runtimeGateDismissalScopeWorkspace
+			d.Scope = runtimeGateDismissalScopeSession
 		}
 	}
 	if !d.IgnoreReviewUntilNewer {
@@ -174,7 +174,7 @@ func runtimeGateReviewIsDismissed(root string, session *Session, review ReviewRu
 }
 
 // noteRuntimeGateDismissalAfterReview clears an active dismissal once a newer
-// review id is recorded, so /gate clear only drops prior baggage.
+// review id is recorded, so /gate clear only drops the prior review in this session.
 func noteRuntimeGateDismissalAfterReview(root string, session *Session, run ReviewRun) {
 	newID := strings.TrimSpace(run.ID)
 	if newID == "" {
@@ -221,11 +221,11 @@ func (rt *runtimeState) handleGateCommand(args string) error {
 
 func (rt *runtimeState) printGateCommandUsage() {
 	fmt.Fprintln(rt.writer, rt.ui.infoLine(localizedText(rt.cfg,
-		"Usage: /gate status | /gate clear [--session] [--reason <text>] | /gate restore",
-		"사용법: /gate status | /gate clear [--session] [--reason <텍스트>] | /gate restore")))
+		"Usage: /gate status | /gate clear [--workspace] [--reason <text>] | /gate restore",
+		"사용법: /gate status | /gate clear [--workspace] [--reason <텍스트>] | /gate restore")))
 	fmt.Fprintln(rt.writer, rt.ui.hintLine(localizedText(rt.cfg,
-		"/gate clear stops a previous review from blocking completion/git write. It does not delete review files. A new /review replaces the dismissal automatically.",
-		"/gate clear는 이전 리뷰가 완료·git write를 막지 않게 합니다. 리뷰 파일은 삭제하지 않습니다. 새 /review가 실행되면 dismissal은 자동으로 끝납니다.")))
+		"/gate clear dismisses this session's review from the runtime gate (default: session). It does not delete review files. A new /review replaces the dismissal automatically. New sessions never inherit prior reviews.",
+		"/gate clear는 이 세션의 리뷰를 런타임 게이트에서 해제합니다(기본: session). 리뷰 파일은 삭제하지 않습니다. 새 /review가 실행되면 dismissal은 자동으로 끝납니다. 새 세션은 이전 리뷰를 상속하지 않습니다.")))
 }
 
 func (rt *runtimeState) printGateCommandStatus() error {
@@ -257,11 +257,11 @@ func (rt *runtimeState) printGateCommandStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.subsection("Gate Dismissal"))
 	if dismissal == nil || !dismissal.Active() {
 		fmt.Fprintln(rt.writer, rt.ui.hintLine(localizedText(rt.cfg,
-			"No active /gate clear. Previous reviews can still block completion/git write when stale.",
-			"활성 /gate clear 없음. 이전 리뷰가 stale이면 완료·git write를 계속 막을 수 있습니다.")))
+			"No active /gate clear. This session's review can still block completion/git write when stale.",
+			"활성 /gate clear 없음. 이 세션의 리뷰가 stale이면 완료·git write를 계속 막을 수 있습니다.")))
 		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", localizedText(rt.cfg,
-			"/gate clear - dismiss previous-session gate baggage",
-			"/gate clear - 이전 세션 게이트 부담 해제")))
+			"/gate clear - dismiss this session's review from the gate",
+			"/gate clear - 이 세션 리뷰를 게이트에서 해제")))
 		return nil
 	}
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("dismissal", "active"))
@@ -285,7 +285,10 @@ func (rt *runtimeState) clearRuntimeGate(args []string) error {
 	if rt == nil || rt.session == nil {
 		return fmt.Errorf("no active session")
 	}
-	scope := runtimeGateDismissalScopeWorkspace
+	// Default session-scoped: new chats never inherit disk reviews, so clear
+	// mainly affects this session's LastReviewRun. --workspace remains for
+	// operators who still want a workspace dismissal file.
+	scope := runtimeGateDismissalScopeSession
 	reason := ""
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
@@ -300,7 +303,7 @@ func (rt *runtimeState) clearRuntimeGate(args []string) error {
 				continue
 			}
 			if i+1 >= len(args) {
-				return fmt.Errorf("usage: /gate clear [--session] [--reason <text>]")
+				return fmt.Errorf("usage: /gate clear [--workspace] [--reason <text>]")
 			}
 			// Remainder after --reason is free text (may contain spaces).
 			reason = strings.TrimSpace(strings.Join(args[i+1:], " "))
@@ -309,24 +312,22 @@ func (rt *runtimeState) clearRuntimeGate(args []string) error {
 			rt.printGateCommandUsage()
 			return nil
 		default:
-			return fmt.Errorf("unknown /gate clear argument %q; use --session or --reason", arg)
+			return fmt.Errorf("unknown /gate clear argument %q; use --workspace or --reason", arg)
 		}
 	}
 
 	root := rt.runtimeGateWorkspaceRoot()
 	review, hasReview := runtimeGateReviewRun(root, rt.session, nil)
-	// If the only thing available is already dismissed, still refresh timestamps.
-	if !hasReview {
-		if latest, _, ok, err := loadLatestReviewRun(root); err == nil && ok {
-			review = latest
-			hasReview = strings.TrimSpace(latest.ID) != ""
-		}
+	if !hasReview && rt.session.LastReviewRun != nil {
+		// LastReviewRun may already be dismissed; still clear that pointer.
+		review = *rt.session.LastReviewRun
+		hasReview = strings.TrimSpace(review.ID) != ""
 	}
-	if !hasReview && (rt.session.LastReviewRun == nil) &&
+	if !hasReview &&
 		(rt.session.RuntimeGateLedger == nil || len(rt.session.RuntimeGateLedger.Blockers) == 0) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine(localizedText(rt.cfg,
-			"No previous review is currently attached to the runtime gate.",
-			"현재 런타임 게이트에 붙어 있는 이전 리뷰가 없습니다.")))
+			"No review is currently attached to this session's runtime gate.",
+			"현재 이 세션의 런타임 게이트에 붙어 있는 리뷰가 없습니다.")))
 		return nil
 	}
 
@@ -344,13 +345,16 @@ func (rt *runtimeState) clearRuntimeGate(args []string) error {
 		dismissal.ReviewCreatedAt = rt.session.LastReviewRun.CreatedAt
 	}
 	if dismissal.Reason == "" {
-		dismissal.Reason = "operator cleared previous-session runtime gate"
+		dismissal.Reason = "operator cleared this session's runtime gate"
 	}
 	dismissal.Normalize()
 
-	// Drop session-local pointers that re-surface the dismissed review.
+	// Drop session-local pointers that re-surface the dismissed review
+	// (final_gate reads LastReviewRun without the dismissal check).
 	if rt.session.LastReviewRun != nil &&
 		(dismissal.ReviewRunID == "" || strings.EqualFold(rt.session.LastReviewRun.ID, dismissal.ReviewRunID)) {
+		cleared := *rt.session.LastReviewRun
+		rt.session.RuntimeGateClearedReview = &cleared
 		rt.session.LastReviewRun = nil
 	}
 	rt.session.RuntimeGateLedger = nil
@@ -380,15 +384,15 @@ func (rt *runtimeState) clearRuntimeGate(args []string) error {
 	// Refresh ledger after dismissal so the operator sees the new state.
 	ledger := rt.runtimeGateLedgerForStatus(runtimeGateActionFinalAnswer)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(localizedText(rt.cfg,
-		"Cleared previous runtime gate baggage.",
-		"이전 런타임 게이트 부담을 해제했습니다.")))
+		"Cleared this session's runtime gate review.",
+		"이 세션의 런타임 게이트 리뷰를 해제했습니다.")))
 	if dismissal.ReviewRunID != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("dismissed_review", dismissal.ReviewRunID))
 	}
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("scope", dismissal.Scope))
 	fmt.Fprintln(rt.writer, rt.ui.hintLine(localizedText(rt.cfg,
-		"Review files were kept. Run /review before claiming completion or write-side git if you want a fresh gate. /gate restore re-enables the dismissed review.",
-		"리뷰 파일은 유지됩니다. 완료·git write 전에 다시 게이트하려면 /review를 실행하세요. /gate restore로 해제를 되돌릴 수 있습니다.")))
+		"Review files were kept. Run /review in this session before claiming completion or write-side git if you want a fresh gate. /gate restore re-attaches the dismissed review to this session.",
+		"리뷰 파일은 유지됩니다. 이 세션에서 완료·git write 전에 다시 게이트하려면 /review를 실행하세요. /gate restore로 해제한 리뷰를 이 세션에 다시 붙일 수 있습니다.")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV(localizedText(rt.cfg, "gate", "게이트"), runtimeGateStatusSummaryLocalized(rt.cfg, ledger)))
 	if runtimeGateNeedsRecoveryGuidance(ledger) {
 		rt.printRuntimeGateRecoveryGuidance(ledger)
@@ -412,20 +416,52 @@ func (rt *runtimeState) restoreRuntimeGate(args []string) error {
 		}
 	}
 	root := rt.runtimeGateWorkspaceRoot()
+	priorDismissal := effectiveRuntimeGateDismissal(root, rt.session)
 	hadSession := rt.session.RuntimeGateDismissal != nil
-	rt.session.RuntimeGateDismissal = nil
 	hadWorkspace := false
 	if existing, err := loadWorkspaceRuntimeGateDismissal(root); err == nil && existing != nil {
 		hadWorkspace = true
-		if err := clearWorkspaceRuntimeGateDismissal(root); err != nil {
-			return err
-		}
 	}
 	if !hadSession && !hadWorkspace {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine(localizedText(rt.cfg,
 			"No /gate clear dismissal was active.",
 			"활성 /gate clear dismissal이 없습니다.")))
 		return nil
+	}
+
+	// Re-attach before clearing dismissal. If we cannot, leave dismissal intact
+	// so the operator is not told restore succeeded with an empty gate.
+	if rt.session.LastReviewRun == nil {
+		var restored *ReviewRun
+		if rt.session.RuntimeGateClearedReview != nil &&
+			(priorDismissal == nil || priorDismissal.ReviewRunID == "" ||
+				strings.EqualFold(rt.session.RuntimeGateClearedReview.ID, priorDismissal.ReviewRunID)) {
+			copyRun := *rt.session.RuntimeGateClearedReview
+			restored = &copyRun
+		} else if priorDismissal != nil {
+			if run, ok := loadReviewRunForGateRestore(root, priorDismissal.ReviewRunID); ok {
+				copyRun := run
+				restored = &copyRun
+			}
+		}
+		if restored == nil {
+			id := ""
+			if priorDismissal != nil {
+				id = strings.TrimSpace(priorDismissal.ReviewRunID)
+			}
+			if id == "" {
+				return fmt.Errorf("cannot restore runtime gate: dismissed review is not available in this session or on disk; run /review instead")
+			}
+			return fmt.Errorf("cannot restore runtime gate: dismissed review %q is not available in this session or on disk; run /review instead", id)
+		}
+		rt.session.LastReviewRun = restored
+	}
+	rt.session.RuntimeGateClearedReview = nil
+	rt.session.RuntimeGateDismissal = nil
+	if hadWorkspace {
+		if err := clearWorkspaceRuntimeGateDismissal(root); err != nil {
+			return err
+		}
 	}
 	if rt.store != nil {
 		if err := rt.store.Save(rt.session); err != nil {
@@ -434,13 +470,39 @@ func (rt *runtimeState) restoreRuntimeGate(args []string) error {
 	}
 	ledger := rt.runtimeGateLedgerForStatus(runtimeGateActionFinalAnswer)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(localizedText(rt.cfg,
-		"Restored runtime gate checks against the latest review.",
-		"최신 리뷰에 대한 런타임 게이트 검사를 복구했습니다.")))
+		"Restored this session's runtime gate checks against the dismissed review.",
+		"해제한 리뷰로 이 세션의 런타임 게이트 검사를 복구했습니다.")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV(localizedText(rt.cfg, "gate", "게이트"), runtimeGateStatusSummaryLocalized(rt.cfg, ledger)))
 	if runtimeGateNeedsRecoveryGuidance(ledger) {
 		rt.printRuntimeGateRecoveryGuidance(ledger)
 	}
 	return nil
+}
+
+// loadReviewRunForGateRestore loads a review for an explicit /gate restore.
+// Prefer the per-run artifact, then latest.json when the id matches.
+func loadReviewRunForGateRestore(root, reviewID string) (ReviewRun, bool) {
+	reviewID = strings.TrimSpace(reviewID)
+	if strings.TrimSpace(root) == "" {
+		return ReviewRun{}, false
+	}
+	if reviewID != "" {
+		path := filepath.Join(reviewRunDir(root, reviewID), "review.json")
+		if data, err := os.ReadFile(path); err == nil {
+			var run ReviewRun
+			if json.Unmarshal(data, &run) == nil && strings.TrimSpace(run.ID) != "" {
+				return run, true
+			}
+		}
+	}
+	latest, _, ok, err := loadLatestReviewRun(root)
+	if err != nil || !ok || strings.TrimSpace(latest.ID) == "" {
+		return ReviewRun{}, false
+	}
+	if reviewID == "" || strings.EqualFold(latest.ID, reviewID) {
+		return latest, true
+	}
+	return ReviewRun{}, false
 }
 
 func (rt *runtimeState) runtimeGateWorkspaceRoot() string {

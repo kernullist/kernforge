@@ -8808,6 +8808,12 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		rt.session.Messages = nil
 		rt.session.Summary = ""
 		rt.session.ClearSharedPlan()
+		// Match other coding agents: a new chat does not keep prior review/gate policy.
+		rt.session.LastReviewRun = nil
+		rt.session.RuntimeGateDismissal = nil
+		rt.session.RuntimeGateClearedReview = nil
+		rt.session.RuntimeGateLedger = nil
+		rt.session.PendingHarnessBlockedRecovery = nil
 		_ = rt.store.Save(rt.session)
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Conversation cleared"))
 	case "compact":

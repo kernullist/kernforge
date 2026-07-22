@@ -1359,7 +1359,7 @@ func looksLikeDocumentArtifactOutputRequest(text string) bool {
 	)
 	hasOutputVerb := containsAny(lower,
 		"author ", "create ", "draft ", "generate ", "prepare ", "save ", "write ",
-		"작성", "만들", "생성", "저장", "초안",
+		"작성", "만들", "생성", "저장", "초안", "보강", "보완",
 	)
 	// A concrete .md/.markdown path is an OUTPUT sink only when paired with an
 	// authoring/save verb ("BugReport.md로 생성", "save as notes.md").
@@ -1768,7 +1768,8 @@ func looksLikeDocumentAuthoringIntent(text string) bool {
 	}
 	return containsAny(lower,
 		"add ", "author ", "create ", "draft ", "generate ", "prepare ", "revise ", "update ", "write ",
-		"작성", "만들", "생성", "업데이트", "정리", "초안", "추가",
+		"improve the document", "update the documentation", "update the document", "reinforce ",
+		"작성", "만들", "생성", "업데이트", "정리", "초안", "추가", "보강", "보완",
 	)
 }
 

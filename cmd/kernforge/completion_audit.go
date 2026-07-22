@@ -770,25 +770,21 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 		})
 		return
 	}
+	// Session-scoped only: do not inherit workspace latest.json from a prior session.
 	var review *ReviewRun
 	if session != nil && session.LastReviewRun != nil {
 		copyRun := *session.LastReviewRun
 		review = &copyRun
 	}
 	if review == nil {
-		if latest, _, ok, err := loadLatestReviewRun(root); err == nil && ok {
-			review = &latest
-		}
-	}
-	if review == nil {
 		status := completionAuditStatusWarning
-		evidence := "No common review harness run is recorded."
+		evidence := "No review run is recorded in this session."
 		if len(artifact.ChangedFiles) == 0 {
 			status = completionAuditStatusPassed
 			evidence = "No changed files detected and no review run is required."
 		} else if session != nil && session.LastVerification != nil && completionAuditVerificationStatus(*session.LastVerification, artifact.ChangedFiles) == completionAuditStatusPassed {
 			status = completionAuditStatusPassed
-			evidence = "No common review run is recorded, but latest verification passed; run /review for an explicit typed gate before git writes."
+			evidence = "No review run is recorded in this session, but latest verification passed; run /review for an explicit typed gate before git writes."
 		}
 		completionAuditAddItem(artifact, CompletionAuditItem{
 			Requirement: "Latest review is missing",

@@ -4,6 +4,33 @@
 
 ## 2026-07-22
 
+### 런타임 게이트를 세션 스코프로 전환 (cross-session attach 제거)
+
+- Cursor/Claude Code/Codex와 같이: 새 세션은 `.kernforge/reviews/latest.json`을 게이트에 자동 부착하지 않음. 이 세션의 `LastReviewRun`(또는 명시 provided 리뷰)만 게이트 입력.
+- `completionAuditReviewGate`도 동일하게 디스크 latest 폴백 제거.
+- `/clear` `/reset` `/new`는 대화뿐 아니라 `LastReviewRun`·세션 gate dismissal/ledger·pending recovery를 비움.
+- `/gate clear` 기본 scope를 session으로 변경. `/gate restore`는 해제한 리뷰를 **이 세션에만** 다시 붙임. 리뷰 파일은 히스토리로 유지.
+- 리뷰 수정: `/gate restore`가 리뷰를 다시 못 붙여도 성공으로 보이던 문제 — clear 시 세션에 리뷰를 stash하고, 복구 불가 시 dismissal을 유지한 채 실패.
+- 리뷰 수정: 문서 턴에서 mismatch 후 성공한 non-`write_file` 편집이 `replace_in_file`/`apply_patch`를 다시 열던 경로 차단.
+
+### 게이트 Everyday WARN CTA 명확화
+
+- 비ready gate footer가 “번호로 고르면 됩니다”라고만 말해, 화면에 선택지가 없는 상태(세션 시작·status)에서 사용자가 다음에 할 일을 알 수 없던 문제를 고침.
+- CTA를 “지금은 편집·읽기·분석 가능 / 완료·커밋을 시도하면 선택지(리뷰 갱신·이번만 무시 등)”로 바꿈. 슬래시 커맨드 광고는 계속 없음.
+
+### 문서 보강 요청의 repeated-tool stall 루프 수정
+
+- `보강`/`보완`/`improve the document` 등을 document-authoring 동사에 맞춰 stall helper와 envelope/RF-001 분류를 정렬.
+- 문서가 산출물이고 코드·소스 경로가 없을 때 bare `수정해`/`문제점 … 수정해서 문서를 보강`을 code-fix / `review_then_modify`로 보지 않음 (`코드를 수정`·`main.go 수정`은 유지).
+- document/analysis 턴에서 identical tool signature가 abort threshold에 도달하면 stall 카드 전에 `write_file`/`apply_patch` guidance를 한 번 push. 이미 push했거나 non-doc이면 기존 stall 카드.
+
+### edit target mismatch 복구 루프 수정
+
+- `replace_in_file` mismatch 시 path만 던지던 에러에 apply_patch급 진단(expected lines / ambiguous candidates / current content window)을 붙임. 모호 매칭은 `not found`로 접지 않고 `ambiguous`로 구분.
+- 문서 산출 턴(`문서를 보강` 등)에서 context patch mismatch 후 reanchor(`read_file` 등)로 `replace_in_file`/`apply_patch`를 다시 열지 않음. `write_file` 성공 시에만 복원.
+- 매 mismatch마다 reanchor를 다시 강제해, 재확인 없이 context edit를 연타하며 실패 예산만 태우는 경로를 막음.
+- mismatch recovery guidance는 tool error 진단이 있으면 그걸 쓰고, 없으면 방금 읽은 exact lines를 복사하도록 맞춤.
+
 ### 스트림 최종 답 중복 출력 제거
 
 - `printAssistant`가 스트림 flush **이후**에 dedup하도록 순서를 바꿈. 기존에는 dedup 통과 후 flush하면서 동일 본문이 두 번(`>> assistant` 블록 2개) 찍혔다.

@@ -439,13 +439,56 @@ func requestLooksLikePureDocumentAuthoring(request string) bool {
 	}
 	return containsAny(lower,
 		"add ", "author ", "create ", "draft ", "generate ", "prepare ", "revise ", "update ", "write ", "refresh ",
-		"작성", "만들", "생성", "업데이트", "최신화", "정리", "초안", "추가",
+		"improve the document", "update the documentation", "update the document", "reinforce ",
+		"작성", "만들", "생성", "업데이트", "최신화", "정리", "초안", "추가", "보강", "보완",
 	)
+}
+
+// requestHasExplicitCodeOrSourceTarget reports an explicit order to change source
+// code (code nouns or a named source-file extension), as opposed to repair verbs
+// used only as connective language toward a document deliverable.
+func requestHasExplicitCodeOrSourceTarget(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower,
+		"in the code", "in code", "source code", "change the code", "edit the code", "modify the code",
+		"the code ", "코드를", "코드에", "코드 수정", "코드도", "코드와", "코드도 ", "소스를", "소스에", "소스 코드",
+		"구현해", "패치해",
+	) {
+		return true
+	}
+	return containsAny(lower, sourceCodeFileExtensionTokens...)
+}
+
+// requestIsDocumentPrimaryWithoutCodeTarget reports document-deliverable work
+// where repair verbs ("수정해서 문서를 보강") only connect to the document and no
+// source file or code noun is named. Used to keep envelope/RF-001 aligned with
+// stall helpers that already treat "문서를 보강" as inspect→document.
+func requestIsDocumentPrimaryWithoutCodeTarget(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		lower = strings.ToLower(strings.TrimSpace(text))
+	}
+	if lower == "" {
+		return false
+	}
+	if !requestLooksLikeInspectThenDocumentTurn(lower) && !looksLikeDocumentAuthoringIntent(lower) {
+		return false
+	}
+	return !requestHasExplicitCodeOrSourceTarget(lower)
 }
 
 func requestExplicitlyOrdersCodeFixAlongsideDocument(lower string) bool {
 	lower = strings.ToLower(strings.TrimSpace(lower))
 	if lower == "" {
+		return false
+	}
+	// "발견한 문제점을 수정해서 문서를 보강" is document reinforcement, not a
+	// parallel code-fix order. Require an explicit code/source target before
+	// treating bare "수정해"/"고쳐" as a code-change-alongside-document.
+	if requestIsDocumentPrimaryWithoutCodeTarget(lower) {
 		return false
 	}
 	if containsAny(lower,

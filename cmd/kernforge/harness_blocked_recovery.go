@@ -946,8 +946,8 @@ func buildFinalGateBlockedRecovery(cfg Config, session *Session, summary string,
 			ChatHint: localizedText(cfg, `say "ignore for now"`, `「이번만 무시해」라고 입력`),
 			TitleEN:  "Dismiss this once and continue",
 			TitleKO:  "이번만 무시하고 계속",
-			ReasonEN: "Drop previous-session review baggage for completion/git write. Review files stay on disk.",
-			ReasonKO: "이전 세션 리뷰 부담만 해제합니다. 리뷰 파일은 유지됩니다.",
+			ReasonEN: "Dismiss this session's review for completion/git write. Review files stay on disk.",
+			ReasonKO: "이 세션 리뷰만 게이트에서 해제합니다. 리뷰 파일은 유지됩니다.",
 			Kind:     harnessRecoveryActionDismiss,
 		})
 	}
@@ -989,14 +989,16 @@ func requestLooksLikeInspectThenDocumentTurn(text string) bool {
 	lower := strings.ToLower(base)
 	hasDocDeliverable := containsAny(lower,
 		"문서로 작성", "문서 작성", "문서를 작성", "문서를 만들", "문서로 정리", "문서로 남겨",
-		"문서를 써", "문서를 써줘", "문서로 써", "보고서를 작성", "보고서 작성", "보고서를 만들",
+		"문서를 써", "문서를 써줘", "문서로 써", "문서를 보강", "문서 보강", "문서를 보완", "문서 보완",
+		"보고서를 작성", "보고서 작성", "보고서를 만들",
 		"write a document", "write a report", "write documentation", "write the doc",
 		"create a document", "create a report", "draft a document", "draft a report",
+		"improve the document", "update the documentation", "update the document",
 		"write it up", "write-up", "writeup",
 	)
 	if !hasDocDeliverable {
-		// "작성해줘" alone is ambiguous; require a document noun.
-		if containsAny(lower, "작성해", "작성해줘", "작성해 줘", "write ", "create ") &&
+		// "작성해줘"/"보강해줘" alone is ambiguous; require a document noun.
+		if containsAny(lower, "작성해", "작성해줘", "작성해 줘", "보강해", "보강해줘", "보완해", "수정해", "write ", "create ", "update ") &&
 			containsAny(lower, "문서", "document", "report", "보고서", ".md", "docs/") {
 			hasDocDeliverable = true
 		}
@@ -1012,6 +1014,7 @@ func requestLooksLikeInspectThenDocumentTurn(text string) bool {
 	return containsAny(lower,
 		"읽", "read", "찾", "find", "부족", "gap", "missing", "구현", "implementation",
 		"분석", "analyze", "검토", "review", "비교", "compare",
+		"문제", "수정", "발견", "fix", "issue", "보강", "보완",
 	)
 }
 

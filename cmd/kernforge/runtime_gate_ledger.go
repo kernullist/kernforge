@@ -528,6 +528,10 @@ func runtimeGateActionMayUseArchivedPatchScope(action string) bool {
 	}
 }
 
+// runtimeGateReviewRun resolves the review attached to the runtime gate.
+// Gate policy is session-scoped: only an explicit provided run or this session's
+// LastReviewRun may attach. Workspace .kernforge/reviews/latest.json is history
+// for /review show and similar ops — never auto-inherited by a new session.
 func runtimeGateReviewRun(root string, session *Session, provided *ReviewRun) (ReviewRun, bool) {
 	if provided != nil {
 		copyRun := *provided
@@ -545,17 +549,7 @@ func runtimeGateReviewRun(root string, session *Session, provided *ReviewRun) (R
 			return copyRun, true
 		}
 	}
-	if strings.TrimSpace(root) == "" {
-		return ReviewRun{}, false
-	}
-	latest, _, ok, err := loadLatestReviewRun(root)
-	if err != nil || !ok || strings.TrimSpace(latest.ID) == "" {
-		return ReviewRun{}, false
-	}
-	if runtimeGateReviewIsDismissed(root, session, latest) {
-		return ReviewRun{}, false
-	}
-	return latest, true
+	return ReviewRun{}, false
 }
 
 // runtimeGateReviewOriginLine renders a one-line provenance summary for the
@@ -1940,8 +1934,10 @@ func runtimeGateNeedsRecoveryGuidance(ledger RuntimeGateLedger) bool {
 }
 
 // runtimeGateRecoveryGuidanceLines returns a short Everyday CTA for non-ready
-// gates. Slash commands stay off this surface; numbered choices appear when a
-// turn is actually blocked (final-gate stall recovery card).
+// gates. Slash commands stay off this surface. Numbered choices appear only when
+// the user actually tries to finish/commit (final-gate recovery card) — so the
+// advisory footer must say what to do *now*, not "pick a number" that is not
+// on screen yet.
 func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger RuntimeGateLedger) []string {
 	if !runtimeGateNeedsRecoveryGuidance(ledger) {
 		return nil
@@ -1956,21 +1952,21 @@ func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger Runti
 	switch {
 	case status == runtimeGateStatusBlocked && stalenessOnly:
 		if korean {
-			lines = append(lines, "완료·커밋만 막혀 있습니다. 편집·읽기·분석은 가능합니다. 작업이 막히면 번호로 고르면 됩니다.")
+			lines = append(lines, "완료·커밋만 잠시 막혀 있습니다. 지금은 편집·읽기·분석을 이어가면 됩니다. 완료나 커밋을 시도하면 선택지(리뷰 갱신 / 이번만 무시 등)가 나옵니다.")
 		} else {
-			lines = append(lines, "Completion and git write are blocked; edit, read, and analysis remain allowed. When work is blocked, pick a numbered option.")
+			lines = append(lines, "Completion and git write are blocked for now; keep editing, reading, or analyzing. When you try to finish or commit, choices appear (refresh review / dismiss once, etc.).")
 		}
 	case status == runtimeGateStatusBlocked:
 		if korean {
-			lines = append(lines, "완료를 마무리하려면 확인이 필요합니다. 작업이 막히면 번호로 고르면 됩니다.")
+			lines = append(lines, "완료를 마무리하려면 확인이 필요합니다. 지금은 편집을 이어가면 됩니다. 완료를 시도하면 선택지가 나옵니다.")
 		} else {
-			lines = append(lines, "Confirmation is needed before finishing. When work is blocked, pick a numbered option.")
+			lines = append(lines, "Confirmation is needed before finishing. Keep editing for now; choices appear when you try to complete.")
 		}
 	default: // needs_review
 		if korean {
-			lines = append(lines, "완료·커밋 전에 확인이 필요합니다. 작업이 막히면 번호로 고르면 됩니다.")
+			lines = append(lines, "완료·커밋 전에 확인이 필요합니다. 지금은 편집·분석을 이어가면 됩니다. 완료나 커밋을 시도하면 선택지가 나옵니다.")
 		} else {
-			lines = append(lines, "Confirmation is needed before completion or git write. When work is blocked, pick a numbered option.")
+			lines = append(lines, "Confirmation is needed before completion or git write. Keep editing or analyzing for now; choices appear when you try to finish or commit.")
 		}
 	}
 
@@ -1989,9 +1985,9 @@ func everydayRuntimeGateRecoveryReasonLine(ledger RuntimeGateLedger, korean bool
 	ledger.Normalize()
 	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
 		if korean {
-			return "최신 리뷰가 현재 변경과 어긋납니다. 완료·커밋 전에 확인이 필요합니다."
+			return "이전 리뷰가 현재 변경을 덮지 않습니다. 편집은 가능하고, 완료·커밋 직전 선택지에서 리뷰를 갱신하거나 이번만 무시할 수 있습니다."
 		}
-		return "The latest review does not cover current changes. Confirmation is needed before completion or git write."
+		return "The previous review does not cover current changes. You can keep editing; when finishing or committing, choose refresh review or dismiss once."
 	}
 	reason := runtimeGateRecoveryReasonLine(ledger, korean)
 	// Drop any residual slash-command mentions from shared humanize copy.
@@ -2020,7 +2016,7 @@ func runtimeGateShouldOfferClear(session *Session, ledger RuntimeGateLedger) boo
 			return false
 		}
 	}
-	// Prefer offering clear for review-baggage / previous-session blocks.
+	// Prefer offering clear for this-session review baggage blocks.
 	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
 		return true
 	}

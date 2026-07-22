@@ -15,9 +15,9 @@ func TestResolveReplaceTargetPrefersExact(t *testing.T) {
 // real line so the replacement preserves the actual whitespace.
 func TestFuzzyReplaceTargetToleratesIndentDrift(t *testing.T) {
 	content := "func x() {\n\t\treturn 1\n}\n"
-	got, ok := fuzzyReplaceTarget(content, "    return 1")
-	if !ok || got != "\t\treturn 1" {
-		t.Fatalf("indent drift: ok=%v got=%q, want %q", ok, got, "\t\treturn 1")
+	got, ok, ambiguous := fuzzyReplaceTarget(content, "    return 1")
+	if !ok || ambiguous || got != "\t\treturn 1" {
+		t.Fatalf("indent drift: ok=%v ambiguous=%v got=%q, want %q", ok, ambiguous, got, "\t\treturn 1")
 	}
 	span, n := resolveReplaceTarget(content, "    return 1")
 	if n != 1 || span != "\t\treturn 1" {
@@ -28,9 +28,9 @@ func TestFuzzyReplaceTargetToleratesIndentDrift(t *testing.T) {
 // Trailing whitespace in the search is tolerated.
 func TestFuzzyReplaceTargetToleratesTrailingSpace(t *testing.T) {
 	content := "alpha\nbeta\ngamma\n"
-	got, ok := fuzzyReplaceTarget(content, "beta   ")
-	if !ok || got != "beta" {
-		t.Fatalf("trailing space: ok=%v got=%q, want %q", ok, got, "beta")
+	got, ok, ambiguous := fuzzyReplaceTarget(content, "beta   ")
+	if !ok || ambiguous || got != "beta" {
+		t.Fatalf("trailing space: ok=%v ambiguous=%v got=%q, want %q", ok, ambiguous, got, "beta")
 	}
 }
 
@@ -40,9 +40,9 @@ func TestFuzzyReplaceTargetMatchesMultiLineBlock(t *testing.T) {
 	content := "x\n  if a {\n    do()\n  }\ny\n"
 	search := "if a {\ndo()\n}"
 	want := "  if a {\n    do()\n  }"
-	got, ok := fuzzyReplaceTarget(content, search)
-	if !ok || got != want {
-		t.Fatalf("multi-line block: ok=%v got=%q, want %q", ok, got, want)
+	got, ok, ambiguous := fuzzyReplaceTarget(content, search)
+	if !ok || ambiguous || got != want {
+		t.Fatalf("multi-line block: ok=%v ambiguous=%v got=%q, want %q", ok, ambiguous, got, want)
 	}
 }
 
@@ -50,14 +50,18 @@ func TestFuzzyReplaceTargetMatchesMultiLineBlock(t *testing.T) {
 // refused rather than guessing a location.
 func TestFuzzyReplaceTargetRefusesAmbiguous(t *testing.T) {
 	content := "  foo()\nbar\n  foo()\n"
-	if got, ok := fuzzyReplaceTarget(content, "foo()"); ok {
-		t.Fatalf("ambiguous search must be refused, got %q", got)
+	got, ok, ambiguous := fuzzyReplaceTarget(content, "foo()")
+	if ok || got != "" {
+		t.Fatalf("ambiguous search must be refused, got %q ok=%v", got, ok)
+	}
+	if !ambiguous {
+		t.Fatalf("ambiguous search must report ambiguous=true")
 	}
 }
 
 // Blank or whitespace-only searches never match.
 func TestFuzzyReplaceTargetRefusesBlankSearch(t *testing.T) {
-	if _, ok := fuzzyReplaceTarget("a\nb\n", "   "); ok {
+	if _, ok, _ := fuzzyReplaceTarget("a\nb\n", "   "); ok {
 		t.Fatalf("whitespace-only search must be refused")
 	}
 	if _, n := resolveReplaceTarget("a\nb\n", ""); n != 0 {
@@ -67,7 +71,7 @@ func TestFuzzyReplaceTargetRefusesBlankSearch(t *testing.T) {
 
 // A search longer than the file cannot match.
 func TestFuzzyReplaceTargetRefusesOversizedSearch(t *testing.T) {
-	if _, ok := fuzzyReplaceTarget("only one line\n", "a\nb\nc\nd\n"); ok {
+	if _, ok, _ := fuzzyReplaceTarget("only one line\n", "a\nb\nc\nd\n"); ok {
 		t.Fatalf("search longer than file must be refused")
 	}
 }

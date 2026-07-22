@@ -116,3 +116,33 @@ func TestDeterministicNoSourceWarningWhenSourcePresent(t *testing.T) {
 		}
 	}
 }
+
+// Document reinforce with bare "수정해서" must not trip RF-001 (code-change
+// without source) — that warning used to push the turn into a repair loop.
+func TestDeterministicNoRF001ForKoreanDocumentReinforce(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	objective := "발견한 문제점들을 모두 수정해서 문서를 보강하자. 한국어 문서도 함께 보강해줘"
+	run := ReviewRun{
+		Trigger:   "pre_write",
+		Target:    reviewTargetChange,
+		Objective: objective,
+		ChangeSet: ReviewChangeSet{ChangedPaths: []string{"docs/overview.md"}},
+		Evidence: ReviewEvidencePack{
+			Sources:      []string{"provided_diff"},
+			ChangedPaths: []string{"docs/overview.md"},
+			Text:         "# Overview\n",
+		},
+	}
+	if reviewRequestWantsSourceChange(run) && !reviewRunLooksLikeDocumentAuthoring(run) {
+		t.Fatalf("document reinforce must not satisfy RF-001 fire predicate (wantsSource && !pureDoc)")
+	}
+	for _, f := range deterministicReviewFindings(rt, run) {
+		if f.Title == "Code-change request reviewed without source-code evidence" {
+			t.Fatalf("Korean document reinforce must not emit RF-001-style zero-source warning, got %#v", f)
+		}
+	}
+}

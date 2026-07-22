@@ -5046,7 +5046,7 @@ func resolveReplaceTarget(content, search string) (string, int) {
 			return converted, count
 		}
 	}
-	if span, ok := fuzzyReplaceTarget(content, search); ok {
+	if span, ok, _ := fuzzyReplaceTarget(content, search); ok {
 		return span, strings.Count(content, span)
 	}
 	return search, 0
@@ -5083,32 +5083,160 @@ func adaptReplacementToMatch(content, matchText, replacement string) string {
 // fuzzyReplaceTarget returns the file's actual text for a search whose whitespace
 // drifted, reusing apply_patch's per-line matchers. It escalates leniency only as
 // needed and accepts a match only when exactly one block matches, so it never
-// guesses a location. Blank or whitespace-only searches are refused.
-func fuzzyReplaceTarget(content, search string) (string, bool) {
+// guesses a location. When ambiguous is true, multiple blocks matched and ok is
+// false. Blank or whitespace-only searches are refused (ok and ambiguous both false).
+func fuzzyReplaceTarget(content, search string) (span string, ok bool, ambiguous bool) {
 	searchLines := strings.Split(strings.TrimRight(search, "\n"), "\n")
 	if len(searchLines) == 0 || (len(searchLines) == 1 && strings.TrimSpace(searchLines[0]) == "") {
-		return "", false
+		return "", false, false
 	}
 	contentLines := strings.Split(content, "\n")
 	if len(searchLines) > len(contentLines) {
-		return "", false
+		return "", false, false
 	}
 	for _, eq := range []func(string, string) bool{patchLinesEqualTrailing, patchLinesEqualTrimmed} {
 		matches := findChunkFuzzyMatchesAtOrAfter(contentLines, searchLines, 0, eq)
 		if len(matches) == 1 {
 			start := matches[0]
-			span := strings.Join(contentLines[start:start+len(searchLines)], "\n")
+			matched := strings.Join(contentLines[start:start+len(searchLines)], "\n")
 			// A match on the first line of a BOM file captures the BOM in the
 			// span; trim it so the marker survives the caller's replacement.
 			// The trimmed span is still an exact substring of content.
-			return strings.TrimPrefix(span, utf8BOMPrefix), true
+			return strings.TrimPrefix(matched, utf8BOMPrefix), true, false
 		}
 		if len(matches) > 1 {
 			// Ambiguous at this leniency; do not loosen further and risk the wrong spot.
-			return "", false
+			return "", false, true
 		}
 	}
-	return "", false
+	return "", false, false
+}
+
+// replaceTargetMismatchError builds an ErrEditTargetMismatch with apply_patch-style
+// diagnostics so the model can rebuild search text from the current file window
+// without guessing. Ambiguous fuzzy matches are named explicitly instead of
+// collapsing to a bare "not found".
+func replaceTargetMismatchError(path, content, search string) error {
+	contentLines := strings.Split(content, "\n")
+	searchLines := strings.Split(strings.TrimRight(search, "\n"), "\n")
+	if len(searchLines) > 0 && !(len(searchLines) == 1 && strings.TrimSpace(searchLines[0]) == "") &&
+		len(searchLines) <= len(contentLines) {
+		for _, eq := range []func(string, string) bool{patchLinesEqualTrailing, patchLinesEqualTrimmed} {
+			matches := findChunkFuzzyMatchesAtOrAfter(contentLines, searchLines, 0, eq)
+			if len(matches) > 1 {
+				return fmt.Errorf("%w: search text is ambiguous (%d matches) in %s%s",
+					ErrEditTargetMismatch, len(matches), path,
+					formatReplaceMismatchDiagnostic(contentLines, searchLines, matches))
+			}
+			if len(matches) == 1 {
+				break
+			}
+		}
+	}
+	return fmt.Errorf("%w: search text not found in %s%s",
+		ErrEditTargetMismatch, path,
+		formatReplaceMismatchDiagnostic(contentLines, searchLines, nil))
+}
+
+// formatReplaceMismatchDiagnostic surfaces expected search lines plus either
+// ambiguous candidate windows or a current-file content window so recovery
+// guidance that tells the model to compare "expected/current context" is honest
+// for replace_in_file (not only apply_patch).
+func formatReplaceMismatchDiagnostic(contentLines, searchLines []string, ambiguousMatches []int) string {
+	var b strings.Builder
+	firstLine := ""
+	if first, ok := firstPatchDiagnosticLine(searchLines); ok {
+		firstLine = first
+		fmt.Fprintf(&b, "\nexpected first line: %s", quotePatchDiagnosticLine(first))
+	}
+	if last, ok := lastPatchDiagnosticLine(searchLines); ok && last != firstLine {
+		fmt.Fprintf(&b, "\nexpected last line: %s", quotePatchDiagnosticLine(last))
+	}
+	if len(ambiguousMatches) > 0 {
+		b.WriteString("\nnearest current context:")
+		contextLineCount := len(searchLines)
+		if contextLineCount > 5 {
+			contextLineCount = 5
+		}
+		if contextLineCount < 1 {
+			contextLineCount = 1
+		}
+		limit := ambiguousMatches
+		if len(limit) > 3 {
+			limit = limit[:3]
+		}
+		for _, start := range limit {
+			if start < 0 || start >= len(contentLines) {
+				continue
+			}
+			fmt.Fprintf(&b, "\n  candidate line %d:", start+1)
+			end := start + contextLineCount
+			if end > len(contentLines) {
+				end = len(contentLines)
+			}
+			for i := start; i < end; i++ {
+				fmt.Fprintf(&b, "\n    %d: %s", i+1, quotePatchDiagnosticLine(contentLines[i]))
+			}
+		}
+		return b.String()
+	}
+	candidates := replaceMismatchCandidateStarts(contentLines, searchLines)
+	if len(candidates) == 0 {
+		b.WriteString(formatPatchCurrentContentWindow(contentLines, 0, "", 0))
+		return b.String()
+	}
+	b.WriteString("\nnearest current context:")
+	contextLineCount := len(searchLines)
+	if contextLineCount > 5 {
+		contextLineCount = 5
+	}
+	if contextLineCount < 1 {
+		contextLineCount = 1
+	}
+	for _, start := range candidates {
+		if start < 0 || start >= len(contentLines) {
+			continue
+		}
+		fmt.Fprintf(&b, "\n  candidate line %d:", start+1)
+		end := start + contextLineCount
+		if end > len(contentLines) {
+			end = len(contentLines)
+		}
+		for i := start; i < end; i++ {
+			fmt.Fprintf(&b, "\n    %d: %s", i+1, quotePatchDiagnosticLine(contentLines[i]))
+		}
+	}
+	return b.String()
+}
+
+// replaceMismatchCandidateStarts finds up to three line indexes whose trimmed
+// content matches the first non-empty search line, giving the model a nearby
+// window when the full search block is stale.
+func replaceMismatchCandidateStarts(contentLines, searchLines []string) []int {
+	first, ok := firstPatchDiagnosticLine(searchLines)
+	if !ok {
+		return nil
+	}
+	needle := strings.TrimSpace(first)
+	if needle == "" {
+		return nil
+	}
+	var starts []int
+	for i, line := range contentLines {
+		trimmed := strings.TrimSpace(line)
+		// strings.Contains(needle, "") is true for every needle; skip blanks.
+		if trimmed == "" {
+			continue
+		}
+		if trimmed != needle && !strings.Contains(trimmed, needle) && !strings.Contains(needle, trimmed) {
+			continue
+		}
+		starts = append(starts, i)
+		if len(starts) >= 3 {
+			break
+		}
+	}
+	return starts
 }
 
 func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, error) {
@@ -5140,7 +5268,7 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	content := string(data)
 	matchText, count := resolveReplaceTarget(content, search)
 	if count == 0 {
-		return "", fmt.Errorf("%w: search text not found in %s", ErrEditTargetMismatch, path)
+		return "", replaceTargetMismatchError(path, content, search)
 	}
 	all := boolValue(args, "all", false)
 	if !all && count > 1 {

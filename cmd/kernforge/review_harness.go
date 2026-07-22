@@ -811,6 +811,7 @@ func (s *Session) recordReviewRun(run ReviewRun) {
 	s.ReviewRouteHealth = mergeReviewRouteHealthHistory(s.ReviewRouteHealth, reviewRouteHealthFromRun(&run), 8)
 	copyRun := run
 	s.LastReviewRun = &copyRun
+	s.RuntimeGateClearedReview = nil
 	// A fresh review supersedes any /gate clear dismissal of older baggage.
 	noteRuntimeGateDismissalAfterReview(s.WorkingDir, s, copyRun)
 	if base := sessionBaseWorkingDir(s); base != "" && base != s.WorkingDir {

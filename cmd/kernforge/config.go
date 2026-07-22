@@ -3783,7 +3783,7 @@ Hubs (type the hub alone for a cheatsheet):
 
 Notes:
 - Use /help all for the full command catalog (including expert aliases).
-- Blocked turns show numbered recovery choices (refresh review / dismiss once / details / keep editing); Everyday footer omits gate: and slash-command menus.
+- Blocked finish/commit turns show numbered recovery choices (refresh review / dismiss once / details / keep editing); Everyday footer says keep editing for now and that choices appear on finish/commit, without gate: or slash-command menus.
 - kernforge daemon is the shared MCP daemon CLI; /automation daemon-* is a separate automation watcher.
 - Special input: !<shell>  @path  @image  @mcp:server:target  \ line continue
 `)

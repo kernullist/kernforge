@@ -383,6 +383,11 @@ func looksLikeBugFindingFixIntent(input string) bool {
 	if hasRepairActionNegation(lower) {
 		return false
 	}
+	// Document reinforcement ("문제점을 수정해서 문서를 보강") is not a
+	// review-then-modify code-repair request when no source target is named.
+	if requestIsDocumentPrimaryWithoutCodeTarget(lower) {
+		return false
+	}
 	if looksLikeBugSearchAndFixIntent(lower) {
 		return true
 	}

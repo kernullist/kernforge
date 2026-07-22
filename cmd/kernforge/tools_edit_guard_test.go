@@ -294,7 +294,8 @@ func TestSameFilePathUsesOSFileIdentity(t *testing.T) {
 func TestReplaceInFileReturnsEditTargetMismatchWhenSearchTextMissing(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "completion.go")
-	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+	content := "package main\n\nfunc Ready() {}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	tool := NewReplaceInFileTool(Workspace{BaseRoot: root, Root: root})
@@ -309,6 +310,61 @@ func TestReplaceInFileReturnsEditTargetMismatchWhenSearchTextMissing(t *testing.
 	}
 	if !errors.Is(err, ErrEditTargetMismatch) {
 		t.Fatalf("expected ErrEditTargetMismatch, got %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "search text not found") {
+		t.Fatalf("expected not-found wording, got %v", err)
+	}
+	if !strings.Contains(msg, "expected first line:") {
+		t.Fatalf("expected replace mismatch diagnostics, got %v", err)
+	}
+	if !strings.Contains(msg, "current file content") && !strings.Contains(msg, "nearest current context:") {
+		t.Fatalf("expected current content window or nearest context, got %v", err)
+	}
+}
+
+func TestReplaceInFileReportsAmbiguousSearchWithCandidates(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "sample.go")
+	// Exact substring "foo()" would hit count>1 before fuzzy; use indent drift so
+	// only the fuzzy ladder sees two candidates.
+	if err := os.WriteFile(path, []byte("\tfoo()\nbar\n\tfoo()\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewReplaceInFileTool(Workspace{BaseRoot: root, Root: root})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"path":    "sample.go",
+		"search":  "    foo()",
+		"replace": "    bar()",
+	})
+	if err == nil {
+		t.Fatalf("expected ambiguous replace failure")
+	}
+	if !errors.Is(err, ErrEditTargetMismatch) {
+		t.Fatalf("expected ErrEditTargetMismatch, got %v", err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "search text is ambiguous") {
+		t.Fatalf("expected ambiguous wording, got %v", err)
+	}
+	if !strings.Contains(msg, "candidate line") {
+		t.Fatalf("expected candidate windows, got %v", err)
+	}
+}
+
+func TestReplaceTargetMismatchErrorIncludesNearestContext(t *testing.T) {
+	content := "# Overview\n\nBounds->StackBase = old\nBounds->StackLimit = old\n"
+	err := replaceTargetMismatchError("doc.md", content, "Bounds->StackBase = wrong")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "expected first line:") {
+		t.Fatalf("missing expected first line: %v", err)
+	}
+	if !strings.Contains(msg, "Bounds->StackBase = old") {
+		t.Fatalf("expected nearest or current window to show the real file line, got %v", err)
 	}
 }
 
