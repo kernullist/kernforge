@@ -804,3 +804,127 @@ func reviewFindingCountPhrase(total int, blockers int, warnings int, notes int, 
 	}
 	return head + " - " + strings.Join(segments, ", ")
 }
+
+// softenAssistantDisplayText rewrites rigid completion-checklist labels into
+// conversational prose for Everyday display. Session/storage text is unchanged;
+// only the REPL print path uses this.
+func softenAssistantDisplayText(cfg Config, text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return text
+	}
+	korean := localePrefersKorean(cfg)
+	lines := strings.Split(trimmed, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		soft := softenAssistantDisplayLine(line, korean)
+		if soft == "" {
+			continue
+		}
+		out = append(out, soft)
+	}
+	if len(out) == 0 {
+		return text
+	}
+	return strings.Join(out, "\n")
+}
+
+func softenAssistantDisplayLine(line string, korean bool) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return line
+	}
+	lower := strings.ToLower(trimmed)
+
+	rewritePrefix := func(prefixes []string, en string, ko string) (string, bool) {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(lower, strings.ToLower(prefix)) {
+				rest := strings.TrimSpace(trimmed[len(prefix):])
+				rest = strings.TrimLeft(rest, ": ")
+				rest = strings.TrimSpace(rest)
+				label := en
+				if korean {
+					label = ko
+				}
+				if rest == "" {
+					return label, true
+				}
+				return label + " " + rest, true
+			}
+		}
+		return "", false
+	}
+
+	if soft, ok := rewritePrefix([]string{"Changed files:", "변경 파일:", "변경한 파일:"}, "Updated:", "변경:"); ok {
+		return soft
+	}
+	if soft, ok := rewritePrefix([]string{"Self-review:", "자체 리뷰:"}, "Checked:", "확인:"); ok {
+		return soft
+	}
+	if soft, ok := rewritePrefix([]string{"Review result:", "리뷰 결과:"}, "Review:", "리뷰:"); ok {
+		return soft
+	}
+	if strings.HasPrefix(lower, "validation:") {
+		rest := strings.TrimSpace(trimmed[len("Validation:"):])
+		restLower := strings.ToLower(rest)
+		switch {
+		case strings.Contains(restLower, "was not run") || strings.Contains(restLower, "not run") || strings.Contains(rest, "미실행"):
+			if korean {
+				return "검증은 아직 실행하지 않았습니다."
+			}
+			return "Verification was not run."
+		case strings.Contains(restLower, "failed"):
+			if korean {
+				return "검증이 실패했습니다" + softenTrailingDetail(rest, "failed")
+			}
+			return "Verification failed" + softenTrailingDetail(rest, "failed")
+		case strings.Contains(restLower, "passed"):
+			if korean {
+				return "검증을 통과했습니다."
+			}
+			return "Verification passed."
+		default:
+			if korean {
+				return "검증: " + strings.TrimSpace(rest)
+			}
+			return "Verification: " + strings.TrimSpace(rest)
+		}
+	}
+	if strings.HasPrefix(lower, "remaining risk:") || strings.HasPrefix(trimmed, "남은 위험:") || strings.HasPrefix(trimmed, "잔여 위험:") {
+		rest := trimmed
+		for _, prefix := range []string{"Remaining risk:", "남은 위험:", "잔여 위험:"} {
+			if strings.HasPrefix(strings.ToLower(trimmed), strings.ToLower(prefix)) || strings.HasPrefix(trimmed, prefix) {
+				rest = strings.TrimSpace(trimmed[len(prefix):])
+				rest = strings.TrimLeft(rest, ": ")
+				break
+			}
+		}
+		restLower := strings.ToLower(rest)
+		if rest == "" || restLower == "none" || restLower == "none known" || restLower == "none known." ||
+			strings.Contains(restLower, "no known remaining") {
+			if korean {
+				return "남은 위험은 없습니다."
+			}
+			return "No known remaining risks."
+		}
+		if korean {
+			return "남은 점: " + rest
+		}
+		return "Still open: " + rest
+	}
+	return line
+}
+
+func softenTrailingDetail(rest string, marker string) string {
+	lower := strings.ToLower(rest)
+	idx := strings.Index(lower, strings.ToLower(marker))
+	if idx < 0 {
+		return "."
+	}
+	tail := strings.TrimSpace(rest[idx+len(marker):])
+	tail = strings.TrimLeft(tail, " :,-")
+	if tail == "" {
+		return "."
+	}
+	return ": " + tail
+}

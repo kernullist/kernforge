@@ -1939,9 +1939,9 @@ func runtimeGateNeedsRecoveryGuidance(ledger RuntimeGateLedger) bool {
 	}
 }
 
-// runtimeGateRecoveryGuidanceLines returns short plain-language recovery steps
-// for non-ready gates so REPL users do not have to open /status detail first.
-// Line 0 is the headline; later lines are reason / do-now / details.
+// runtimeGateRecoveryGuidanceLines returns a short Everyday CTA for non-ready
+// gates. Slash commands stay off this surface; numbered choices appear when a
+// turn is actually blocked (final-gate stall recovery card).
 func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger RuntimeGateLedger) []string {
 	if !runtimeGateNeedsRecoveryGuidance(ledger) {
 		return nil
@@ -1950,112 +1950,64 @@ func runtimeGateRecoveryGuidanceLines(cfg Config, session *Session, ledger Runti
 	korean := localePrefersKorean(cfg)
 	status := strings.ToLower(strings.TrimSpace(ledger.Status))
 	stalenessOnly := runtimeGateBlockersAreReviewStalenessOnly(ledger)
-	offerClear := runtimeGateShouldOfferClear(session, ledger)
+	_ = session // session kept for API stability / future CTA personalization
 
 	var lines []string
 	switch {
 	case status == runtimeGateStatusBlocked && stalenessOnly:
 		if korean {
-			lines = append(lines, "게이트가 완료·커밋만 막고 있습니다. 편집·읽기·분석은 가능합니다.")
+			lines = append(lines, "완료·커밋만 막혀 있습니다. 편집·읽기·분석은 가능합니다. 작업이 막히면 번호로 고르면 됩니다.")
 		} else {
-			lines = append(lines, "Gate blocks completion/git write only. Edit, read, and analysis remain allowed.")
+			lines = append(lines, "Completion and git write are blocked; edit, read, and analysis remain allowed. When work is blocked, pick a numbered option.")
 		}
 	case status == runtimeGateStatusBlocked:
 		if korean {
-			lines = append(lines, "런타임 게이트가 막혀 있습니다. 아래 조치 중 하나를 선택하세요.")
+			lines = append(lines, "완료를 마무리하려면 확인이 필요합니다. 작업이 막히면 번호로 고르면 됩니다.")
 		} else {
-			lines = append(lines, "Runtime gate is blocked. Choose one of the steps below.")
+			lines = append(lines, "Confirmation is needed before finishing. When work is blocked, pick a numbered option.")
 		}
 	default: // needs_review
 		if korean {
-			lines = append(lines, "리뷰 갱신이 필요합니다. 완료·write-side 전에 처리하세요.")
+			lines = append(lines, "완료·커밋 전에 확인이 필요합니다. 작업이 막히면 번호로 고르면 됩니다.")
 		} else {
-			lines = append(lines, "Review refresh needed before completion or write-side actions.")
+			lines = append(lines, "Confirmation is needed before completion or git write. When work is blocked, pick a numbered option.")
 		}
 	}
 
-	if reason := runtimeGateRecoveryReasonLine(ledger, korean); reason != "" {
+	if reason := everydayRuntimeGateRecoveryReasonLine(ledger, korean); reason != "" {
 		if korean {
 			lines = append(lines, "이유: "+reason)
 		} else {
 			lines = append(lines, "Why: "+reason)
 		}
 	}
-
-	next := strings.TrimSpace(operatorStatusNextCommandLine(session, ledger))
-	if next == "" {
-		if korean {
-			next = "/review - 최신 리뷰 갱신"
-		} else {
-			next = "/review - refresh the latest review"
-		}
-	}
-
-	// Surface /review and /gate clear as peer first-class actions so users see
-	// both options immediately when a blocked gate greets them at startup.
-	if offerClear {
-		if korean {
-			lines = append(lines, "방법 1) "+next)
-			lines = append(lines, "방법 2) /gate clear - 이전 세션 게이트 부담 해제 (리뷰 파일 유지, 편집 계속)")
-		} else {
-			lines = append(lines, "Option 1) "+next)
-			lines = append(lines, "Option 2) /gate clear - dismiss previous-session gate (keeps review files; continue editing)")
-		}
-	} else if korean {
-		lines = append(lines, "지금 할 일: "+next)
-	} else {
-		lines = append(lines, "Do now: "+next)
-	}
-
-	// Extra alternate next commands (skip duplicate of primary / gate clear).
-	primaryCmd := ""
-	if fields := strings.Fields(next); len(fields) > 0 {
-		primaryCmd = strings.ToLower(fields[0])
-	}
-	extra := 0
-	for _, cmd := range ledger.NextCommands {
-		command := strings.TrimSpace(cmd.Command)
-		if command == "" {
-			continue
-		}
-		cmdFields := strings.Fields(command)
-		if len(cmdFields) == 0 {
-			continue
-		}
-		token := strings.ToLower(cmdFields[0])
-		if primaryCmd != "" && strings.EqualFold(token, primaryCmd) {
-			continue
-		}
-		if token == "/gate" {
-			continue
-		}
-		line := command
-		if reason := strings.TrimSpace(cmd.Reason); reason != "" {
-			line += " - " + reason
-		}
-		if korean {
-			lines = append(lines, "또는: "+line)
-		} else {
-			lines = append(lines, "Or: "+line)
-		}
-		extra++
-		if extra >= 2 {
-			break
-		}
-	}
-
-	if !strings.Contains(strings.ToLower(next), "/status") {
-		if korean {
-			lines = append(lines, "자세히: /status  또는  /status detail  또는  /gate status")
-		} else {
-			lines = append(lines, "Details: /status  or  /status detail  or  /gate status")
-		}
-	}
 	return lines
 }
 
-// runtimeGateShouldOfferClear reports whether recovery copy should advertise
-// /gate clear as a first-class option. Skips when a dismissal is already active.
+// everydayRuntimeGateRecoveryReasonLine explains the block without slash-command ads.
+func everydayRuntimeGateRecoveryReasonLine(ledger RuntimeGateLedger, korean bool) string {
+	ledger.Normalize()
+	if runtimeGateBlockersAreReviewStalenessOnly(ledger) {
+		if korean {
+			return "최신 리뷰가 현재 변경과 어긋납니다. 완료·커밋 전에 확인이 필요합니다."
+		}
+		return "The latest review does not cover current changes. Confirmation is needed before completion or git write."
+	}
+	reason := runtimeGateRecoveryReasonLine(ledger, korean)
+	// Drop any residual slash-command mentions from shared humanize copy.
+	fields := strings.Fields(reason)
+	kept := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if strings.HasPrefix(field, "/") {
+			continue
+		}
+		kept = append(kept, field)
+	}
+	return strings.TrimSpace(strings.Join(kept, " "))
+}
+
+// runtimeGateShouldOfferClear reports whether recovery choices should include
+// dismiss-previous-baggage. Skips when a dismissal is already active.
 func runtimeGateShouldOfferClear(session *Session, ledger RuntimeGateLedger) bool {
 	ledger.Normalize()
 	status := strings.ToLower(strings.TrimSpace(ledger.Status))

@@ -67,7 +67,7 @@ Current behavior:
 8. Repeated blank streamed chunks are converted into a compact working status instead of printing empty lines.
 9. If a final streamed answer appears to stop mid-sentence, Kernforge asks the model to continue once and merges the continuation before returning to the prompt.
 10. Pressing `Enter` on an empty main prompt is ignored so empty turns do not clutter the session transcript.
-11. `progress_display` controls progress visibility and defaults to `compact`, so routine review and coding work stays readable. `/progress-display auto|compact|stream` changes it from the REPL: `compact` keeps short plain-language progress in the footer, `auto` keeps durable tool/model and project-analysis events without repeating verbose review flow text, and `stream` persists every update for detailed debugging.
+11. `progress_display` controls progress visibility and defaults to `quiet`, so routine turns stay Cursor/Codex/Grok-like. `/progress-display quiet|compact|auto|stream` changes it from the REPL: `quiet` keeps mid-turn activity in the footer, `compact` adds durable working notes, `auto` keeps durable tool/model events without shell-body spam, and `stream` persists every update for detailed debugging.
 12. OpenAI-compatible and OpenAI Codex streaming providers emit tool-call construction events so users can see when the model is preparing a tool call and when its arguments are ready.
 13. DeepSeek and other OpenAI-compatible follow-up requests normalize saved tool transcripts before replay. Orphaned `tool` results are dropped, and missing tool-call responses are synthesized as `aborted` outputs so provider-side message validation does not reject recovered sessions. Runtime guidance paths that supersede a tool-call batch persist explicit `NOT_EXECUTED` outputs before the guidance message instead of recovering internal tool output as user context.
 14. Post-change diff review does not import final-answer coding-harness state. Worker/causal-evidence blockers remain visible for final/completion-audit gates, but they do not become post-change code-review blockers.
@@ -952,12 +952,17 @@ Purpose:
 2. Make command discovery faster when subcommands or ids are easy to forget.
 
 What `Tab` completion now covers:
-1. Slash commands
+1. Slash commands (Everyday + Hub preferred; expert aliases appear when their prefix matches)
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/permissions`, `/checkpoint auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|clear cross-review|status`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
-5. Saved ids for `/resume`, `/evidence show`, `/memory show`, `/memory promote`, `/memory demote`, `/memory confirm`, `/memory tentative`, `/investigate show`, and `/simulate show`; `/new-feature` uses the active feature instead of id-heavy subcommands
+4. Fixed command arguments such as `/settings auto-verify on|off`, `/settings progress-display auto|compact|stream`, `/permissions`, `/checkpoint auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|clear cross-review|status`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze project --mode <mode>`, and `/probe fuzz|scan|…`
+5. Saved ids for `/resume`, `/memory evidence show`, `/memory show`, `/memory promote`, `/memory demote`, `/memory confirm`, `/memory tentative`, `/investigate show`, and `/simulate show`; `/new-feature` uses the active feature instead of id-heavy subcommands
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
+
+Command surface note:
+1. Default `/help` is Everyday + Hub only; `/help all` prints the full catalog.
+2. Prefer hubs (`/selection`, `/analyze`, `/probe`, `/mcp`, `/hooks`, `/settings`) over memorizing every legacy alias.
+3. Legacy top-level names remain as hidden aliases for one compatibility window.
 
 Prompt budget behavior that now matters:
 1. Cached `analyze-project` summaries can be injected ahead of auto-scouted code snippets when they are more relevant.

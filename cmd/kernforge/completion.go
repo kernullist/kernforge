@@ -37,6 +37,7 @@ var slashCommands = []string{
 	"evidence",
 	"investigate",
 	"simulate",
+	"probe",
 	"fuzz-func",
 	"fuzz-campaign",
 	"source-scan",
@@ -45,6 +46,7 @@ var slashCommands = []string{
 	"root-cause-patterns",
 	"override",
 	"checkpoint",
+	"settings",
 	"set-auto-verify",
 	"locale-auto",
 	"worktree",
@@ -77,6 +79,7 @@ var slashCommands = []string{
 	"config",
 	"trust",
 	"new-feature",
+	"analyze",
 	"analyze-project",
 	"analyze-dashboard",
 	"docs-refresh",
@@ -116,6 +119,7 @@ var slashCommandDescriptions = map[string]string{
 	"evidence":                "Review evidence records and suggest verification, dashboard, or source follow-up.",
 	"investigate":             "Run investigation workflows and suggest the next snapshot, simulation, or evidence step.",
 	"simulate":                "Run anti-tamper simulation profiles and suggest verification or evidence follow-up.",
+	"probe":                   "Security and diagnostics hub: fuzz, scan, root-cause, and driver PoC.",
 	"fuzz-func":               "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
 	"fuzz-campaign":           "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
 	"source-scan":             "Scan source with built-in kernel, C++, Unreal, and telemetry matchers, then hand candidates to /fuzz-func.",
@@ -124,21 +128,22 @@ var slashCommandDescriptions = map[string]string{
 	"root-cause-patterns":     "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
 	"override":                "Inspect or manage temporary hook override rules.",
 	"checkpoint":              "Create a rollback checkpoint and suggest diff or checkpoint-list follow-up.",
+	"settings":                "Session toggles: preset, auto-verify, locale, tool-iteration cap, progress display.",
 	"set-auto-verify":         "Enable or disable automatic verification after edits.",
 	"locale-auto":             "Enable or disable automatic locale switching.",
 	"worktree":                "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
 	"skills":                  "Inspect and manage loaded Codex skills.",
-	"mcp":                     "Manage MCP servers: '/mcp add|remove|enable|disable <name>', or '/mcp auth <server>' for OAuth login; '/mcp' alone shows status.",
+	"mcp":                     "Manage MCP servers and list resources, prompts, or skills under one hub.",
 	"resources":               "List MCP resources across configured servers.",
 	"resource":                "Open a specific MCP resource by name or URI.",
 	"prompts":                 "List MCP prompts across configured servers.",
 	"prompt":                  "Run a specific MCP prompt with JSON arguments.",
 	"reload":                  "Reload config, skills, hooks, and MCP state.",
 	"hook-reload":             "Reload hook configuration without restarting.",
-	"hooks":                   "Inspect loaded hooks and hook runtime status.",
+	"hooks":                   "Inspect loaded hooks; use /hooks reload or /hooks override for updates.",
 	"init":                    "Bootstrap config, hooks, memory policy, or verify assets.",
 	"open":                    "Open a file in the internal text viewer.",
-	"selection":               "Show the current viewer selection.",
+	"selection":               "Viewer selection hub: open, list, use, note, tag, diff, and edit.",
 	"selections":              "List saved viewer selections.",
 	"use-selection":           "Promote a saved selection to the active one.",
 	"drop-selection":          "Remove one saved selection from the stack.",
@@ -156,6 +161,7 @@ var slashCommandDescriptions = map[string]string{
 	"config":                  "Show effective configuration values.",
 	"trust":                   "Show or set whether this project may load project-local config and hooks.",
 	"new-feature":             "Create a tracked feature or drive the active feature with next/list lifecycle commands.",
+	"analyze":                 "Project analysis hub: project, dashboard, performance, docs-refresh.",
 	"analyze-project":         "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
 	"analyze-dashboard":       "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
 	"docs-refresh":            "Regenerate latest project analysis docs, graph section stale markers, schema manifest, dashboard, and vector corpus from saved artifacts.",
@@ -167,11 +173,58 @@ var slashCommandDescriptions = map[string]string{
 
 var slashSubcommandDescriptions = map[string]map[string]string{
 	"mcp": {
-		"add":     "Register an MCP server (stdio: '-- <command> [args]'; remote: '--url <url>').",
-		"remove":  "Remove a configured MCP server from user or --workspace config.",
-		"enable":  "Enable a disabled MCP server and reconnect.",
-		"disable": "Disable a configured MCP server without removing it.",
-		"auth":    "Run the interactive OAuth login for a streamable_http server.",
+		"add":       "Register an MCP server (stdio: '-- <command> [args]'; remote: '--url <url>').",
+		"remove":    "Remove a configured MCP server from user or --workspace config.",
+		"enable":    "Enable a disabled MCP server and reconnect.",
+		"disable":   "Disable a configured MCP server without removing it.",
+		"auth":      "Run the interactive OAuth login for a streamable_http server.",
+		"resources": "List MCP resources across configured servers.",
+		"resource":  "Open a specific MCP resource by name or URI.",
+		"prompts":   "List MCP prompts across configured servers.",
+		"prompt":    "Run a specific MCP prompt with JSON arguments.",
+		"skills":    "List discovered local skills.",
+	},
+	"selection": {
+		"list":      "List saved viewer selections.",
+		"open":      "Open a workspace file in the viewer.",
+		"use":       "Activate a saved selection by number.",
+		"drop":      "Remove a saved selection by number.",
+		"note":      "Attach a note to the active selection.",
+		"tag":       "Attach tags to the active selection.",
+		"clear":     "Clear the active selection.",
+		"clear-all": "Clear all saved selections.",
+		"diff":      "Diff the active selection.",
+		"edit":      "Edit within the active selection.",
+	},
+	"hooks": {
+		"reload":   "Reload hook configuration only.",
+		"override": "List or manage temporary hook overrides.",
+	},
+	"settings": {
+		"preset":              "Apply speed|balanced|strict runtime bundle.",
+		"auto-verify":         "Show or change automatic verification after edits.",
+		"locale-auto":         "Show or change automatic locale insertion.",
+		"max-tool-iterations": "Set the max tool loop count (0/unlimited disables the cap).",
+		"progress-display":    "Show or set progress UI mode.",
+	},
+	"settings preset": {
+		"speed":    "Faster defaults: no auto-verify, no classifier, no auto review, no analysis inject.",
+		"balanced": "Auto review on; verify/classifier/analysis inject still off.",
+		"strict":   "Full safety nets: verify + classifier + auto review + analysis inject.",
+	},
+	"analyze": {
+		"project":      "Run multi-agent project analysis.",
+		"dashboard":    "Open the analysis docs portal.",
+		"performance":  "Run a performance-focused analysis pass.",
+		"docs-refresh": "Regenerate docs, dashboard, and corpus.",
+	},
+	"probe": {
+		"fuzz":       "Plan directed function fuzzing.",
+		"campaign":   "Inspect or advance the fuzz campaign.",
+		"scan":       "Run source bug-pattern scan.",
+		"root-cause": "Analyze a symptom into a root-cause report.",
+		"patterns":   "Inspect root-cause pattern packs.",
+		"driver-poc": "Generate a kernel-driver POC.",
 	},
 	"permissions": {
 		// Only the three canonical modes are listed. Legacy names
@@ -191,8 +244,9 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"off": "Disable automatic post-edit verification.",
 	},
 	"progress-display": {
+		"quiet":   "Default. Spinner/footer only; keep final answers, failures, and blockers in the transcript.",
+		"compact": "Footer progress plus durable working notes.",
 		"auto":    "Persist durable tool/model events and keep noisy updates transient.",
-		"compact": "Keep progress updates in the transient footer.",
 		"stream":  "Write every progress update to the transcript.",
 	},
 	"verify": {
@@ -294,6 +348,7 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"note":             "Quick-capture a human-curatable markdown note under .kernforge/memory.",
 		"notes":            "List the human-curatable markdown notes saved for this workspace.",
 		"note-show":        "Print one markdown note saved under .kernforge/memory.",
+		"evidence":         "Browse evidence records under the memory hub.",
 	},
 	"evidence": {
 		"recent":           "Show recent evidence records for this workspace.",
@@ -527,12 +582,7 @@ func (rt *runtimeState) completeSlashCommand(buffer string) (string, []string, b
 	}
 	leading := buffer[:len(buffer)-len(trimmedLeft)]
 	partial := normalizeSlashCommandName(commandText)
-	var matches []string
-	for _, cmd := range rt.completionCommandNames() {
-		if strings.HasPrefix(cmd, partial) {
-			matches = append(matches, cmd)
-		}
-	}
+	matches := completionSlashCommandMatches(partial, rt.completionCommandNames())
 	if len(matches) == 0 {
 		return buffer, nil, true
 	}
@@ -658,7 +708,18 @@ func providerChoiceResetCompletionTokens() []string {
 }
 
 func (rt *runtimeState) completeFuzzFuncAtPathArgument(commandName string, fields []string, endsWithSpace bool) (string, []string, bool) {
-	if commandName != "fuzz-func" || endsWithSpace || len(fields) == 0 {
+	switch commandName {
+	case "fuzz-func":
+		// keep fields as-is
+	case "probe":
+		if len(fields) == 0 || (!strings.EqualFold(fields[0], "fuzz") && !strings.EqualFold(fields[0], "fuzz-func")) {
+			return "", nil, false
+		}
+		fields = fields[1:]
+	default:
+		return "", nil, false
+	}
+	if endsWithSpace || len(fields) == 0 {
 		return "", nil, false
 	}
 
@@ -674,6 +735,9 @@ func (rt *runtimeState) completeFuzzFuncAtPathArgument(commandName string, field
 	}
 
 	prefixFields := append([]string(nil), fields[:replaceIndex]...)
+	if commandName == "probe" {
+		prefixFields = append([]string{"fuzz"}, prefixFields...)
+	}
 	if len(suggestions) > 0 {
 		rendered := make([]string, 0, len(suggestions))
 		for _, suggestion := range suggestions {
@@ -688,7 +752,28 @@ func (rt *runtimeState) completeFuzzFuncAtPathArgument(commandName string, field
 }
 
 func (rt *runtimeState) completeAnalyzeProjectPathArgument(commandName string, fields []string, endsWithSpace bool) (string, []string, bool) {
-	if commandName != "analyze-project" || len(fields) == 0 {
+	switch commandName {
+	case "analyze-project":
+		// unchanged path below
+	case "analyze":
+		if len(fields) == 0 {
+			return "", nil, false
+		}
+		if !strings.EqualFold(fields[0], "project") && !strings.EqualFold(fields[0], "run") {
+			// Bare /analyze <flags> treated as project analysis.
+			if !strings.HasPrefix(fields[0], "--") {
+				return "", nil, false
+			}
+		} else {
+			fields = fields[1:]
+			if len(fields) == 0 {
+				return "", nil, false
+			}
+		}
+	default:
+		return "", nil, false
+	}
+	if commandName == "analyze-project" && len(fields) == 0 {
 		return "", nil, false
 	}
 	pathIndex := -1
@@ -788,7 +873,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"permissions":         {"plan", "edit", "full"},
 		"locale-auto":         {"on", "off"},
 		"set-auto-verify":     {"on", "off"},
-		"progress-display":    {"auto", "compact", "stream"},
+		"progress-display":    {"quiet", "compact", "auto", "stream"},
 		"worktree":            {"status", "list", "create", "enter", "attach", "leave", "cleanup"},
 		"specialists":         {"status", "assign", "cleanup"},
 		"suggest":             {"status", "list", "accept", "dismiss", "mode", "dashboard --html"},
@@ -806,9 +891,14 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"finish":              {"--disclose"},
 		"goal":                {"--run", "--no-run", "--file GOAL.md", "@GOAL.md", "run latest", "status", "audit latest", "complete latest", "cancel latest"},
 		"review-soak":         {"--mode scripted", "--mode real-provider", "--turns", "--timeout"},
-		"memory":              {"loaded", "recent", "search", "show", "promote", "demote", "confirm", "tentative", "dashboard", "dashboard --html", "prune", "stats", "note", "notes", "note-show"},
+		"memory":              {"loaded", "recent", "search", "show", "promote", "demote", "confirm", "tentative", "dashboard", "dashboard --html", "prune", "stats", "note", "notes", "note-show", "evidence"},
 		"evidence":            {"recent", "search", "show", "dashboard", "dashboard --html"},
 		"override":            {"status", "add", "clear"},
+		"hooks":               {"reload", "override"},
+		"settings":            {"preset", "auto-verify", "locale-auto", "max-tool-iterations", "progress-display"},
+		"selection":           {"list", "open", "use", "drop", "note", "tag", "clear", "clear-all", "diff", "edit"},
+		"analyze":             {"project", "dashboard", "performance", "docs-refresh", "--mode", "--path"},
+		"probe":               {"fuzz", "campaign", "scan", "root-cause", "patterns", "driver-poc"},
 		"checkpoint":          {"auto", "diff", "list", "rollback"},
 		"new-feature":         {"next", "list"},
 		"investigate":         {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard --html"},
@@ -1108,6 +1198,22 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		return nil, 0, false
 	case "analyze-project":
 		return analyzeProjectSlashArgumentSuggestions(fields, firstLevel[commandName])
+	case "analyze":
+		if len(fields) == 0 {
+			return firstLevel[commandName], 0, true
+		}
+		if strings.EqualFold(fields[0], "project") || strings.EqualFold(fields[0], "run") {
+			subFields := fields[1:]
+			suggestions, replaceIndex, ok := analyzeProjectSlashArgumentSuggestions(subFields, []string{"--mode", "--path"})
+			if !ok {
+				return nil, 0, false
+			}
+			return suggestions, replaceIndex + 1, true
+		}
+		if strings.EqualFold(fields[0], "dashboard") || strings.EqualFold(fields[0], "performance") || strings.EqualFold(fields[0], "docs-refresh") || strings.EqualFold(fields[0], "refresh") || strings.EqualFold(fields[0], "docs") || strings.EqualFold(fields[0], "perf") {
+			return nil, 0, false
+		}
+		return analyzeProjectSlashArgumentSuggestions(fields, []string{"--mode", "--path"})
 	case "create-driver-poc":
 		return createDriverPOCSlashArgumentSuggestions(fields, firstLevel[commandName])
 	case "new-feature":
@@ -1156,6 +1262,48 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 			return uniqueStrings(options), 1, true
 		}
 		return nil, 0, false
+	case "probe":
+		if len(fields) == 0 || (len(fields) == 1 && strings.TrimSpace(fields[0]) == "") {
+			return firstLevel[commandName], 0, true
+		}
+		sub := normalizeSlashCommandName(fields[0])
+		if sub == "" {
+			return firstLevel[commandName], 0, true
+		}
+		subFields := fields[1:]
+		// endsWithSpace appends a trailing "" token before the switch; treat that
+		// as "subcommand complete, ready for next-arg suggestions".
+		if len(subFields) == 1 && strings.TrimSpace(subFields[0]) == "" {
+			subFields = nil
+		}
+		delegate := func(target string) ([]string, int, bool) {
+			if len(subFields) == 0 {
+				options := firstLevel[target]
+				if len(options) == 0 {
+					return nil, 0, false
+				}
+				return options, 1, true
+			}
+			suggestions, replaceIndex, ok := rt.slashArgumentSuggestions(target, subFields, false)
+			if !ok {
+				return nil, 0, false
+			}
+			return suggestions, replaceIndex + 1, true
+		}
+		switch sub {
+		case "fuzz", "fuzz-func":
+			return delegate("fuzz-func")
+		case "campaign", "fuzz-campaign":
+			return delegate("fuzz-campaign")
+		case "scan", "source-scan":
+			return delegate("source-scan")
+		case "patterns", "root-cause-patterns":
+			return delegate("root-cause-patterns")
+		case "driver-poc", "create-driver-poc", "poc":
+			return delegate("create-driver-poc")
+		default:
+			return nil, 0, false
+		}
 	case "fuzz-campaign":
 		if len(fields) == 1 {
 			return firstLevel[commandName], 0, true
@@ -1175,6 +1323,25 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	case "init":
 		if len(fields) == 1 {
 			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
+	case "settings":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		switch strings.ToLower(strings.TrimSpace(fields[0])) {
+		case "preset", "runtime-preset", "mode":
+			if len(fields) == 2 {
+				return []string{"speed", "balanced", "strict"}, 1, true
+			}
+		case "auto-verify", "set-auto-verify", "locale-auto", "locale":
+			if len(fields) == 2 {
+				return []string{"on", "off"}, 1, true
+			}
+		case "progress-display", "progress":
+			if len(fields) == 2 {
+				return []string{"quiet", "compact", "auto", "stream"}, 1, true
+			}
 		}
 		return nil, 0, false
 	default:

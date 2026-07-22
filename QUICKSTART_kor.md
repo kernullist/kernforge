@@ -3,13 +3,14 @@
 이 문서는 Kernforge를 처음 쓰는 사람이 가장 빨리 핵심 흐름을 체감하도록 돕는 짧은 온보딩 가이드이다.
 
 가장 먼저 기억할 것:
-1. 워크스페이스가 크거나 낯설면 먼저 `/analyze-project`
-2. live 상태가 중요하면 `/investigate`
-3. 공격자 관점이 중요하면 `/simulate`
-4. 이미 재현되는 증상이 있으면 `/find-root-cause`
-5. 입력 파라미터 관점으로 소스만 먼저 흔들어 보고 싶으면 `/fuzz-func`
-6. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review selection` 또는 `/edit-selection`
-7. 마지막에는 `/verify`, 그리고 결과는 `/evidence dashboard`와 `/memory search`로 확인
+1. 기본은 `/help`(Everyday + 허브). 전체 목록은 `/help all`.
+2. 워크스페이스가 크거나 낯설면 먼저 `/analyze project`(별칭 `/analyze-project`)
+3. live 상태가 중요하면 `/investigate`
+4. 공격자 관점이 중요하면 `/simulate`
+5. 이미 재현되는 증상이 있으면 `/probe root-cause`(별칭 `/find-root-cause`)
+6. 입력 파라미터 관점으로 소스만 먼저 흔들어 보고 싶으면 `/probe fuzz`(별칭 `/fuzz-func`)
+7. 코드 범위를 좁혀 보고 싶으면 `/selection open` 후 `/review selection` 또는 `/selection edit`
+8. 마지막에는 `/verify`, 결과는 `/memory evidence`와 `/memory search`로 확인
 
 실행 전에 `kernforge --help`를 입력하면 실행 파일 version과 standalone, one-shot, MCP server, daemon proxy 예시를 볼 수 있습니다. version만 확인할 때는 `kernforge --version`을 쓰고, MCP client에 연결할 때는 `kernforge help mcp`를 먼저 보면 됩니다.
 Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_review`로 처리합니다. 이 tool은 structured finding, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, action-oriented `next_commands`를 반환하며, 예전 review-code-only surface를 대체합니다.
@@ -26,18 +27,18 @@ $goal-to-slice-planner 이 기능을 검토 가능한 slice와 검증/문서 작
 추천 순서:
 
 ```text
-/analyze-project driver startup, integrity, and signing architecture
-/analyze-performance startup
+/analyze project driver startup, integrity, and signing architecture
+/analyze performance startup
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
-/find-root-cause guard.sys unload 후에도 user process가 device close에서 멈춰. expected: close가 반환되어야 하지만 observed: pending request가 끝나지 않아.
-/fuzz-func @driver/guard.cpp
-/open driver/guard.cpp
+/probe root-cause guard.sys unload 후에도 user process가 device close에서 멈춰. expected: close가 반환되어야 하지만 observed: pending request가 끝나지 않아.
+/probe fuzz @driver/guard.cpp
+/selection open driver/guard.cpp
 /review selection integrity bypass paths
-/edit-selection harden the selected integrity checks
+/selection edit harden the selected integrity checks
 /verify
-/evidence dashboard category:driver
+/memory evidence dashboard category:driver
 ```
 
 이 흐름의 의미:
@@ -60,7 +61,7 @@ $goal-to-slice-planner 이 기능을 검토 가능한 slice와 검증/문서 작
 - `/model analysis-worker <provider> <model> [reasoning_effort]`
 - `/model analysis-reviewer <provider> <model> [reasoning_effort]`
 - `--mode`를 생략하면 기본 모드는 `map`
-- 긴 `/analyze-project` 실행은 shard wave, 완료/실패 shard 수, worker/reviewer 모델 대기 event, 마지막 artifact 저장 단계를 보여준다. 이제 `progress_display` 기본값은 `compact`이므로 일반 진행은 조용하게 유지되고, 모든 update를 transcript에 남기고 싶을 때만 `/progress-display stream`으로 올린다.
+- 긴 `/analyze-project` 실행은 shard wave, 완료/실패 shard 수, worker/reviewer 모델 대기 event, 마지막 artifact 저장 단계를 보여준다. `progress_display` 기본값은 `quiet`이므로 일반 진행은 footer에만 남고, 모든 update를 transcript에 남기고 싶을 때만 `/progress-display stream`으로 올린다.
 - project analysis가 이전에 설정한 worker/reviewer route가 아니라 현재 main model을 따르길 원하면 `/model analysis clear`를 사용한다.
 
 조사:

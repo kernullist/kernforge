@@ -3,13 +3,14 @@
 This short guide is for getting productive with Kernforge as quickly as possible.
 
 The key loop to remember:
-1. Use `/analyze-project` first when the workspace is large or unfamiliar.
-2. Use `/investigate` when live state matters.
-3. Use `/simulate` when an extra risk lens matters.
-4. Use `/find-root-cause` when you already have a concrete symptom to explain.
-5. Use `/fuzz-func` when you want attacker-style source-only parameter reasoning before building a harness.
-6. Use `/open` plus `/review selection` or `/edit-selection` to stay focused.
-7. Use `/verify`, then inspect the result with `/evidence dashboard` and `/memory search`.
+1. Start from `/help` (Everyday + hubs). Use `/help all` only when you need expert aliases.
+2. Use `/analyze project` first when the workspace is large or unfamiliar (alias: `/analyze-project`).
+3. Use `/investigate` when live state matters.
+4. Use `/simulate` when an extra risk lens matters.
+5. Use `/probe root-cause` when you already have a concrete symptom (alias: `/find-root-cause`).
+6. Use `/probe fuzz` for attacker-style source-only parameter reasoning (alias: `/fuzz-func`).
+7. Use `/selection open` plus `/review selection` or `/selection edit` to stay focused.
+8. Use `/verify`, then inspect results with `/memory evidence` and `/memory search`.
 
 Before launching, `kernforge --help` shows the executable version plus standalone, one-shot, MCP server, and daemon proxy examples. Use `kernforge --version` for the same version-only check, and `kernforge help mcp` when wiring Kernforge into an MCP client.
 When Codex uses Kernforge as an MCP server, ask for code review through `kernforge_review`; it returns structured findings, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, and action-oriented `next_commands` instead of the older review-code-only surface.
@@ -26,18 +27,18 @@ $goal-to-slice-planner Split this feature into reviewable slices with validation
 Recommended sequence:
 
 ```text
-/analyze-project driver startup, integrity, and signing architecture
-/analyze-performance startup
+/analyze project driver startup, integrity, and signing architecture
+/analyze performance startup
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
-/find-root-cause guard.sys unload leaves the user process stuck in device close. Expected: close returns. Observed: the pending request never completes.
-/fuzz-func @driver/guard.cpp
-/open driver/guard.cpp
+/probe root-cause guard.sys unload leaves the user process stuck in device close. Expected: close returns. Observed: the pending request never completes.
+/probe fuzz @driver/guard.cpp
+/selection open driver/guard.cpp
 /review selection integrity bypass paths
-/edit-selection harden the selected integrity checks
+/selection edit harden the selected integrity checks
 /verify
-/evidence dashboard category:driver
+/memory evidence dashboard category:driver
 ```
 
 What this does:
@@ -60,7 +61,7 @@ Project analysis:
 - `/model analysis-worker <provider> <model> [reasoning_effort]`
 - `/model analysis-reviewer <provider> <model> [reasoning_effort]`
 - If you omit `--mode`, the default mode is `map`
-- Long `/analyze-project` runs show shard waves, completed/failed shard counts, worker/reviewer model wait events, and final artifact write steps. `progress_display` now defaults to `compact`, so routine progress stays quiet; switch to `/progress-display stream` when you want every update persisted.
+- Long `/analyze-project` runs show shard waves, completed/failed shard counts, worker/reviewer model wait events, and final artifact write steps. `progress_display` defaults to `quiet`, so routine progress stays in the footer; switch to `/progress-display stream` when you want every update persisted.
 - Use `/model analysis clear` when project analysis should follow the current main model instead of a previously configured worker/reviewer route
 
 Investigation:

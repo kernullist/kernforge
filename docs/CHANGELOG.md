@@ -4,6 +4,40 @@
 
 ## 2026-07-22
 
+### 스트림 최종 답 중복 출력 제거
+
+- `printAssistant`가 스트림 flush **이후**에 dedup하도록 순서를 바꿈. 기존에는 dedup 통과 후 flush하면서 동일 본문이 두 번(`>> assistant` 블록 2개) 찍혔다.
+- 정규화 본문이 서로 포함되거나 토큰 겹침 ≥92%면 재출력 억제 (스트림 sanitize drift 대비).
+
+### Speed 기본 프리셋 + 턴 시작 안내
+
+- 계획서: [[docs/plan/2026-07-22-speed-preset-and-turn-announce.md]]
+- 기본 `runtime_preset=speed`: auto-verify off, semantic classifier off, 자동 pre/post review off, project-analysis 주입 off, autocompact 예산 상향.
+- `/settings preset speed|balanced|strict`로 번들 전환. strict는 이전 안전망 조합.
+- 턴 시작 “무엇을 할지” 안내는 하드코딩 없이 모델 한 줄로 출력. API는 thinking/`ReasoningEffort` 없이 짧은 preflight(최대 8s). CLI만 preflight를 건너뛰고 본 턴 첫 줄을 thought 라인으로 승격 (`openai-codex` API는 preflight 유지).
+- 스트림에서 승격한 안내 문구는 `printAssistant` 최종 출력에서 제거해 `>> assistant` 중복 재생을 막음.
+- `@file.md` 읽기/평가 요청을 document-authoring으로 오분류하던 문제 수정 (`.md` 언급 ≠ 문서 산출). 읽기/평가는 read-only 경로로 유지해 write 하네스 우회.
+
+### Quiet 기본 출력 (Cursor/Codex/Grok 정렬)
+
+- 계획서: [[docs/plan/2026-07-22-quiet-output-ux.md]]
+- 기본 `progress_display=quiet`: 턴 중간은 spinner/footer만, shell body·working notes는 transcript에 남기지 않음.
+- `compact`/`auto`/`stream`는 유지. repair 진행은 quiet/compact에서 `N/6 stage` 한 줄.
+- 최종 답 표시 시 `Validation:`/`Remaining risk:` 등 checklist 라벨을 사람 말로 완화 (저장 텍스트는 유지).
+
+### 게이트/WARN Everyday 선택형 복구 (A+B)
+
+- 계획서: [[docs/plan/2026-07-22-gate-warn-choice-ux.md]]
+- Everyday footer에서 `gate:` status pill 제거. 비ready 시 슬래시 커맨드 없는 한 줄 CTA만 표시.
+- final_gate stall 시 번호 선택 카드: 리뷰 갱신 / 이번만 무시(조건부) / 자세히 보기 / 편집만 계속. `/status`·`/gate` 상세는 Expert/Hub 유지.
+
+### 커맨드 표면 단순화 (일상/허브/전문가 3층)
+
+- 계획서: [[docs/plan/2026-07-22-command-surface-simplification.md]]
+- 기본 `/help`는 L1 Everyday + L2 Hub만 표시; `/help all`로 전체. 구 top-level은 hidden 별칭으로 유지.
+- `/selection`, `/mcp`, `/hooks`, `/settings`, `/analyze`, `/probe` 허브로 관련 커맨드 폴딩.
+- Tab completion은 L1+L2를 우선하고, L3는 prefix 매칭 시에만 제안.
+
 ### final_answer 게이트 changed-path scope를 턴 판정과 동일화
 
 - 계획서: [[docs/plan/2026-07-21-gate-finalanswer-scope-narrowing.md]], 감사: [[docs/research/overblock-audit.md]] F3 (2026-07-19 후속 이슈 1)

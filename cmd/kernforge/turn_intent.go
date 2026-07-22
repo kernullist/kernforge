@@ -53,6 +53,9 @@ func classifyTurnIntent(text string) TurnIntent {
 	if looksLikeAnswerOnlyKnowledgeRequest(base) {
 		return TurnIntentAskProjectKnowledge
 	}
+	if looksLikeDocumentReadOrEvalRequest(base) {
+		return TurnIntentAskProjectKnowledge
+	}
 	if looksLikeExplicitEditIntent(base) {
 		return TurnIntentEditCode
 	}

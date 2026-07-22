@@ -570,10 +570,10 @@ type ReviewHarnessOptions struct {
 func configReviewHarness(cfg Config) ReviewHarnessConfig {
 	out := cfg.Review
 	if out.AutoAfterChange == nil {
-		out.AutoAfterChange = boolPtr(true)
+		out.AutoAfterChange = boolPtr(false)
 	}
 	if out.AutoAfterGoalIteration == nil {
-		out.AutoAfterGoalIteration = boolPtr(true)
+		out.AutoAfterGoalIteration = boolPtr(false)
 	}
 	if out.AutoBeforeGitWrite == nil {
 		out.AutoBeforeGitWrite = boolPtr(true)
@@ -583,7 +583,7 @@ func configReviewHarness(cfg Config) ReviewHarnessConfig {
 		out.AutoFollowUp = "safe"
 	}
 	if out.AutoRepairMaxRounds <= 0 {
-		out.AutoRepairMaxRounds = 2
+		out.AutoRepairMaxRounds = 1
 	}
 	if out.RepeatedFindingBlockThreshold <= 0 {
 		out.RepeatedFindingBlockThreshold = 2

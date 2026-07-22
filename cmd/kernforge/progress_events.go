@@ -30,6 +30,9 @@ const (
 	// requirement analysis, plan direction, and provider reasoning summaries
 	// before or between tools (Claude Code / Grok Build style).
 	progressKindModelThought = "model_thought"
+	// progressKindTurnPlan is the turn-start "what I'll do" line. Always durable
+	// even in quiet mode so the operator sees orientation before long waits.
+	progressKindTurnPlan = "turn_plan"
 )
 
 func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
@@ -54,13 +57,19 @@ func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
 }
 
 func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
-	// Working notes are already operator-facing prose; do not run them through
-	// the generic progress humanizer (which is meant for status phrases).
-	if strings.TrimSpace(event.Kind) == progressKindModelThought {
+	// Working notes / turn plans are already operator-facing prose; do not run
+	// them through the generic progress humanizer (meant for status phrases).
+	switch strings.TrimSpace(event.Kind) {
+	case progressKindModelThought:
 		if msg := strings.TrimSpace(event.Message); msg != "" {
 			return msg
 		}
 		return localizedText(cfg, "Model working note", "모델 작업 메모")
+	case progressKindTurnPlan:
+		if msg := strings.TrimSpace(event.Message); msg != "" {
+			return msg
+		}
+		return localizedText(cfg, "Starting work on your request.", "요청 작업을 시작합니다.")
 	}
 	if strings.TrimSpace(event.Message) != "" {
 		return formatProgressEventMessageWithContext(cfg, event, humanizeProgressMessage(cfg, strings.TrimSpace(event.Message)))

@@ -94,7 +94,10 @@ func buildRequestEnvelope(userText string) RequestEnvelope {
 	// imperative source-edit command, treat the request as document authoring so
 	// it never renders as a must_edit code-edit request. This covers document
 	// phrasing the authoring-intent heuristic misses (for example save-to-file).
-	if normalizeReviewRequestClass(reviewDecision.RequestClass) == reviewRequestClassDocumentArtifact && !looksLikeImperativeSourceEditCommand(base) {
+	// Pure read/evaluate of an existing @doc.md must stay analysis-only.
+	if normalizeReviewRequestClass(reviewDecision.RequestClass) == reviewRequestClassDocumentArtifact &&
+		!looksLikeImperativeSourceEditCommand(base) &&
+		!looksLikeDocumentReadOrEvalRequest(base) {
 		documentAuthoring = true
 		mode.ExplicitEditRequest = false
 	}

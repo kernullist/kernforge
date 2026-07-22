@@ -11,7 +11,7 @@ import (
 func (rt *runtimeState) requireSelection() (ViewerSelection, error) {
 	selection := rt.session.CurrentSelection()
 	if selection == nil || !selection.HasSelection() {
-		return ViewerSelection{}, fmt.Errorf("no current selection. Use /open and select a range first")
+		return ViewerSelection{}, fmt.Errorf("no current selection. Use /selection open <path> (alias: /open) and select a range first")
 	}
 	return *selection, nil
 }
@@ -34,7 +34,7 @@ func (rt *runtimeState) handleSelectionCommand() error {
 func (rt *runtimeState) handleSelectionsCommand() error {
 	rt.session.normalizeSelectionState()
 	if len(rt.session.Selections) == 0 {
-		return fmt.Errorf("no saved selections. Use /open and select a range first")
+		return fmt.Errorf("no saved selections. Use /selection open <path> (alias: /open) and select a range first")
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Selections"))
 	for i, selection := range rt.session.Selections {
@@ -50,10 +50,10 @@ func (rt *runtimeState) handleSelectionsCommand() error {
 func (rt *runtimeState) handleSelectionNoteCommand(note string) error {
 	selection := rt.session.CurrentSelection()
 	if selection == nil || !selection.HasSelection() {
-		return fmt.Errorf("no current selection. Use /open and select a range first")
+		return fmt.Errorf("no current selection. Use /selection open <path> (alias: /open) and select a range first")
 	}
 	if strings.TrimSpace(note) == "" {
-		return fmt.Errorf("usage: /note-selection <text>")
+		return fmt.Errorf("usage: /selection note <text> (alias: /note-selection <text>)")
 	}
 	rt.session.Selections[rt.session.ActiveSelection].Note = strings.TrimSpace(note)
 	active := rt.session.Selections[rt.session.ActiveSelection]
@@ -67,10 +67,10 @@ func (rt *runtimeState) handleSelectionNoteCommand(note string) error {
 func (rt *runtimeState) handleSelectionTagCommand(tags string) error {
 	selection := rt.session.CurrentSelection()
 	if selection == nil || !selection.HasSelection() {
-		return fmt.Errorf("no current selection. Use /open and select a range first")
+		return fmt.Errorf("no current selection. Use /selection open <path> (alias: /open) and select a range first")
 	}
 	if strings.TrimSpace(tags) == "" {
-		return fmt.Errorf("usage: /tag-selection <tag[,tag2,...]>")
+		return fmt.Errorf("usage: /selection tag <tag[,tag2,...]> (alias: /tag-selection)")
 	}
 	rt.session.Selections[rt.session.ActiveSelection].SetTags(tags)
 	active := rt.session.Selections[rt.session.ActiveSelection]
@@ -84,7 +84,7 @@ func (rt *runtimeState) handleSelectionTagCommand(tags string) error {
 func (rt *runtimeState) handleUseSelectionCommand(arg string) error {
 	index, err := parsePositiveInt(strings.TrimSpace(arg))
 	if err != nil || index < 1 {
-		return fmt.Errorf("usage: /use-selection <n>")
+		return fmt.Errorf("usage: /selection use <n> (alias: /use-selection <n>)")
 	}
 	if !rt.session.SetActiveSelection(index - 1) {
 		return fmt.Errorf("selection index out of range: %d", index)
@@ -97,7 +97,7 @@ func (rt *runtimeState) handleUseSelectionCommand(arg string) error {
 func (rt *runtimeState) handleDropSelectionCommand(arg string) error {
 	index, err := parsePositiveInt(strings.TrimSpace(arg))
 	if err != nil || index < 1 {
-		return fmt.Errorf("usage: /drop-selection <n>")
+		return fmt.Errorf("usage: /selection drop <n> (alias: /drop-selection <n>)")
 	}
 	if !rt.session.RemoveSelection(index - 1) {
 		return fmt.Errorf("selection index out of range: %d", index)
@@ -151,7 +151,7 @@ func (rt *runtimeState) handleSelectionReviewCommand(extra string) error {
 func (rt *runtimeState) handleSelectionsReviewCommand(args string) error {
 	rt.session.normalizeSelectionState()
 	if len(rt.session.Selections) == 0 {
-		return fmt.Errorf("no saved selections. Use /open and select a range first")
+		return fmt.Errorf("no saved selections. Use /selection open <path> (alias: /open) and select a range first")
 	}
 	selected, extra, err := parseSelectionReviewArgs(rt.session, args)
 	if err != nil {

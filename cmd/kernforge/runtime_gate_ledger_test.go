@@ -1923,27 +1923,25 @@ func TestRuntimeGateRecoveryGuidanceLinesForStaleBlock(t *testing.T) {
 	ledger.Normalize()
 
 	ko := runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(true)}, nil, ledger)
-	if len(ko) < 3 {
-		t.Fatalf("expected multi-line recovery guidance, got %#v", ko)
+	if len(ko) < 1 {
+		t.Fatalf("expected recovery CTA, got %#v", ko)
 	}
 	joined := strings.Join(ko, "\n")
 	if !strings.Contains(joined, "완료·커밋") ||
-		!strings.Contains(joined, "방법 1)") ||
-		!strings.Contains(joined, "/review") ||
-		!strings.Contains(joined, "방법 2)") ||
-		!strings.Contains(joined, "/gate clear") ||
-		!strings.Contains(joined, "/status") {
-		t.Fatalf("korean recovery guidance missing action steps:\n%s", joined)
+		!strings.Contains(joined, "번호로 고르면") ||
+		strings.Contains(joined, "/review") ||
+		strings.Contains(joined, "/gate clear") ||
+		strings.Contains(joined, "/status") {
+		t.Fatalf("korean recovery CTA should be command-free:\n%s", joined)
 	}
 
 	en := runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(false)}, nil, ledger)
 	joinedEN := strings.Join(en, "\n")
-	if !strings.Contains(joinedEN, "Option 1)") ||
-		!strings.Contains(joinedEN, "/review") ||
-		!strings.Contains(joinedEN, "Option 2)") ||
-		!strings.Contains(joinedEN, "/gate clear") ||
-		!strings.Contains(joinedEN, "completion/git write") {
-		t.Fatalf("english recovery guidance missing action steps:\n%s", joinedEN)
+	if !strings.Contains(joinedEN, "numbered option") ||
+		!strings.Contains(joinedEN, "Completion and git write") ||
+		strings.Contains(joinedEN, "/review") ||
+		strings.Contains(joinedEN, "/gate clear") {
+		t.Fatalf("english recovery CTA should be command-free:\n%s", joinedEN)
 	}
 
 	// Ready gate must stay silent.
@@ -1957,6 +1955,27 @@ func TestPrintOperatorFooterShowsRecoveryWhenGateBlocked(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"UserCommon.h"})
 	session := NewSession(root, "provider", "model", "", "default")
+	// final_answer gate uses tracked patch scope only, so the dirty file must
+	// be recorded in a current-turn patch transaction.
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "UserCommon.h를 수정해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:        "patch-tx-footer",
+		Goal:      "UserCommon.h를 수정해",
+		Status:    patchTransactionStatusCommitted,
+		StartedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-tx-footer-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "UserCommon.h",
+				Operation: "modify",
+			}},
+		}},
+	}}
 	session.LastReviewRun = &ReviewRun{
 		ID:                "review-stale",
 		SchemaVersion:     reviewSchemaVersion,
@@ -1985,12 +2004,14 @@ func TestPrintOperatorFooterShowsRecoveryWhenGateBlocked(t *testing.T) {
 	if !strings.Contains(rendered, "status ") {
 		t.Fatalf("expected status pills line, got:\n%s", rendered)
 	}
+	if strings.Contains(rendered, "[gate:") {
+		t.Fatalf("everyday footer must not include gate: pill, got:\n%s", rendered)
+	}
 	if !strings.Contains(rendered, "WARN") ||
-		!strings.Contains(rendered, "방법 1)") ||
-		!strings.Contains(rendered, "/review") ||
-		!strings.Contains(rendered, "방법 2)") ||
-		!strings.Contains(rendered, "/gate clear") {
-		t.Fatalf("expected blocked-gate recovery steps in footer, got:\n%s", rendered)
+		!strings.Contains(rendered, "번호로 고르면") ||
+		strings.Contains(rendered, "/review") ||
+		strings.Contains(rendered, "/gate clear") {
+		t.Fatalf("expected command-free blocked CTA in footer, got:\n%s", rendered)
 	}
 }
 

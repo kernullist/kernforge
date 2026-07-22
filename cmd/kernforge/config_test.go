@@ -2787,7 +2787,7 @@ func TestMergeConfigPreservesEmptyProjectRootMarkersOverride(t *testing.T) {
 }
 
 func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
-	help := HelpText()
+	help := HelpTextAll()
 	for _, needle := range []string{
 		"/reload",
 		"/init skill <name>",
@@ -2958,12 +2958,12 @@ func TestHelpDetailIncludesProviderStatusCommand(t *testing.T) {
 }
 
 func TestHelpTextIncludesAnalyzeProjectDocsCommands(t *testing.T) {
-	help := HelpText()
+	help := HelpTextAll()
 	for _, needle := range []string{
 		"/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance]",
-		"infer a mode-specific goal when omitted",
 		"/docs-refresh",
 		"/analyze-dashboard [latest|path]",
+		"/analyze project",
 	} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to include %q", needle)
@@ -2972,38 +2972,63 @@ func TestHelpTextIncludesAnalyzeProjectDocsCommands(t *testing.T) {
 	if strings.Contains(help, "/analyze-project [--docs]") {
 		t.Fatalf("expected analyze-project help to hide deprecated --docs flag")
 	}
+	detail, ok := HelpDetail("analyze")
+	if !ok || !strings.Contains(detail, "/analyze") {
+		t.Fatalf("expected analyze help detail")
+	}
 }
 
 func TestHelpTextIncludesFuzzCampaignCommand(t *testing.T) {
-	help := HelpText()
+	help := HelpTextAll()
 	for _, needle := range []string{
 		"/fuzz-campaign [status|run|new|list|show]",
-		"deduplicated finding lifecycle",
-		"parsed coverage report feedback",
-		"sanitizer/verifier artifact capture",
+		"/probe campaign",
 	} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to include %q", needle)
 		}
 	}
+	detail, ok := HelpDetail("verification")
+	if !ok {
+		t.Fatalf("expected verification help detail")
+	}
+	for _, needle := range []string{
+		"deduplicated finding lifecycle",
+		"parsed coverage reports",
+		"sanitizer/verifier artifact",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected verification help detail to include %q", needle)
+		}
+	}
 }
 
 func TestHelpTextIncludesSourceScanCommand(t *testing.T) {
-	help := HelpText()
+	help := HelpTextAll()
 	for _, needle := range []string{
 		"/source-scan [status|run|list|show|revalidate]",
-		"/create-driver-poc <driver-name>",
-		"/create-driver-poc <driver-name> --type objectfilter",
+		"/probe scan",
+		"/create-driver-poc",
 		"--type objectfilter|minifilter|registryfilter|wfpcallout",
-		"--type objectfilter",
-		"--type minifilter",
-		"--type registryfilter",
-		"--type wfpcallout",
-		"/fuzz-func --from-candidate <candidate-id>",
 		"built-in bug-pattern matchers",
 	} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to include %q", needle)
+		}
+	}
+	detail, ok := HelpDetail("verification")
+	if !ok {
+		t.Fatalf("expected verification help detail")
+	}
+	for _, needle := range []string{
+		"/fuzz-func --from-candidate <candidate-id>",
+		"--type objectfilter",
+		"--type minifilter",
+		"--type registryfilter",
+		"--type wfpcallout",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected verification help detail to include %q", needle)
 		}
 	}
 }
@@ -3160,17 +3185,50 @@ func TestDefaultMemoryPathsExcludeLegacyLocations(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigEnablesAutoVerify(t *testing.T) {
+func TestDefaultConfigUsesSpeedPreset(t *testing.T) {
 	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
-	if !configAutoVerify(cfg) {
-		t.Fatalf("expected auto_verify to default to true")
+	if got := configRuntimePreset(cfg); got != runtimePresetSpeed {
+		t.Fatalf("expected speed preset, got %q", got)
+	}
+	if configAutoVerify(cfg) {
+		t.Fatalf("expected auto_verify to default to false")
+	}
+	if configInjectProjectAnalysis(cfg) {
+		t.Fatalf("expected inject_project_analysis to default to false")
+	}
+	if cfg.RequestRuntime.SemanticClassifier.Mode != RequestSemanticClassifierModeDisabled {
+		t.Fatalf("expected semantic classifier disabled, got %q", cfg.RequestRuntime.SemanticClassifier.Mode)
+	}
+	review := configReviewHarness(cfg)
+	if review.AutoAfterChange == nil || *review.AutoAfterChange {
+		t.Fatalf("expected auto_after_change false, got %#v", review.AutoAfterChange)
+	}
+	if cfg.AutoCompactChars != 90000 {
+		t.Fatalf("expected larger autocompact budget, got %d", cfg.AutoCompactChars)
 	}
 }
 
-func TestDefaultConfigUsesCompactProgressDisplay(t *testing.T) {
+func TestApplyRuntimePresetStrictRestoresSafetyNets(t *testing.T) {
 	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
-	if got := configProgressDisplay(cfg); got != "compact" {
-		t.Fatalf("expected progress display compact, got %q", got)
+	if !applyRuntimePreset(&cfg, "strict") {
+		t.Fatal("expected strict preset to apply")
+	}
+	if !configAutoVerify(cfg) || !configInjectProjectAnalysis(cfg) {
+		t.Fatalf("strict should enable verify+analysis inject")
+	}
+	if cfg.RequestRuntime.SemanticClassifier.Mode != RequestSemanticClassifierModeEnabled {
+		t.Fatalf("strict should enable classifier, got %q", cfg.RequestRuntime.SemanticClassifier.Mode)
+	}
+	review := configReviewHarness(cfg)
+	if review.AutoAfterChange == nil || !*review.AutoAfterChange {
+		t.Fatalf("strict should enable auto_after_change")
+	}
+}
+
+func TestDefaultConfigUsesQuietProgressDisplay(t *testing.T) {
+	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
+	if got := configProgressDisplay(cfg); got != "quiet" {
+		t.Fatalf("expected progress display quiet, got %q", got)
 	}
 }
 
@@ -3186,13 +3244,15 @@ func TestParseCommandKeepsCommandNamesCanonicalOnly(t *testing.T) {
 
 func TestNormalizeProgressDisplayAliases(t *testing.T) {
 	cases := map[string]string{
-		"":           "auto",
-		"default":    "auto",
+		"":           "quiet",
+		"default":    "quiet",
+		"quiet":      "quiet",
 		"footer":     "compact",
-		"quiet":      "compact",
+		"compact":    "compact",
+		"auto":       "auto",
 		"ledger":     "stream",
 		"persistent": "stream",
-		"bad":        "auto",
+		"bad":        "quiet",
 	}
 	for input, want := range cases {
 		if got := normalizeProgressDisplay(input); got != want {

@@ -65,7 +65,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 8. 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
 9. 최종 streamed 답변이 문장 중간에서 끊겨 보이면 모델에게 한 번 continuation을 요청하고, 이어진 답을 합쳐서 프롬프트로 복귀한다.
 10. 메인 프롬프트에서 빈 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
-11. `progress_display`가 진행 표시 방식을 제어하며 기본값은 일반 review/coding 작업을 읽기 쉽게 유지하는 `compact`이다. `/progress-display auto|compact|stream`으로 REPL에서 바로 바꾼다. `compact`는 짧고 쉬운 progress를 footer 중심으로 보여주고, `auto`는 반복적인 상세 review flow text 없이 중요한 tool/model 및 project analysis event를 남기며, `stream`은 상세 디버깅용으로 모든 update를 지속 기록한다.
+11. `progress_display`가 진행 표시 방식을 제어하며 기본값은 Cursor/Codex/Grok처럼 조용한 `quiet`이다. `/progress-display quiet|compact|auto|stream`으로 REPL에서 바로 바꾼다. `quiet`는 턴 중간을 footer/spinner만 남기고, `compact`는 working notes를 추가로 남기며, `auto`는 shell body spam 없이 중요한 tool/model event를 남기고, `stream`은 상세 디버깅용으로 모든 update를 지속 기록한다.
 12. OpenAI-compatible 및 OpenAI Codex streaming provider는 tool-call 구성 event를 emit해서 모델이 tool call을 준비 중인지, 인자가 언제 완성됐는지 사용자가 볼 수 있다.
 13. DeepSeek와 OpenAI-compatible follow-up request는 저장된 tool transcript를 replay 전에 정규화한다. 고아 `tool` result는 일반 context로 바꾸고 빠진 tool-call response는 synthetic result로 채워서 복구된 세션이 provider의 message validation에서 거부되지 않게 한다.
 14. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.
@@ -957,12 +957,17 @@ review/Ops 테스트 전략:
 2. subcommand나 id를 기억하지 못해도 빠르게 이어서 작업하게 한다.
 
 현재 `Tab` 완성이 커버하는 범위:
-1. slash command 이름
+1. slash command 이름(Everyday + Hub 우선; expert 별칭은 prefix가 맞을 때만)
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/permissions`, `/checkpoint auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
-5. `/resume`, `/evidence show`, `/memory show`, `/memory promote`, `/memory demote`, `/memory confirm`, `/memory tentative`, `/investigate show`, `/simulate show`에 필요한 저장된 id. `/new-feature`는 id 중심 subcommand 대신 active feature를 기준으로 이어간다.
+4. `/settings auto-verify on|off`, `/settings progress-display auto|compact|stream`, `/permissions`, `/checkpoint auto`, `/provider status|…`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze project --mode <mode>`, `/probe fuzz|scan|…` 같은 고정 인자
+5. `/resume`, `/memory evidence show`, `/memory show`, `/memory promote|demote|confirm|tentative`, `/investigate show`, `/simulate show`에 필요한 저장된 id. `/new-feature`는 id 중심 subcommand 대신 active feature를 기준으로 이어간다.
 6. command/subcommand 후보가 이름만이 아니라 설명까지 같이 보이도록 completion list를 렌더링한다.
+
+커맨드 표면 메모:
+1. 기본 `/help`는 Everyday + Hub만 보여 주고, `/help all`이 전체 카탈로그다.
+2. `/selection`, `/analyze`, `/probe`, `/mcp`, `/hooks`, `/settings` 허브를 우선하고 legacy 별칭은 외우지 않아도 된다.
+3. 구 top-level 이름은 hidden 별칭으로 당분간 유지된다.
 
 토큰 예산 관점에서 달라진 점:
 1. cached `analyze-project` summary가 더 적절하면 auto-scout 코드 조각보다 먼저 주입될 수 있다.

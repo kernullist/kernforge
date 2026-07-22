@@ -51,7 +51,7 @@ func TestInspectThenDocumentTurnIsNonRepair(t *testing.T) {
 		t.Fatalf("document-after-inspect must not be treated as code-repair turn: %q", q)
 	}
 	// Recovery card for this request must prefer answer/write, not repair.
-	recovery := buildStallBlockedRecoveryWithMode(Config{}, harnessRecoveryCauseReadChurn, "stopped", []string{"README.md"}, true)
+	recovery := buildStallBlockedRecoveryWithMode(Config{}, nil, harnessRecoveryCauseReadChurn, "stopped", []string{"README.md"}, true)
 	if recovery.Actions[0].Kind != harnessRecoveryActionAnswer {
 		t.Fatalf("primary recovery must be answer/write, got %#v", recovery.Actions[0])
 	}

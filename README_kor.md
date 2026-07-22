@@ -332,7 +332,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 기본 대기 문구는 thinking prefix와 중복되지 않게 정리해서 같은 의미를 두 번 보여주지 않는다.
 - thinking elapsed 표시는 phase 전환마다 다시 기준 시간을 잡고, 비정상적으로 오래 남은 stale timer 값은 2시간 표시로 clamp한다.
 - 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
-- `progress_display`가 진행 표시 방식을 제어하며 기본값은 일반 review/coding 작업을 읽기 쉽게 유지하는 `compact`이다. REPL에서는 `/progress-display auto|compact|stream`으로 바로 바꾼다. `compact`는 짧고 쉬운 operator line과 footer 중심으로 조용하게 보여주며, `auto`는 반복적인 상세 review flow text를 피하면서 중요한 durable event만 남기고, `stream`은 상세 디버깅을 위해 모든 progress update를 본문에 지속 기록한다.
+- `progress_display`가 진행 표시 방식을 제어하며 기본값은 Cursor/Codex/Grok처럼 조용한 `quiet`이다. REPL에서는 `/progress-display quiet|compact|auto|stream`으로 바로 바꾼다. `quiet`는 턴 중간을 spinner/footer만 남기고, `compact`는 working notes를 추가로 남기며, `auto`는 중요한 durable event를 남기고, `stream`은 모든 progress update를 본문에 지속 기록한다.
 - 새 프롬프트 직전에는 `cwd`, provider/model, runtime gate, permission profile, progress display, MCP, skills, verification, memory, warning, provider route error를 compact operator footer로 보여주므로 `/status`를 열지 않아도 현재 작업 상태를 바로 읽을 수 있다. footer와 `/status` overview는 같은 renderer와 compact 용어를 공유하며, 좁은 터미널에서는 필드를 숨기지 않고 2줄로 나눠 보여준다.
 - provider, tool, command 실패는 `.kernforge/logs/errors.jsonl` capped JSONL에도 함께 기록된다. Kernforge는 이 파일을 100MB 이하로 유지하므로 UI가 지나간 뒤에도 retry-only provider 실패 원인을 추적할 수 있다.
 - OpenAI-compatible 및 OpenAI Codex streaming provider는 tool-call 구성 event를 노출해서 모델이 어떤 tool을 준비 중이고 언제 인자가 완성됐는지 REPL에서 볼 수 있다.
@@ -741,7 +741,7 @@ current directory가 workspace 안에 있으면 `!cd ..`로 workspace root까지
   "shell": "powershell",
   "request_timeout_seconds": 1200,
   "shell_timeout_seconds": 900,
-  "progress_display": "compact",
+  "progress_display": "quiet",
   "max_tokens": 8192,
   "model_routes": {
     "enabled": true,
@@ -795,7 +795,7 @@ current directory가 workspace 안에 있으면 `!cd ..`로 workspace root까지
 | `max_request_retries` | transient provider error 또는 timeout 시 모델 요청 재시도 횟수 |
 | `request_retry_delay_ms` | 모델 요청 재시도 전 기본 backoff 지연(ms) |
 | `request_timeout_seconds` | 모델 요청 timeout 초 단위 설정 |
-| `progress_display` | runtime 진행 표시 방식. 기본값 `compact`는 일반 진행 상태를 transient/footer 중심으로 유지하고 review 결과를 쉬운 action 중심으로 보여준다. `auto`는 반복적인 상세 review flow text를 피하면서 중요한 tool/model/project-analysis event만 남기며, `stream`은 긴 작업 디버깅을 위해 모든 progress update를 transcript에 기록하되 stage/wait/next-action도 읽을 수 있는 텍스트로 표시한다. |
+| `progress_display` | runtime 진행 표시 방식. 기본값 `quiet`는 턴 중간을 spinner/footer만 남기고 최종 답·실패·차단만 transcript에 남긴다. `compact`는 working notes를 추가로 남기고, `auto`는 중요한 tool/model event를 남기며, `stream`은 모든 progress update를 transcript에 기록한다. |
 | `model_routes` | provider/model/base_url/reasoning_effort route별 동시 모델 요청 제한. local provider는 기본 직렬 실행하고, cloud/API route는 설정된 provider 또는 route limit을 따른다. |
 | `max_tool_iterations` | 요청당 tool loop 최대 반복 수. `0` 또는 음수는 제한 없음이며 기본값은 `0` |
 | `permission_mode` | `plan` (기본, 읽기 전용), `edit`, `full`; 레거시 이름과 Codex 프로파일 id 수용 |
@@ -1210,25 +1210,39 @@ New-NetFirewallRule -DisplayName "mcp-<port>" -Direction Inbound -Protocol TCP -
 
 ### 유용한 런타임 명령
 
+기본 `/help`는 Everyday + Hub만 보여준다. 전체 목록은 `/help all`. 허브만 입력하면(`/selection`, `/probe` …) 치트시트가 나온다.
+
 ```text
-/config
-/context
-/decision
-/provider status
-/model
-/effort
-/status
-/version
 /help
-/reload
+/help all
+/status
+/clear
+/model
+/provider status
+/permissions
+/review
+/verify
+/gate
+/diff
+/config
+/session
+/memory
+/selection
+/analyze
+/probe
+/mcp
 /hooks
-/hook-reload
-/override
-/specialists
+/settings
+/checkpoint
+/goal
+/suggest
 /worktree status
-/worktree list
+/specialists
 ```
 
+- 먼저 외울 Everyday: `/help`, `/status`, `/model`, `/review`, `/verify`, `/gate`, `/config`.
+- 허브로 관련 동사를 묶는다: `/selection open|list|use|…`, `/probe fuzz|scan|root-cause|…`, `/analyze project|dashboard|…`, `/settings auto-verify|…`, `/hooks reload|override`.
+- `/fuzz-func`, `/analyze-project`, `/use-selection`, `/set-auto-verify`, `/hook-reload` 같은 구 이름은 hidden 별칭으로 계속 동작한다.
 - `/status`는 prompt footer와 같은 compact operator summary를 먼저 보여준다. 여기에는 cwd, provider, gate, permission profile, progress display, MCP, skills, verification, memory, warning, route error가 들어간다. 상세 섹션에는 기존처럼 approval 상태, 세션 id, 메모리/검증/MCP 카운트와 runtime gate ledger가 유지되며, 최신 review freshness, gate reason, 활성 blocker class, 다음 복구 명령을 확인할 수 있다.
 - `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, hook/locale/verification 설정이 여기에 들어간다.
 - `/provider status`는 active provider, 정규화된 `base_url`, API key 설정 여부, provider별 budget visibility를 보여준다. OpenRouter와 DeepSeek는 live lookup을 수행하고, OpenAI/Anthropic은 공식 문서 기준의 제약과 billing 안내를 노출한다.
@@ -1296,7 +1310,7 @@ New-NetFirewallRule -DisplayName "mcp-<port>" -Direction Inbound -Protocol TCP -
 /worktree [status|list|create [name]|enter|attach <path>|leave|cleanup]
 /permissions [mode]
 /set-max-tool-iterations <n|0|unlimited|none|off>
-/progress-display [auto|compact|stream]
+/progress-display [quiet|compact|auto|stream]
 /locale-auto [on|off]
 ```
 
@@ -1315,7 +1329,7 @@ New-NetFirewallRule -DisplayName "mcp-<port>" -Direction Inbound -Protocol TCP -
 - `/model analysis`는 project analysis worker/reviewer 프로필을 따로 설정할 때 쓴다.
 - `/model task-owner ...`은 특정 task owner profile에만 workspace 단위의 선택적 모델 override를 줄 때 쓴다.
 - `/set-max-tool-iterations 0`, `/set-max-tool-iterations unlimited`, `/set-max-tool-iterations none`, `/set-max-tool-iterations off`는 요청당 tool loop 제한을 끈다.
-- `/progress-display`는 runtime 진행 표시 모드를 보여주거나 저장한다. 기본값은 `compact`이며 Codex CLI처럼 조용한 operator view를 우선한다. `auto`는 반복적인 상세 review flow text 없이 중요한 tool/model ledger만 남기고, `stream`은 모든 progress update를 transcript에 남기되 raw 진단 토큰 대신 읽을 수 있는 stage/wait/next-action 텍스트를 사용한다.
+- `/progress-display`는 runtime 진행 표시 모드를 보여주거나 저장한다. 기본값은 `quiet`이며 Cursor/Codex/Grok처럼 조용한 view를 우선한다. `compact`는 working notes를 남기고, `auto`는 중요한 tool/model ledger를 남기며, `stream`은 모든 progress update를 transcript에 남긴다.
 - `/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 parser 호환용으로만 남아 있고 help와 completion에는 노출하지 않는다. 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 사용한다.
 
 ### 취소와 히스토리

@@ -194,8 +194,8 @@ func TestFunctionFuzzBumpMaxTotalTime(t *testing.T) {
 }
 
 func TestHelpTextIncludesFuzzFuncCommand(t *testing.T) {
-	help := HelpText()
-	if !strings.Contains(help, "/fuzz-func <name>") {
+	help := HelpTextAll()
+	if !strings.Contains(help, "/fuzz-func") {
 		t.Fatalf("expected help text to include /fuzz-func, got %q", help)
 	}
 	if !strings.Contains(help, "--file <path>") {
@@ -204,8 +204,9 @@ func TestHelpTextIncludesFuzzFuncCommand(t *testing.T) {
 	if !strings.Contains(help, "@<path>") {
 		t.Fatalf("expected help text to include @ alias usage, got %q", help)
 	}
-	if !strings.Contains(help, "/fuzz-func --file <path>") {
-		t.Fatalf("expected help text to include file-only usage, got %q", help)
+	detail, ok := HelpDetail("verification")
+	if !ok || !strings.Contains(detail, "/fuzz-func --file <path>") {
+		t.Fatalf("expected verification help detail to include file-only usage")
 	}
 }
 

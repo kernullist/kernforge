@@ -75,8 +75,10 @@ func (rt *runtimeState) handleMemoryFamilyCommand(args string) error {
 		return rt.handleMarkdownMemoryNotesList()
 	case "note-show":
 		return rt.handleMarkdownMemoryNoteShow(rest)
+	case "evidence":
+		return rt.handleEvidenceFamilyCommand(rest)
 	default:
-		return fmt.Errorf("usage: /memory [loaded|recent|search|show|promote|demote|confirm|tentative|dashboard [--html]|prune|stats|note [title -- body]|notes|note-show <file>]")
+		return fmt.Errorf("usage: /memory [loaded|recent|search|show|promote|demote|confirm|tentative|dashboard [--html]|prune|stats|note [title -- body]|notes|note-show <file>|evidence ...]")
 	}
 }
 
@@ -182,7 +184,7 @@ func (rt *runtimeState) handleEvidenceFamilyCommand(args string) error {
 	case "dashboard-html":
 		return rt.handleEvidenceDashboard(rest, true)
 	default:
-		return fmt.Errorf("usage: /evidence [recent|search|show|dashboard [--html]]")
+		return fmt.Errorf("usage: /evidence [recent|search|show|dashboard [--html]] (also: /memory evidence ...)")
 	}
 }
 

@@ -339,7 +339,7 @@ Its current differentiators are:
 - Generic waiting text is collapsed so the thinking indicator does not repeat the same message twice
 - Thinking elapsed time is rebased at phase boundaries and stale runaway timer displays are clamped at the 2-hour mark
 - Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
-- `progress_display` controls in-flight visibility and defaults to `compact` so routine review and coding work stays readable. Change it from the REPL with `/progress-display auto|compact|stream`. `compact` keeps progress in the footer with short operator lines, `auto` preserves important durable events without repeating verbose review flow text, and `stream` writes every progress update persistently for detailed debugging
+- `progress_display` controls in-flight visibility and defaults to `quiet` so routine work looks like Cursor/Codex/Grok: spinner/footer during the turn, final answer and failures in the transcript. Change it with `/progress-display quiet|compact|auto|stream`. `compact` adds durable working notes, `auto` keeps durable tool/model events without shell-body spam, and `stream` persists every progress update
 - Each new prompt also prints a compact operator footer for `cwd`, provider/model, runtime gate, permission profile, progress display, MCP, skills, verification, memory, warnings, and provider-route errors, so the current operating state is visible without opening `/status`. The footer and `/status` overview share the same renderer and compact vocabulary, and narrow terminals split it into two readable lines instead of hiding fields.
 - Provider, tool, and command failures are mirrored to `.kernforge/logs/errors.jsonl` as capped JSONL; Kernforge keeps that file at or below 100 MB so retry-only provider failures remain debuggable after the UI has moved on
 - OpenAI-compatible and OpenAI Codex streaming providers surface tool-call construction events, so the REPL can show when the model is preparing a tool and when the arguments are ready
@@ -761,7 +761,7 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
   "shell": "powershell",
   "request_timeout_seconds": 1200,
   "shell_timeout_seconds": 900,
-  "progress_display": "compact",
+  "progress_display": "quiet",
   "max_tokens": 8192,
   "model_routes": {
     "enabled": true,
@@ -815,7 +815,7 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
 | `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
 | `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
 | `request_timeout_seconds` | Per-request model timeout in seconds |
-| `progress_display` | Runtime progress style. Default `compact` keeps routine progress transient and review output action-oriented; `auto` keeps durable tool/model/project-analysis events while avoiding repeated verbose review flow text; `stream` writes every progress update into the transcript for long-run debugging |
+| `progress_display` | Runtime progress style. Default `quiet` keeps mid-turn activity in the spinner/footer and leaves final answers, failures, and blockers in the transcript; `compact` adds durable working notes; `auto` keeps durable tool/model events; `stream` writes every progress update into the transcript |
 | `model_routes` | Per-route model concurrency limits keyed by provider/model/base_url/reasoning_effort. Local providers default to serial execution, while cloud/API routes follow the configured provider or route limit. |
 | `max_tool_iterations` | Max tool loop count per request. `0` or any non-positive value means unlimited, and the default is `0` |
 | `permission_mode` | `plan` (default, read-only), `edit`, `full`; legacy names and Codex profile ids accepted |
@@ -1230,24 +1230,39 @@ Explain the structure of this repository
 
 ### Useful Runtime Commands
 
+Default `/help` shows Everyday commands plus hubs. Use `/help all` for the full catalog (including legacy aliases). Type a hub alone (`/selection`, `/probe`, …) for a cheatsheet.
+
 ```text
-/config
-/context
-/decision
-/provider status
-/model
-/effort
-/status
-/version
 /help
-/reload
+/help all
+/status
+/clear
+/model
+/provider status
+/permissions
+/review
+/verify
+/gate
+/diff
+/config
+/session
+/memory
+/selection
+/analyze
+/probe
+/mcp
 /hooks
-/hook-reload
-/override
-/specialists
+/settings
+/checkpoint
+/goal
+/suggest
 /worktree status
+/specialists
 ```
 
+- Everyday commands to memorize first: `/help`, `/status`, `/model`, `/review`, `/verify`, `/gate`, `/config`.
+- Hubs fold related verbs: `/selection open|list|use|…`, `/probe fuzz|scan|root-cause|…`, `/analyze project|dashboard|…`, `/settings auto-verify|…`, `/hooks reload|override`.
+- Legacy names such as `/fuzz-func`, `/analyze-project`, `/use-selection`, `/set-auto-verify`, and `/hook-reload` still work as hidden aliases.
 - `/status` starts with the same compact operator summary used by the prompt footer: cwd, provider, gate, permission profile, progress display, MCP, skills, verification, memory, warnings, and route errors. The detailed sections still show approvals, active session, memory, verification, MCP counts, and the runtime gate ledger, including review freshness, gate reason, active blocker class, and recovery command.
 - `/config` shows effective settings such as provider defaults, token limits, hooks, locale, and verification toggles.
 - `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter and DeepSeek perform live lookups, while OpenAI and Anthropic expose officially documented limits and billing guidance.
@@ -1311,7 +1326,7 @@ Explain the structure of this repository
 /worktree [status|list|create [name]|enter|attach <path>|leave|cleanup]
 /permissions [mode]
 /set-max-tool-iterations <n|0|unlimited|none|off>
-/progress-display [auto|compact|stream]
+/progress-display [quiet|compact|auto|stream]
 /locale-auto [on|off]
 ```
 
@@ -1329,7 +1344,7 @@ Explain the structure of this repository
 - `/model analysis` configures dedicated worker and reviewer profiles for project analysis.
 - `/model task-owner ...` applies a workspace-scoped optional model override to one task owner profile.
 - `/set-max-tool-iterations 0`, `/set-max-tool-iterations unlimited`, `/set-max-tool-iterations none`, and `/set-max-tool-iterations off` disable the per-request tool loop cap.
-- `/progress-display` shows or saves the runtime progress mode. The default is `compact` for a quieter Codex CLI-like operator view. Use `auto` for durable tool/model ledger lines without repeated verbose review flow text, or `stream` for a fully persistent progress transcript.
+- `/progress-display` shows or saves the runtime progress mode. The default is `quiet` for a Cursor/Codex/Grok-like view. Use `compact` for durable working notes, `auto` for durable tool/model ledger lines, or `stream` for a fully persistent progress transcript.
 - `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is kept only as hidden parser compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to regenerate docs from the latest run.
 
 ### Canceling And History

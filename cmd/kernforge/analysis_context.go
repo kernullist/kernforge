@@ -1325,7 +1325,9 @@ func looksLikeAnswerDeliveryRequest(text string) bool {
 	}
 	return containsAny(lower,
 		"tell me", "explain", "describe", "walk me through", "overview of", "summarize", "summary", "compare", "list ", "list the", "show me", "what ", "which ", "how ",
+		"evaluate", "assess", "review whether", "is it enough", "technical depth",
 		"알려줘", "알려 줘", "말해줘", "말해 줘", "설명해", "설명해줘", "설명해 줘", "정리해", "정리해서", "요약해", "요약해줘", "비교해", "나열해",
+		"평가해", "평가해줘", "평가해 줘", "평가해 달라", "평가해달라", "충분한지", "깊이가",
 	)
 }
 
@@ -1340,9 +1342,14 @@ func looksLikeDocumentArtifactOutputRequest(text string) bool {
 	if looksLikeGoalPromptFileArtifactRequest(lower) {
 		return true
 	}
+	// Explicit output sinks / destinations. Do NOT treat a bare @path.md mention
+	// (input to read/evaluate) as a document deliverable — that misrouted
+	// "read this .md and evaluate" into document-authoring write paths.
 	if containsAny(lower,
-		".md", ".markdown", "markdown file", "markdown으로", "md로", "in markdown", "as markdown", "as a file", "save to file", "write to file", "create file", "report document",
-		"파일", "파일로", "파일에", "저장", "별도 문서", "별도 보고서", "문서로", "문서에", "보고서로", "보고서에", "마크다운으로",
+		"markdown으로", "md로", "in markdown", "as markdown", "as a file", "save to file", "write to file", "create file", "report document",
+		"파일로", "파일에 저장", "파일로 저장", "저장해", "저장하", "별도 문서", "별도 보고서",
+		"문서로", "보고서로", "마크다운으로",
+		"write a document", "write a report", "create a document", "create a report", "draft a document", "draft a report",
 	) {
 		return true
 	}
@@ -1354,7 +1361,42 @@ func looksLikeDocumentArtifactOutputRequest(text string) bool {
 		"author ", "create ", "draft ", "generate ", "prepare ", "save ", "write ",
 		"작성", "만들", "생성", "저장", "초안",
 	)
+	// A concrete .md/.markdown path is an OUTPUT sink only when paired with an
+	// authoring/save verb ("BugReport.md로 생성", "save as notes.md").
+	hasMdPath := containsAny(lower, ".md", ".markdown")
+	if hasMdPath && hasOutputVerb {
+		return true
+	}
 	return hasArtifactNoun && hasOutputVerb
+}
+
+// looksLikeDocumentReadOrEvalRequest reports reading/evaluating an existing
+// document without asking to create or update a document artifact.
+func looksLikeDocumentReadOrEvalRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	if looksLikeDocumentArtifactOutputRequest(lower) {
+		return false
+	}
+	hasDocument := containsAny(lower,
+		"document", "documents", "doc", "markdown", ".md", ".markdown", "report", "readme",
+		"문서", "마크다운", "보고서", "리드미",
+	)
+	if !hasDocument {
+		return false
+	}
+	if containsAny(lower,
+		"author ", "create ", "draft ", "generate ", "prepare ", "revise ", "update ", "write ", "refresh ",
+		"작성", "만들", "생성", "업데이트", "최신화", "초안", "추가해", "추가하",
+	) {
+		return false
+	}
+	return containsAny(lower,
+		"read ", "reading", "evaluate", "assess", "review", "inspect", "analyze", "technical depth",
+		"읽", "평가", "검토", "리뷰", "분석", "충분한지", "깊이가", "깊이의",
+	)
 }
 
 func looksLikeAnswerOnlyKnowledgeRequest(text string) bool {
@@ -1411,7 +1453,9 @@ func prefersReadOnlyAnalysisIntent(text string) bool {
 	}
 	return containsAny(base,
 		"analy", "analysis", "diagnos", "explain", "investigat", "why ", "why is", "why does", "reason", "root cause", "document", "summarize",
+		"evaluate", "assess", "technical depth",
 		"분석", "원인", "이유", "설명", "조사", "문서화", "진단", "왜", "동작할 수 없", "동작하지 않", "안되는", "안 돼", "안되",
+		"평가", "충분한지", "깊이",
 	)
 }
 
@@ -1699,6 +1743,10 @@ func looksLikeDocumentAuthoringIntent(text string) bool {
 	if looksLikeGoalPromptDraftOnlyRequest(lower) {
 		return false
 	}
+	// Read/evaluate an existing @doc.md must not become "write a document".
+	if looksLikeDocumentReadOrEvalRequest(lower) {
+		return false
+	}
 	if looksLikeGoalPromptFileArtifactRequest(lower) {
 		return true
 	}
@@ -1713,8 +1761,8 @@ func looksLikeDocumentAuthoringIntent(text string) bool {
 	if looksLikeAnswerDeliveryRequest(lower) && !looksLikeDocumentArtifactOutputRequest(lower) {
 		return false
 	}
-	// An explicit document-output sink ("...문서로", "...markdown으로", ".md")
-	// makes the document the deliverable even when the authoring verb is elided.
+	// An explicit document-output sink ("...문서로", "...markdown으로") makes the
+	// document the deliverable even when the authoring verb is elided.
 	if looksLikeDocumentArtifactOutputRequest(lower) {
 		return true
 	}

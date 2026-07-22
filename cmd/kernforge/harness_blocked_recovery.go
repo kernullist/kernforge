@@ -12,14 +12,16 @@ import (
 // harness block or a stalled turn. These are user-facing choices, not internal
 // model nudges.
 const (
-	harnessRecoveryActionDisclose    = "disclose"
-	harnessRecoveryActionRetryVerify = "retry_verify"
-	harnessRecoveryActionReview      = "review"
-	harnessRecoveryActionRepair      = "repair"
-	harnessRecoveryActionAnswer      = "answer"
-	harnessRecoveryActionWaive       = "waive"
-	harnessRecoveryActionModel       = "model"
-	harnessRecoveryActionStatus      = "status"
+	harnessRecoveryActionDisclose        = "disclose"
+	harnessRecoveryActionRetryVerify     = "retry_verify"
+	harnessRecoveryActionReview          = "review"
+	harnessRecoveryActionRepair          = "repair"
+	harnessRecoveryActionAnswer          = "answer"
+	harnessRecoveryActionWaive           = "waive"
+	harnessRecoveryActionModel           = "model"
+	harnessRecoveryActionStatus          = "status"
+	harnessRecoveryActionDismiss         = "dismiss"
+	harnessRecoveryActionContinueEditing = "continue_editing"
 
 	harnessRecoveryCauseHarness             = "harness"
 	harnessRecoveryCauseReadChurn           = "read_churn"
@@ -265,8 +267,8 @@ func renderHarnessBlockedRecoveryReply(cfg Config, report *CodingHarnessReport, 
 			"빈 모델 응답이 반복되어 중단했습니다. 이어서 할 일을 고르세요.")
 	case harnessRecoveryCauseFinalGate:
 		header = localizedText(cfg,
-			"I stopped because the final gate is still blocked. Choose how to continue.",
-			"최종 게이트가 여전히 막혀 중단했습니다. 이어서 할 일을 고르세요.")
+			"I stopped because confirmation is still needed before finishing. Choose how to continue.",
+			"완료를 마무리하려면 확인이 필요해 중단했습니다. 이어서 할 일을 고르세요.")
 	}
 	lines := []string{header}
 	blockers := make([]string, 0)
@@ -778,8 +780,8 @@ func stallContinueRecoveryPrompt(cfg Config, cause string) string {
 		)
 	case harnessRecoveryCauseFinalGate:
 		return localizedText(cfg,
-			"The previous turn stopped because the final gate stayed blocked. Continue repairing the concrete blockers for the user's original task. Do not claim completion until the blockers are cleared or the operator chooses a disclose/review path.",
-			"이전 턴은 최종 게이트가 계속 막혀 중단되었습니다. 사용자의 원래 작업에 대한 구체적 blocker를 계속 수정하세요. blocker가 해소되거나 사용자가 공개/리뷰 경로를 고르기 전에는 완료를 주장하지 마세요.",
+			"The previous turn stopped because confirmation was still needed before finishing. Continue repairing concrete blockers for the user's original task. Do not claim completion until blockers are cleared or the operator chooses dismiss/review.",
+			"이전 턴은 완료 전에 확인이 필요해 중단되었습니다. 사용자의 원래 작업에 대한 구체적 차단 항목을 계속 수정하세요. 차단이 해소되거나 사용자가 무시/리뷰를 고르기 전에는 완료를 주장하지 마세요.",
 		)
 	default:
 		return localizedText(cfg,
@@ -826,16 +828,19 @@ func buildStallContinueRecoveryPromptForAction(cfg Config, session *Session, cau
 }
 
 func buildStallBlockedRecovery(cfg Config, cause string, summary string, files []string) HarnessBlockedRecovery {
-	return buildStallBlockedRecoveryWithMode(cfg, cause, summary, files, false)
+	return buildStallBlockedRecoveryWithMode(cfg, nil, cause, summary, files, false)
 }
 
 // buildStallBlockedRecoveryWithMode builds operator choices after a stall.
 // analysisOnly matches industry agents: analysis/read turns offer "answer with
 // findings" first, not "continue repairing".
-func buildStallBlockedRecoveryWithMode(cfg Config, cause string, summary string, files []string, analysisOnly bool) HarnessBlockedRecovery {
+func buildStallBlockedRecoveryWithMode(cfg Config, session *Session, cause string, summary string, files []string, analysisOnly bool) HarnessBlockedRecovery {
 	cause = strings.TrimSpace(cause)
 	if cause == "" {
 		cause = harnessRecoveryCauseNoProgress
+	}
+	if cause == harnessRecoveryCauseFinalGate {
+		return buildFinalGateBlockedRecovery(cfg, session, summary, files)
 	}
 	recovery := HarnessBlockedRecovery{
 		RecordedAt:     time.Now(),
@@ -891,11 +896,80 @@ func buildStallBlockedRecoveryWithMode(cfg Config, cause string, summary string,
 		ID:       "status-detail",
 		Command:  "/status detail",
 		ChatHint: localizedText(cfg, "inspect /status detail", "/status detail 확인"),
-		TitleEN:  "Inspect gate details",
-		TitleKO:  "게이트 상세 확인",
+		TitleEN:  "Inspect details",
+		TitleKO:  "자세히 보기",
 		ReasonEN: "See blockers, verification, and ledger state before deciding.",
-		ReasonKO: "결정 전에 blocker, 검증, ledger 상태를 확인합니다.",
+		ReasonKO: "결정 전에 차단 항목, 검증, 상태 상세를 확인합니다.",
 		Kind:     harnessRecoveryActionStatus,
+	})
+	recovery.Normalize()
+	return recovery
+}
+
+// buildFinalGateBlockedRecovery builds Everyday-facing choices when completion
+// is blocked. Slash commands stay as internal Command fields; titles avoid
+// operator jargon.
+func buildFinalGateBlockedRecovery(cfg Config, session *Session, summary string, files []string) HarnessBlockedRecovery {
+	recovery := HarnessBlockedRecovery{
+		RecordedAt:     time.Now(),
+		Cause:          harnessRecoveryCauseFinalGate,
+		CandidateReply: strings.TrimSpace(summary),
+		BlockerTitles:  normalizeTaskStateList(files, 8),
+		PrimaryCommand: "/review",
+	}
+	var ledger RuntimeGateLedger
+	if session != nil && session.RuntimeGateLedger != nil {
+		ledger = *session.RuntimeGateLedger
+		if len(recovery.BlockerTitles) == 0 {
+			recovery.BlockerTitles = normalizeTaskStateList(ledger.Blockers, 8)
+		}
+		if len(recovery.ExtraBlockers) == 0 {
+			recovery.ExtraBlockers = normalizeTaskStateList(ledger.Blockers, 6)
+		}
+	}
+	offerClear := runtimeGateShouldOfferClear(session, ledger)
+
+	recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
+		ID:       "refresh-review",
+		Command:  "/review",
+		ChatHint: localizedText(cfg, `say "refresh the review"`, `「리뷰 갱신해」라고 입력`),
+		TitleEN:  "Refresh review and continue",
+		TitleKO:  "리뷰 갱신하고 계속",
+		ReasonEN: "Run a fresh review covering the current changes, then resume.",
+		ReasonKO: "현재 변경을 포함한 최신 리뷰를 돌린 뒤 이어갑니다.",
+		Kind:     harnessRecoveryActionReview,
+	})
+	if offerClear {
+		recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
+			ID:       "dismiss-baggage",
+			Command:  "/gate clear",
+			ChatHint: localizedText(cfg, `say "ignore for now"`, `「이번만 무시해」라고 입력`),
+			TitleEN:  "Dismiss this once and continue",
+			TitleKO:  "이번만 무시하고 계속",
+			ReasonEN: "Drop previous-session review baggage for completion/git write. Review files stay on disk.",
+			ReasonKO: "이전 세션 리뷰 부담만 해제합니다. 리뷰 파일은 유지됩니다.",
+			Kind:     harnessRecoveryActionDismiss,
+		})
+	}
+	recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
+		ID:       "status-detail",
+		Command:  "/status detail",
+		ChatHint: localizedText(cfg, "inspect details", "자세히 보기"),
+		TitleEN:  "Show details",
+		TitleKO:  "자세히 보기",
+		ReasonEN: "Inspect why completion is blocked before choosing another option.",
+		ReasonKO: "다른 선택 전에 완료가 막힌 이유를 확인합니다.",
+		Kind:     harnessRecoveryActionStatus,
+	})
+	recovery.Actions = append(recovery.Actions, HarnessRecoveryAction{
+		ID:       "continue-editing",
+		Command:  "/continue",
+		ChatHint: localizedText(cfg, `say "keep editing"`, `「편집만 계속」이라고 입력`),
+		TitleEN:  "Keep editing for now",
+		TitleKO:  "지금은 편집만 계속",
+		ReasonEN: "Close this prompt and keep editing. Completion may still be blocked later.",
+		ReasonKO: "이 선택을 닫고 편집을 이어갑니다. 완료는 나중에 다시 막힐 수 있습니다.",
+		Kind:     harnessRecoveryActionContinueEditing,
 	})
 	recovery.Normalize()
 	return recovery
@@ -1016,7 +1090,7 @@ func (a *Agent) recordStallBlockedRecovery(cause string, summary string, files [
 			analysisOnly = requestLooksLikeAnalysisOnlyTurn(sessionEffectiveUserRequestText(a.Session))
 		}
 	}
-	recovery := buildStallBlockedRecoveryWithMode(cfg, cause, summary, files, analysisOnly)
+	recovery := buildStallBlockedRecoveryWithMode(cfg, a.Session, cause, summary, files, analysisOnly)
 	if a != nil && a.Session != nil {
 		a.Session.PendingHarnessBlockedRecovery = &recovery
 		if a.Session.LastFinalAnswerCorrection != nil && a.Session.LastFinalAnswerCorrection.Contract != nil {
@@ -1094,8 +1168,8 @@ func operatorStallBaseReply(cfg Config, cause, detail string) string {
 		return msg
 	case harnessRecoveryCauseFinalGate:
 		msg := localizedText(cfg,
-			"I stopped because the final gate is still blocked.",
-			"최종 게이트가 여전히 막혀 중단했습니다.")
+			"I stopped because confirmation is still needed before finishing.",
+			"완료를 마무리하려면 확인이 필요해 중단했습니다.")
 		if detail != "" {
 			msg += "\n\n" + compactPromptSection(detail, 400)
 		}

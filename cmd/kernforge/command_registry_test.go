@@ -16,12 +16,18 @@ func TestCommandSpecsCoverPublicSlashCommands(t *testing.T) {
 	}
 
 	seen := map[string]CommandSpec{}
+	advertised := 0
 	for _, spec := range specs {
 		if strings.TrimSpace(spec.Canonical) == "" {
 			t.Fatalf("command spec has empty canonical name: %#v", spec)
 		}
-		if spec.Visibility != CommandVisibilityPublic {
-			t.Fatalf("%s visibility = %q, want public", spec.Canonical, spec.Visibility)
+		switch spec.Visibility {
+		case CommandVisibilityPublic:
+			advertised++
+		case CommandVisibilityHidden:
+			// Folded aliases and expert commands stay dispatchable but off the default /help map.
+		default:
+			t.Fatalf("%s visibility = %q, want public or hidden", spec.Canonical, spec.Visibility)
 		}
 		if strings.TrimSpace(spec.Family) == "" {
 			t.Fatalf("%s has empty family", spec.Canonical)
@@ -37,11 +43,23 @@ func TestCommandSpecsCoverPublicSlashCommands(t *testing.T) {
 		}
 		seen[spec.Canonical] = spec
 	}
+	if advertised != len(advertisedSlashCommands()) {
+		t.Fatalf("advertised command count = %d, want %d", advertised, len(advertisedSlashCommands()))
+	}
+	for _, command := range advertisedSlashCommands() {
+		spec, ok := seen[command]
+		if !ok {
+			t.Fatalf("missing advertised command %q in slashCommands/specs", command)
+		}
+		if spec.Visibility != CommandVisibilityPublic {
+			t.Fatalf("%s should be public, got %q", command, spec.Visibility)
+		}
+	}
 
 	for _, command := range slashCommands {
 		spec, ok := seen[command]
 		if !ok {
-			t.Fatalf("missing command spec for public command %q", command)
+			t.Fatalf("missing command spec for slash command %q", command)
 		}
 		if spec.Canonical != command {
 			t.Fatalf("spec canonical mismatch for %q: %#v", command, spec)
@@ -51,14 +69,57 @@ func TestCommandSpecsCoverPublicSlashCommands(t *testing.T) {
 
 func TestCommandSpecsHaveHelpCoverage(t *testing.T) {
 	overview := HelpText()
+	full := HelpTextAll()
 	for _, spec := range commandSpecs() {
 		if _, ok := HelpDetail(spec.HelpTopic); ok {
 			continue
 		}
-		if strings.Contains(overview, "/"+spec.Canonical) {
+		needle := "/" + spec.Canonical
+		if strings.Contains(overview, needle) || strings.Contains(full, needle) {
 			continue
 		}
-		t.Fatalf("%s has no detail help topic %q and is missing from overview help", spec.Canonical, spec.HelpTopic)
+		t.Fatalf("%s has no detail help topic %q and is missing from /help and /help all", spec.Canonical, spec.HelpTopic)
+	}
+}
+
+func TestHelpTextIsShortEverydayMap(t *testing.T) {
+	text := HelpText()
+	if !strings.Contains(text, "Everyday:") || !strings.Contains(text, "Hubs") {
+		t.Fatalf("expected layered /help overview, got:\n%s", text)
+	}
+	if strings.Contains(text, "/fuzz-func") || strings.Contains(text, "/use-selection") {
+		t.Fatalf("default /help should not advertise expert aliases, got:\n%s", text)
+	}
+	if !strings.Contains(HelpTextAll(), "/fuzz-func") {
+		t.Fatalf("expected /help all to include expert catalog")
+	}
+}
+
+func TestCompletionPrefersAdvertisedCommands(t *testing.T) {
+	matches := completionSlashCommandMatches("", slashCommands)
+	if len(matches) != len(advertisedSlashCommands()) {
+		t.Fatalf("empty prefix matches = %d, want %d advertised", len(matches), len(advertisedSlashCommands()))
+	}
+	hidden := completionSlashCommandMatches("fuzz-f", slashCommands)
+	if len(hidden) != 1 || hidden[0] != "fuzz-func" {
+		t.Fatalf("expected hidden prefix match fuzz-func, got %#v", hidden)
+	}
+	// Shared prefixes must still surface aliases (reload/resume) alongside review.
+	shared := completionSlashCommandMatches("re", slashCommands)
+	joined := strings.Join(shared, ",")
+	if !strings.Contains(joined, "review") || !strings.Contains(joined, "reload") || !strings.Contains(joined, "resume") {
+		t.Fatalf("expected /re to include review+reload+resume, got %#v", shared)
+	}
+	if shared[0] != "review" {
+		t.Fatalf("expected advertised review first for /re, got %#v", shared)
+	}
+}
+
+func TestProbeHubCompletesFuzzFuncArgs(t *testing.T) {
+	rt := &runtimeState{}
+	suggestions, replaceIndex, ok := rt.slashArgumentSuggestions("probe", []string{"fuzz"}, true)
+	if !ok || replaceIndex != 1 || len(suggestions) == 0 {
+		t.Fatalf("expected /probe fuzz completions, got ok=%v idx=%d suggestions=%#v", ok, replaceIndex, suggestions)
 	}
 }
 

@@ -51,7 +51,7 @@ type Agent struct {
 	// continuation: the model decides from the guidance text and the edit-loop
 	// retry budget bounds repeats.
 	PromptResolveOutOfScopeVerification func(VerificationReport, verificationRepairScopeDecision) (OutOfScopeVerificationResolution, error)
-	PromptContinueReviewRepair     func(string) (bool, error)
+	PromptContinueReviewRepair          func(string) (bool, error)
 	// PromptUsePriorReviewArtifacts asks the user once per session whether the
 	// model may read review artifacts produced by a PRIOR session. It receives the
 	// gated paths and returns true to use them. Nil (non-interactive) defaults to
@@ -63,11 +63,17 @@ type Agent struct {
 	EmitAssistantDelta            func(string)
 	EmitProgress                  func(string)
 	EmitProgressEvent             func(ProgressEvent)
-	lastEmittedText               string
-	turnMu                        sync.Mutex
-	turnStateMu                   sync.Mutex
-	turnOwnerGen                  uint64
-	turnNextGen                   uint64
+	// EmitTurnPlan prints the turn-start orientation as a durable scrollback
+	// line (never spinner/footer-only).
+	EmitTurnPlan    func(string)
+	lastEmittedText string
+	turnMu          sync.Mutex
+	turnStateMu     sync.Mutex
+	turnOwnerGen    uint64
+	turnNextGen     uint64
+	// turnPlanMu guards firstLineTurnPlanCapture.
+	turnPlanMu               sync.Mutex
+	firstLineTurnPlanCapture bool
 	// routeHoldMu guards routeHolds: release funcs for model-route slots this
 	// agent currently owns. Cancel/abandon must force-release them so a hung
 	// Complete cannot starve later turns on the shared scheduler.
@@ -427,17 +433,16 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	requestEnvelope = a.maybeRefineRequestEnvelopeWithSemanticClassifier(ctx, requestEnvelope)
 	a.applyEditAuthorityToEnvelope(&requestEnvelope)
 	a.rememberRequestEnvelope(requestEnvelope)
-	a.emitProgressEvent(ProgressEvent{
-		Message: localizedText(a.Config,
-			"Getting ready...",
-			"준비 중..."),
-	})
+	a.announceTurnPlan(ctx, userText)
 	requestMode := requestEnvelope.agentRequestMode()
 	intent := requestMode.Intent
 	readOnlyAnalysis := requestMode.ReadOnlyAnalysis
 	explicitEditRequest := requestMode.ExplicitEditRequest
 	explicitGitRequest := requestEnvelope.AllowsGitMutation
 	enriched, mentionImages := a.expandMentions(ctx, userText)
+	if instr := strings.TrimSpace(a.firstLineTurnPlanInstruction()); instr != "" {
+		enriched = instr + "\n\n" + enriched
+	}
 	if runtimeContext := strings.TrimSpace(a.assembleConversationRuntimeContext(userText)); runtimeContext != "" {
 		enriched += "\n\n" + runtimeContext
 	}
@@ -473,10 +478,11 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	analysisContext := ""
 	analysisContextProgress := ""
-	// Document-authoring turns do not need the full cached project-analysis
-	// corpus. Loading knowledge_pack/vector_corpus/index JSON on a first turn
-	// was blocking the UI for minutes with only "Preparing the main turn...".
-	loadProjectAnalysis := !shouldSuppressProjectAnalysisFastPathForIntent(intent) &&
+	// Document-authoring turns and the speed default skip the full cached
+	// project-analysis corpus. Loading knowledge_pack/vector_corpus/index JSON
+	// on a first turn was blocking the UI for minutes with only "Preparing...".
+	loadProjectAnalysis := configInjectProjectAnalysis(a.Config) &&
+		!shouldSuppressProjectAnalysisFastPathForIntent(intent) &&
 		!requestEnvelope.DocumentAuthoring &&
 		!looksLikeDocumentAuthoringIntent(userText)
 	if loadProjectAnalysis {
@@ -2799,24 +2805,24 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
-			if verificationOutOfScopeFinishThisTurn {
-				reply = a.ensureOutOfScopeVerificationFinalDisclosure(reply)
-				if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
-					a.Session.Messages[continuedReplyMessageIndex].Text = reply
-				} else if len(a.Session.Messages) > 0 {
-					a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+				if verificationOutOfScopeFinishThisTurn {
+					reply = a.ensureOutOfScopeVerificationFinalDisclosure(reply)
+					if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
+						a.Session.Messages[continuedReplyMessageIndex].Text = reply
+					} else if len(a.Session.Messages) > 0 {
+						a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+					}
+					a.acceptRecentFinalAnswerCandidate(reply)
+					a.finalizeTaskStateOnAcceptedFinalAnswer(reply, false)
+					a.finalizePatchTransactionOnReturn()
+					a.finalizeEditLoopOnReturn(reply, false)
+					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					markRuntimeCompleted("out_of_scope_verification_final")
+					return reply, nil
 				}
-				a.acceptRecentFinalAnswerCandidate(reply)
-				a.finalizeTaskStateOnAcceptedFinalAnswer(reply, false)
-				a.finalizePatchTransactionOnReturn()
-				a.finalizeEditLoopOnReturn(reply, false)
-				a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
-				if err := a.Store.Save(a.Session); err != nil {
-					return "", err
-				}
-				markRuntimeCompleted("out_of_scope_verification_final")
-				return reply, nil
-			}
 				// Run post-change review BEFORE the pre-final harness whenever a
 				// successful edit landed. Otherwise the harness demands a "Review
 				// result" (and the ledger treats the pre-write review as stale)
@@ -4612,61 +4618,61 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							a.Session.AddMessage(internalUserMessage("Automatic verification has been disabled for this workspace after repeated verification tool startup failures. Do not spend more turns trying to repair the local verification environment unless the user explicitly asks for that. Continue with the task and summarize any unverified risk briefly if needed."))
 						}
 					}
-				if !autoVerifyDisabledAfterPrompt {
-					scopeDecision := a.verificationFailureRepairScope(report)
-					if !scopeDecision.ShouldRepair {
-						// Out-of-scope failure: ask the user once per turn how
-						// to proceed. A Finish decision converges to the final
-						// answer with the ambient risk disclosed; anything
-						// else (continue, non-interactive, canceled) keeps the
-						// turn alive with scope-aware repair guidance, bounded
-						// by the edit-loop retry budget.
-						if !outOfScopeVerificationPrompted {
-							outOfScopeVerificationPrompted = true
-							if a.PromptResolveOutOfScopeVerification != nil {
-								markUserInputRequestedDuringTurn()
-								resolution, promptErr := a.PromptResolveOutOfScopeVerification(report, scopeDecision)
-								if promptErr != nil {
-									return "", promptErr
+					if !autoVerifyDisabledAfterPrompt {
+						scopeDecision := a.verificationFailureRepairScope(report)
+						if !scopeDecision.ShouldRepair {
+							// Out-of-scope failure: ask the user once per turn how
+							// to proceed. A Finish decision converges to the final
+							// answer with the ambient risk disclosed; anything
+							// else (continue, non-interactive, canceled) keeps the
+							// turn alive with scope-aware repair guidance, bounded
+							// by the edit-loop retry budget.
+							if !outOfScopeVerificationPrompted {
+								outOfScopeVerificationPrompted = true
+								if a.PromptResolveOutOfScopeVerification != nil {
+									markUserInputRequestedDuringTurn()
+									resolution, promptErr := a.PromptResolveOutOfScopeVerification(report, scopeDecision)
+									if promptErr != nil {
+										return "", promptErr
+									}
+									outOfScopeVerificationResolution = resolution
 								}
-								outOfScopeVerificationResolution = resolution
 							}
-						}
-						if outOfScopeVerificationResolution == OutOfScopeVerificationFinish {
-							unresolvedVerification = false
-							syncRuntimeFlags()
-							verificationOutOfScopeFinishThisTurn = true
-							a.recordEditLoopAmbientVerification(report, scopeDecision)
-							if a.Session.TaskState != nil {
-								a.Session.TaskState.RecordEvent("verification_terminal", strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode), "verify", "Automatic verification failed outside the current patch scope; user chose to disclose as ambient risk and complete without expanding repair.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"), "risk", true)
-							}
-							a.Session.AddMessage(internalUserMessage(automaticVerificationOutOfScopeMessage(a.Config, report, scopeDecision)))
-							if a.EmitProgress != nil {
-								a.EmitProgress(localizedText(a.Config, "Verification failure is outside the current patch scope; disclosing as ambient risk and finishing without expanding repair.", "검증 실패가 현재 patch scope 밖입니다. 환경성 risk로 기록하고 수리 범위를 넓히지 않은 채 마무리합니다."))
-								a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "Verification failed outside the patch scope. Summarize the edit and disclose the ambient verification risk; do not treat the user request as failed.", "검증이 patch scope 밖에서 실패했습니다. 수정 내용을 요약하고 환경성 검증 risk를 밝히세요. 사용자 요청 자체는 실패로 취급하지 마세요.")
+							if outOfScopeVerificationResolution == OutOfScopeVerificationFinish {
+								unresolvedVerification = false
+								syncRuntimeFlags()
+								verificationOutOfScopeFinishThisTurn = true
+								a.recordEditLoopAmbientVerification(report, scopeDecision)
+								if a.Session.TaskState != nil {
+									a.Session.TaskState.RecordEvent("verification_terminal", strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode), "verify", "Automatic verification failed outside the current patch scope; user chose to disclose as ambient risk and complete without expanding repair.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"), "risk", true)
+								}
+								a.Session.AddMessage(internalUserMessage(automaticVerificationOutOfScopeMessage(a.Config, report, scopeDecision)))
+								if a.EmitProgress != nil {
+									a.EmitProgress(localizedText(a.Config, "Verification failure is outside the current patch scope; disclosing as ambient risk and finishing without expanding repair.", "검증 실패가 현재 patch scope 밖입니다. 환경성 risk로 기록하고 수리 범위를 넓히지 않은 채 마무리합니다."))
+									a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "Verification failed outside the patch scope. Summarize the edit and disclose the ambient verification risk; do not treat the user request as failed.", "검증이 patch scope 밖에서 실패했습니다. 수정 내용을 요약하고 환경성 검증 risk를 밝히세요. 사용자 요청 자체는 실패로 취급하지 마세요.")
+								}
+							} else {
+								if outOfScopeVerificationResolution == OutOfScopeVerificationContinueRepair {
+									a.recordEditLoopRisk("User chose to continue repairing an out-of-scope verification failure.", report.FailureSummary())
+								}
+								text := automaticVerificationOutOfScopeContinueGuidance(a.Config, report, scopeDecision)
+								failureSummary := strings.TrimSpace(report.FailureSummary())
+								repairGuidance := strings.TrimSpace(report.RepairGuidance())
+								if repairGuidance != "" {
+									text += "\n\nSuggested repair strategy:\n" + repairGuidance
+								}
+								text = a.appendFailureRepairPrompt(text)
+								if decision := a.recordEditLoopRetry("Verification failed outside the clear patch scope; continue with scope-aware repair guidance.", strings.Join([]string{failureSummary, repairGuidance}, "\n")); decision != nil {
+									if policy := editLoopRetryDecisionPrompt(*decision); policy != "" {
+										text += "\n\nRetry loop policy:\n" + policy
+									}
+								}
+								a.Session.AddMessage(internalUserMessage(text))
+								if a.EmitProgress != nil {
+									a.emitRepairWorkflowProgress(latestUser, 2, "revise edit proposal", "수정안 재작성", "Verification failed outside the clear patch scope. Continue repairing if the failure blocks the user request; otherwise disclose it as ambient risk and finish.", "검증이 현재 patch scope와 명확히 연결되지 않은 채 실패했습니다. 실패가 사용자 요청을 막으면 수리를 계속하고, 아니면 환경성 risk로 밝히고 마무리하세요.")
+								}
 							}
 						} else {
-							if outOfScopeVerificationResolution == OutOfScopeVerificationContinueRepair {
-								a.recordEditLoopRisk("User chose to continue repairing an out-of-scope verification failure.", report.FailureSummary())
-							}
-							text := automaticVerificationOutOfScopeContinueGuidance(a.Config, report, scopeDecision)
-							failureSummary := strings.TrimSpace(report.FailureSummary())
-							repairGuidance := strings.TrimSpace(report.RepairGuidance())
-							if repairGuidance != "" {
-								text += "\n\nSuggested repair strategy:\n" + repairGuidance
-							}
-							text = a.appendFailureRepairPrompt(text)
-							if decision := a.recordEditLoopRetry("Verification failed outside the clear patch scope; continue with scope-aware repair guidance.", strings.Join([]string{failureSummary, repairGuidance}, "\n")); decision != nil {
-								if policy := editLoopRetryDecisionPrompt(*decision); policy != "" {
-									text += "\n\nRetry loop policy:\n" + policy
-								}
-							}
-							a.Session.AddMessage(internalUserMessage(text))
-							if a.EmitProgress != nil {
-								a.emitRepairWorkflowProgress(latestUser, 2, "revise edit proposal", "수정안 재작성", "Verification failed outside the clear patch scope. Continue repairing if the failure blocks the user request; otherwise disclose it as ambient risk and finish.", "검증이 현재 patch scope와 명확히 연결되지 않은 채 실패했습니다. 실패가 사용자 요청을 막으면 수리를 계속하고, 아니면 환경성 risk로 밝히고 마무리하세요.")
-							}
-						}
-					} else {
 							failureSummary := strings.TrimSpace(report.FailureSummary())
 							repairGuidance := strings.TrimSpace(report.RepairGuidance())
 							text := "The latest verification failed within the current patch scope. Investigate the failure and continue repairing only the current patch scope. Do not broaden into unrelated files or project settings unless the failure output directly names them as part of the current patch."

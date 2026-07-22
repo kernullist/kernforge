@@ -692,6 +692,60 @@ func TestRuntimeStatePrintAssistantSuppressesEquivalentDuplicateOutputWithPunctu
 	}
 }
 
+func TestRuntimeStatePrintAssistantDoesNotReplayStreamedFinalAnswer(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{color: false},
+	}
+	rt.resetAssistantDedup()
+	body := strings.TrimSpace(`
+## RefineGoals 구현 수준 평가
+전체 평가: MVP 완성 단계입니다. 아키텍처 분리와 테스트 회귀 가드가 좋습니다.
+개선이 필요한 영역은 문서 정합성과 통합 테스트입니다.
+`)
+	rt.appendAssistantStream(body)
+	rt.finishAssistantStream()
+	rt.printAssistant(body + "\n\n요약: MVP 수준을 충실히 구현하고 있습니다.")
+
+	rendered := out.String()
+	if strings.Count(rendered, ">> assistant ") != 1 {
+		t.Fatalf("expected streamed final answer not to be reprinted as a second block, got:\n%s", rendered)
+	}
+}
+
+func TestRuntimeStatePrintAssistantFlushesStreamBeforeDedup(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{color: false},
+	}
+	rt.resetAssistantDedup()
+	body := "구현 수준을 평가하면 MVP 완성 단계이며 핵심 모듈 분리가 양호합니다. 테스트와 문서화도 기본을 충족합니다."
+	rt.appendAssistantStream(body)
+	// Reply path used to check dedup before flush, then print the same body again.
+	rt.printAssistant(body)
+
+	rendered := out.String()
+	if strings.Count(rendered, ">> assistant ") != 1 {
+		t.Fatalf("expected flush-before-dedup to suppress replay, got:\n%s", rendered)
+	}
+	if strings.Count(rendered, "MVP 완성") != 1 {
+		t.Fatalf("expected body once, got:\n%s", rendered)
+	}
+}
+
+func TestAssistantDisplayTextRedundantDetectsHighOverlap(t *testing.T) {
+	a := normalizeAssistantDisplayText(strings.Repeat("alpha beta gamma delta ", 40) + "end one")
+	b := normalizeAssistantDisplayText(strings.Repeat("alpha beta gamma delta ", 40) + "end two")
+	if !assistantDisplayTextRedundant(a, b) {
+		t.Fatalf("expected high-overlap answers to be redundant")
+	}
+	if assistantDisplayTextRedundant("short plan", normalizeAssistantDisplayText(strings.Repeat("long final answer body ", 30))) {
+		t.Fatalf("short plan must not suppress a long final answer")
+	}
+}
+
 func TestRuntimeStateAppendAssistantStreamIgnoresLeadingWhitespaceOnlyChunks(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtimeState{
@@ -1360,6 +1414,8 @@ func TestRuntimeStatePrintAssistantWhileThinkingFallsBackToProgressLineWhenNonIn
 	rt := &runtimeState{
 		writer: &out,
 		ui:     UI{},
+		// Explicit compact: quiet (default) keeps mid-turn thoughts footer-only.
+		cfg: Config{ProgressDisplay: "compact"},
 	}
 
 	rt.printAssistantWhileThinking("I am going to inspect the auth flow first.")
@@ -3693,7 +3749,7 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 		"[cwd:",
 		"[provider:openrouter/google/gemini-2.5-pro]",
 		"[perm:full]",
-		"[progress:compact]",
+		"[progress:quiet]",
 		"[mcp:0]",
 		"/status detail for lifecycle evidence",
 	} {
@@ -3865,9 +3921,8 @@ func TestOperatorFooterLineShowsCompactRuntimeState(t *testing.T) {
 		"status ",
 		"[cwd:" + filepath.Base(root) + "]",
 		"[provider:openrouter/google/gemini-2.5-pro]",
-		"[gate:ready]",
 		"[perm:full]",
-		"[progress:compact]",
+		"[progress:quiet]",
 		"[mcp:0]",
 		"[verify:none]",
 		"[memory:0]",
@@ -3875,6 +3930,9 @@ func TestOperatorFooterLineShowsCompactRuntimeState(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Fatalf("expected operator footer to contain %q, got %q", want, line)
 		}
+	}
+	if strings.Contains(line, "[gate:") {
+		t.Fatalf("everyday footer must not include gate: pill, got %q", line)
 	}
 }
 
@@ -3933,7 +3991,7 @@ func TestOperatorFooterLineSplitsOnNarrowTerminal(t *testing.T) {
 	}
 	for _, want := range []string{
 		"[provider:openrouter/google/gemini-2.5-pro]",
-		"[progress:compact]",
+		"[progress:quiet]",
 		"[memory:0]",
 	} {
 		if !strings.Contains(line, want) {
@@ -4229,7 +4287,7 @@ func TestProgressDisplayCommandShowsAndSetsMode(t *testing.T) {
 	if _, err := rt.handleCommand(Command{Name: "progress-display"}); err != nil {
 		t.Fatalf("handleCommand(progress-display): %v", err)
 	}
-	if !strings.Contains(out.String(), "progress_display: compact") {
+	if !strings.Contains(out.String(), "progress_display: quiet") {
 		t.Fatalf("expected current progress display, got %q", out.String())
 	}
 

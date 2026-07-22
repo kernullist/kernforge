@@ -224,8 +224,8 @@ func hasTurnReviewIntent(input string) bool {
 		return false
 	}
 	if containsAny(lower,
-		"리뷰", "검토", "검수", "코드리뷰", "코드 리뷰",
-		"review", "code review", "audit") {
+		"리뷰", "검토", "검수", "코드리뷰", "코드 리뷰", "평가",
+		"review", "code review", "audit", "evaluate", "assess") {
 		return true
 	}
 	return containsAny(lower, "inspect") && containsAny(lower,

@@ -171,7 +171,8 @@ func (rt *runtimeState) offerHarnessBlockedRecoveryChoice(ctx context.Context) (
 		(action.Kind == harnessRecoveryActionReview ||
 			action.Kind == harnessRecoveryActionWaive ||
 			action.Kind == harnessRecoveryActionModel ||
-			action.Kind == harnessRecoveryActionStatus) {
+			action.Kind == harnessRecoveryActionStatus ||
+			action.Kind == harnessRecoveryActionDismiss) {
 		// Keep the operator in the choice loop when the selected action did not
 		// clear the pending recovery by itself.
 		followUp, offered, offerErr := rt.offerHarnessBlockedRecoveryChoice(ctx)
@@ -220,7 +221,7 @@ func (rt *runtimeState) maybeOfferStallRecoveryFromAssistantError(ctx context.Co
 	}
 	if rt.session.PendingHarnessBlockedRecovery == nil {
 		base := operatorStallBaseReply(rt.cfg, cause, detail)
-		recovery := buildStallBlockedRecovery(rt.cfg, cause, base, nil)
+		recovery := buildStallBlockedRecoveryWithMode(rt.cfg, rt.session, cause, base, nil, false)
 		rt.session.PendingHarnessBlockedRecovery = &recovery
 		card := renderHarnessBlockedRecoveryReply(rt.cfg, nil, nil, recovery)
 		fmt.Fprintln(rt.writer)
@@ -269,7 +270,7 @@ func harnessBlockedRecoveryUserQuestion(cfg Config, recovery HarnessBlockedRecov
 	case harnessRecoveryCauseEmptyStop:
 		header = localizedText(cfg, "Empty reply stop", "빈 응답 중단")
 	case harnessRecoveryCauseFinalGate:
-		header = localizedText(cfg, "Final gate blocked", "최종 게이트 차단")
+		header = localizedText(cfg, "Confirmation needed before finishing", "완료 전 확인 필요")
 	}
 	return UserQuestion{
 		Header:          header,
@@ -338,6 +339,17 @@ func matchHarnessRecoveryInput(cfg Config, recovery HarnessBlockedRecovery, inpu
 			return action, true
 		}
 	}
+	if lower == "/gate clear" || strings.HasPrefix(lower, "/gate clear") ||
+		looksLikeHarnessDismissIntent(text) {
+		if action, ok := findHarnessRecoveryActionByKind(recovery, harnessRecoveryActionDismiss); ok {
+			return action, true
+		}
+	}
+	if looksLikeHarnessContinueEditingIntent(text) {
+		if action, ok := findHarnessRecoveryActionByKind(recovery, harnessRecoveryActionContinueEditing); ok {
+			return action, true
+		}
+	}
 	if lower == "/model" || strings.HasPrefix(lower, "/model ") {
 		return findHarnessRecoveryActionByKind(recovery, harnessRecoveryActionModel)
 	}
@@ -358,6 +370,28 @@ func matchHarnessRecoveryInput(cfg Config, recovery HarnessBlockedRecovery, inpu
 	}
 	_ = cfg
 	return HarnessRecoveryAction{}, false
+}
+
+func looksLikeHarnessDismissIntent(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"dismiss", "ignore for now", "ignore this once", "clear the gate",
+		"이번만 무시", "무시하고 계속", "무시해", "게이트 해제",
+	)
+}
+
+func looksLikeHarnessContinueEditingIntent(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"keep editing", "continue editing", "edit only",
+		"편집만 계속", "편집 계속", "지금은 편집",
+	)
 }
 
 func findHarnessRecoveryActionByKind(recovery HarnessBlockedRecovery, kind string) (HarnessRecoveryAction, bool) {
@@ -436,6 +470,27 @@ func (rt *runtimeState) executeHarnessRecoveryAction(ctx context.Context, action
 		return localizedText(rt.cfg,
 			"Status details printed above. Choose another recovery option when ready.",
 			"위쪽에 상태 상세를 출력했습니다. 준비가 되면 다른 복구 옵션을 고르세요."), nil
+	case harnessRecoveryActionDismiss:
+		if err := rt.clearRuntimeGate(nil); err != nil {
+			return "", err
+		}
+		rt.refreshPendingHarnessBlockedRecoveryAfterAction()
+		if rt.session.PendingHarnessBlockedRecovery == nil {
+			return localizedText(rt.cfg,
+				"Previous review baggage dismissed. Completion can continue.",
+				"이전 리뷰 부담을 해제했습니다. 완료를 이어갈 수 있습니다."), nil
+		}
+		return localizedText(rt.cfg,
+			"Dismiss applied. Completion is still blocked — choose the next option.",
+			"무시를 적용했습니다. 완료가 여전히 막혀 있으니 다음 옵션을 고르세요."), nil
+	case harnessRecoveryActionContinueEditing:
+		rt.agent.clearHarnessBlockedRecovery()
+		if rt.store != nil {
+			_ = rt.store.Save(rt.session)
+		}
+		return localizedText(rt.cfg,
+			"Okay — keep editing. Completion may still need confirmation later.",
+			"알겠습니다. 편집을 이어가세요. 완료는 나중에 다시 확인이 필요할 수 있습니다."), nil
 	case harnessRecoveryActionAnswer:
 		cause := ""
 		if rt.session.PendingHarnessBlockedRecovery != nil {
@@ -559,10 +614,18 @@ func (rt *runtimeState) refreshPendingHarnessBlockedRecoveryAfterAction() {
 	candidate := ""
 	attempted := false
 	unresolved := false
+	files := []string(nil)
 	if prev != nil {
 		candidate = prev.CandidateReply
 		attempted = prev.AttemptedEditTool
 		unresolved = prev.UnresolvedVerify
+		files = append([]string(nil), prev.BlockerTitles...)
+	}
+	if prev != nil && prev.Cause == harnessRecoveryCauseFinalGate {
+		updated := buildFinalGateBlockedRecovery(rt.cfg, rt.session, candidate, files)
+		rt.session.PendingHarnessBlockedRecovery = &updated
+		_ = rt.store.Save(rt.session)
+		return
 	}
 	updated := buildHarnessBlockedRecovery(rt.cfg, report, nonHarnessLedgerBlockers(ledger), candidate, attempted, unresolved)
 	rt.session.PendingHarnessBlockedRecovery = &updated

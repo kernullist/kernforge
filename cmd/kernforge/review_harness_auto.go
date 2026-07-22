@@ -348,6 +348,16 @@ func (a *Agent) emitRepairWorkflowProgress(request string, step int, englishStag
 	if strings.TrimSpace(koreanDetail) == "" {
 		koreanDetail = koreanStage
 	}
+	mode := configProgressDisplay(a.Config)
+	if mode == "quiet" || mode == "compact" {
+		// Cursor/Codex-quiet: one short stage line, no flow ledger.
+		a.EmitProgress(strings.TrimSpace(fmt.Sprintf("%d/%d %s",
+			step,
+			total,
+			localizedTextForReviewRequest(a.Config, request, englishStage, koreanStage),
+		)))
+		return
+	}
 	flowEnglish := reviewProgressFlow([]string{"review before fix", "write/revise patch", "pre-write review", "diff preview/write", "verification", "final summary"}, step)
 	flowKorean := reviewProgressFlow([]string{"수정 전 리뷰", "수정안 작성/재작성", "쓰기 전 리뷰", "diff preview/쓰기", "검증", "최종 요약"}, step)
 	message := fmt.Sprintf(

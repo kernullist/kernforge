@@ -238,49 +238,55 @@ func cloneOpaqueConfigValue(value any) any {
 }
 
 type Config struct {
-	Provider                    string                        `json:"provider"`
-	Model                       string                        `json:"model"`
-	FallbackModels              []string                      `json:"fallback_models,omitempty"`
-	BaseURL                     string                        `json:"base_url"`
-	APIKey                      string                        `json:"api_key"`
-	ProviderKeys                map[string]string             `json:"provider_keys,omitempty"`
-	CodexCLIPath                string                        `json:"codex_cli_path,omitempty"`
-	CodexCLIArgs                []string                      `json:"codex_cli_args,omitempty"`
-	ClaudeCLIPath               string                        `json:"claude_cli_path,omitempty"`
-	ClaudeCLIArgs               []string                      `json:"claude_cli_args,omitempty"`
-	ForcedChatGPTWorkspaceID    ForcedChatGPTWorkspaceIDs     `json:"forced_chatgpt_workspace_id,omitempty"`
-	Temperature                 float64                       `json:"temperature"`
-	ReasoningEffort             string                        `json:"reasoning_effort,omitempty"`
-	ServiceTier                 string                        `json:"service_tier,omitempty"`
-	MaxTokens                   int                           `json:"max_tokens"`
-	ContextWindowTokens         int                           `json:"context_window_tokens,omitempty"`
-	MaxToolIterations           int                           `json:"max_tool_iterations"`
-	MaxRequestRetries           int                           `json:"max_request_retries,omitempty"`
-	RequestRetryDelayMs         int                           `json:"request_retry_delay_ms,omitempty"`
-	RequestTimeoutSecs          int                           `json:"request_timeout_seconds,omitempty"`
-	ProgressDisplay             string                        `json:"progress_display,omitempty"`
-	ModelRoutes                 ModelRouteSchedulerConfig     `json:"model_routes,omitempty"`
-	ShellTimeoutSecs            int                           `json:"shell_timeout_seconds,omitempty"`
-	ReadHintSpans               int                           `json:"read_hint_spans,omitempty"`
-	ReadCacheEntries            int                           `json:"read_cache_entries,omitempty"`
-	MSBuildPath                 string                        `json:"msbuild_path,omitempty"`
-	CMakePath                   string                        `json:"cmake_path,omitempty"`
-	CTestPath                   string                        `json:"ctest_path,omitempty"`
-	NinjaPath                   string                        `json:"ninja_path,omitempty"`
+	Provider                 string                    `json:"provider"`
+	Model                    string                    `json:"model"`
+	FallbackModels           []string                  `json:"fallback_models,omitempty"`
+	BaseURL                  string                    `json:"base_url"`
+	APIKey                   string                    `json:"api_key"`
+	ProviderKeys             map[string]string         `json:"provider_keys,omitempty"`
+	CodexCLIPath             string                    `json:"codex_cli_path,omitempty"`
+	CodexCLIArgs             []string                  `json:"codex_cli_args,omitempty"`
+	ClaudeCLIPath            string                    `json:"claude_cli_path,omitempty"`
+	ClaudeCLIArgs            []string                  `json:"claude_cli_args,omitempty"`
+	ForcedChatGPTWorkspaceID ForcedChatGPTWorkspaceIDs `json:"forced_chatgpt_workspace_id,omitempty"`
+	Temperature              float64                   `json:"temperature"`
+	ReasoningEffort          string                    `json:"reasoning_effort,omitempty"`
+	ServiceTier              string                    `json:"service_tier,omitempty"`
+	MaxTokens                int                       `json:"max_tokens"`
+	ContextWindowTokens      int                       `json:"context_window_tokens,omitempty"`
+	MaxToolIterations        int                       `json:"max_tool_iterations"`
+	MaxRequestRetries        int                       `json:"max_request_retries,omitempty"`
+	RequestRetryDelayMs      int                       `json:"request_retry_delay_ms,omitempty"`
+	RequestTimeoutSecs       int                       `json:"request_timeout_seconds,omitempty"`
+	ProgressDisplay          string                    `json:"progress_display,omitempty"`
+	ModelRoutes              ModelRouteSchedulerConfig `json:"model_routes,omitempty"`
+	ShellTimeoutSecs         int                       `json:"shell_timeout_seconds,omitempty"`
+	ReadHintSpans            int                       `json:"read_hint_spans,omitempty"`
+	ReadCacheEntries         int                       `json:"read_cache_entries,omitempty"`
+	MSBuildPath              string                    `json:"msbuild_path,omitempty"`
+	CMakePath                string                    `json:"cmake_path,omitempty"`
+	CTestPath                string                    `json:"ctest_path,omitempty"`
+	NinjaPath                string                    `json:"ninja_path,omitempty"`
 	// Verify holds optional automatic/manual verification build preferences
 	// (for example MSBuild Configuration/Platform). Empty fields keep the
 	// built-in defaults (Release-first selection when the project lists it).
-	Verify                      VerifyConfig                  `json:"verify,omitempty"`
-	Command                     string                        `json:"command,omitempty"`
-	PermissionMode              string                        `json:"permission_mode"`
-	PermissionRules             PermissionRulesConfig         `json:"permission_rules,omitempty"`
-	Shell                       string                        `json:"shell"`
-	SessionDir                  string                        `json:"session_dir"`
-	AutoCompactChars            int                           `json:"auto_compact_chars"`
-	AutoCheckpointEdits         *bool                         `json:"auto_checkpoint_edits,omitempty"`
-	AutoVerify                  *bool                         `json:"auto_verify,omitempty"`
-	AutoLocale                  *bool                         `json:"auto_locale,omitempty"`
-	FormatOnWrite               *bool                         `json:"format_on_write,omitempty"`
+	Verify              VerifyConfig          `json:"verify,omitempty"`
+	Command             string                `json:"command,omitempty"`
+	PermissionMode      string                `json:"permission_mode"`
+	PermissionRules     PermissionRulesConfig `json:"permission_rules,omitempty"`
+	Shell               string                `json:"shell"`
+	SessionDir          string                `json:"session_dir"`
+	AutoCompactChars    int                   `json:"auto_compact_chars"`
+	AutoCheckpointEdits *bool                 `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerify          *bool                 `json:"auto_verify,omitempty"`
+	AutoLocale          *bool                 `json:"auto_locale,omitempty"`
+	FormatOnWrite       *bool                 `json:"format_on_write,omitempty"`
+	// InjectProjectAnalysis controls whether past /analyze-project artifacts are
+	// injected into ordinary turns. Default false (speed); enable for deep
+	// project Q&A or via /settings preset strict.
+	InjectProjectAnalysis *bool `json:"inject_project_analysis,omitempty"`
+	// RuntimePreset names the last applied speed/safety bundle (speed|balanced|strict).
+	RuntimePreset               string                        `json:"runtime_preset,omitempty"`
 	FuzzFuncOutputLanguage      string                        `json:"fuzz_func_output_language,omitempty"`
 	HooksEnabled                *bool                         `json:"hooks_enabled,omitempty"`
 	HookPresets                 []string                      `json:"hook_presets,omitempty"`
@@ -544,7 +550,7 @@ func DefaultConfig(cwd string) Config {
 		MaxRequestRetries:      2,
 		RequestRetryDelayMs:    1500,
 		RequestTimeoutSecs:     1200,
-		ProgressDisplay:        "compact",
+		ProgressDisplay:        "quiet",
 		ShellTimeoutSecs:       currentDefaultShellTimeoutSecs,
 		ReadHintSpans:          defaultReadHintSpans,
 		ReadCacheEntries:       defaultReadCacheEntries,
@@ -552,43 +558,32 @@ func DefaultConfig(cwd string) Config {
 		Shell:                  defaultShell(),
 		SessionDir:             filepath.Join(userConfigDir(), "sessions"),
 		ProjectDocMaxBytes:     intPtr(agentsMDMaxBytes),
-		AutoCompactChars:       45000,
+		AutoCompactChars:       90000,
 		AutoCheckpointEdits:    boolPtr(false),
-		AutoVerify:             boolPtr(true),
+		AutoVerify:             boolPtr(false),
 		AutoLocale:             boolPtr(true),
 		FormatOnWrite:          boolPtr(true),
+		InjectProjectAnalysis:  boolPtr(false),
+		RuntimePreset:          runtimePresetSpeed,
 		FuzzFuncOutputLanguage: "english",
 		HooksEnabled:           boolPtr(true),
 		HooksFailClosed:        boolPtr(false),
 		Review: ReviewHarnessConfig{
-			AutoAfterChange:               boolPtr(true),
-			AutoAfterGoalIteration:        boolPtr(true),
+			AutoAfterChange:               boolPtr(false),
+			AutoAfterGoalIteration:        boolPtr(false),
 			AutoBeforeGitWrite:            boolPtr(true),
 			ModelReviewConsent:            modelReviewConsentAsk,
 			AutoFollowUp:                  "safe",
-			AutoRepairMaxRounds:           2,
+			AutoRepairMaxRounds:           1,
 			RepeatedFindingBlockThreshold: 2,
 		},
 		RequestRuntime: RequestRuntimeConfig{
 			Mode: RequestRuntimeModeDisabled,
-			// The semantic (LLM) classifier is the language-agnostic intent authority
-			// and now runs by default: it is the primary signal for what the user
-			// wants, with the deterministic keyword heuristics kept only as the
-			// fallback when the classifier is unavailable, errors, or is below its
-			// confidence threshold. The one failure mode that previously kept it
-			// opt-in -- a misread "read-only" stripping edit tools in edit/full and
-			// stranding the model -- is gone: the permission MODE is now the single
-			// authority for edit-tool exposure (applyEditAuthorityToEnvelope), so a
-			// soft read-only classification can no longer remove the edit tools or
-			// hard-block the mutation. The classifier still only NARROWS to read-only
-			// (least privilege) or promotes to a document artifact under a calibration
-			// gate; it never widens mutation past the deterministic envelope. The
-			// enabled-mode fast path skips the round-trip for unambiguous requests
-			// (clear imperative edits, already-read-only-with-no-mutation), so only
-			// the ambiguous middle pays for the extra call. Opt back out per session
-			// with request_runtime.semantic_classifier.mode = "disabled".
+			// Speed default: deterministic intent only. Re-enable the LLM
+			// classifier with /settings preset strict or
+			// request_runtime.semantic_classifier.mode = "enabled".
 			SemanticClassifier: RequestSemanticClassifierConfig{
-				Mode: RequestSemanticClassifierModeEnabled,
+				Mode: RequestSemanticClassifierModeDisabled,
 			},
 		},
 		Specialists: SpecialistSubagentsConfig{
@@ -1425,10 +1420,10 @@ func normalizeReviewHarnessConfig(cfg *ReviewHarnessConfig) {
 		return
 	}
 	if cfg.AutoAfterChange == nil {
-		cfg.AutoAfterChange = boolPtr(true)
+		cfg.AutoAfterChange = boolPtr(false)
 	}
 	if cfg.AutoAfterGoalIteration == nil {
-		cfg.AutoAfterGoalIteration = boolPtr(true)
+		cfg.AutoAfterGoalIteration = boolPtr(false)
 	}
 	if cfg.AutoBeforeGitWrite == nil {
 		cfg.AutoBeforeGitWrite = boolPtr(true)
@@ -1438,7 +1433,7 @@ func normalizeReviewHarnessConfig(cfg *ReviewHarnessConfig) {
 		cfg.AutoFollowUp = "safe"
 	}
 	if cfg.AutoRepairMaxRounds <= 0 {
-		cfg.AutoRepairMaxRounds = 2
+		cfg.AutoRepairMaxRounds = 1
 	}
 	if cfg.RepeatedFindingBlockThreshold <= 0 {
 		cfg.RepeatedFindingBlockThreshold = 2
@@ -1627,6 +1622,13 @@ func mergeConfig(dst *Config, src Config) {
 	if src.AutoVerify != nil {
 		value := *src.AutoVerify
 		dst.AutoVerify = &value
+	}
+	if src.InjectProjectAnalysis != nil {
+		value := *src.InjectProjectAnalysis
+		dst.InjectProjectAnalysis = &value
+	}
+	if strings.TrimSpace(src.RuntimePreset) != "" {
+		dst.RuntimePreset = normalizeRuntimePreset(src.RuntimePreset)
 	}
 	if src.AutoLocale != nil {
 		value := *src.AutoLocale
@@ -2408,14 +2410,16 @@ func normalizeProgressDisplay(value string) string {
 	if normalized, ok := parseProgressDisplayInput(value); ok {
 		return normalized
 	}
-	return "auto"
+	return "quiet"
 }
 
 func parseProgressDisplayInput(value string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "auto", "default":
+	case "", "quiet", "default":
+		return "quiet", true
+	case "auto":
 		return "auto", true
-	case "compact", "footer", "quiet":
+	case "compact", "footer":
 		return "compact", true
 	case "stream", "ledger", "verbose", "persistent":
 		return "stream", true
@@ -2769,9 +2773,86 @@ func configBypassHookTrust(cfg Config) bool {
 
 func configAutoVerify(cfg Config) bool {
 	if cfg.AutoVerify == nil {
-		return true
+		return false
 	}
 	return *cfg.AutoVerify
+}
+
+func configInjectProjectAnalysis(cfg Config) bool {
+	if cfg.InjectProjectAnalysis == nil {
+		return false
+	}
+	return *cfg.InjectProjectAnalysis
+}
+
+const (
+	runtimePresetSpeed    = "speed"
+	runtimePresetBalanced = "balanced"
+	runtimePresetStrict   = "strict"
+)
+
+func normalizeRuntimePreset(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", runtimePresetSpeed, "fast", "default":
+		return runtimePresetSpeed
+	case runtimePresetBalanced, "normal":
+		return runtimePresetBalanced
+	case runtimePresetStrict, "safe", "safety":
+		return runtimePresetStrict
+	default:
+		return ""
+	}
+}
+
+func configRuntimePreset(cfg Config) string {
+	if preset := normalizeRuntimePreset(cfg.RuntimePreset); preset != "" {
+		return preset
+	}
+	return runtimePresetSpeed
+}
+
+// applyRuntimePreset sets the speed/safety bundle on cfg. Returns false when
+// the preset name is unknown.
+func applyRuntimePreset(cfg *Config, preset string) bool {
+	if cfg == nil {
+		return false
+	}
+	normalized := normalizeRuntimePreset(preset)
+	if normalized == "" {
+		return false
+	}
+	cfg.RuntimePreset = normalized
+	switch normalized {
+	case runtimePresetSpeed:
+		cfg.AutoVerify = boolPtr(false)
+		cfg.InjectProjectAnalysis = boolPtr(false)
+		cfg.AutoCompactChars = 90000
+		cfg.Review.AutoAfterChange = boolPtr(false)
+		cfg.Review.AutoAfterGoalIteration = boolPtr(false)
+		cfg.Review.AutoBeforeGitWrite = boolPtr(true)
+		cfg.Review.AutoRepairMaxRounds = 1
+		cfg.RequestRuntime.SemanticClassifier.Mode = RequestSemanticClassifierModeDisabled
+	case runtimePresetBalanced:
+		cfg.AutoVerify = boolPtr(false)
+		cfg.InjectProjectAnalysis = boolPtr(false)
+		cfg.AutoCompactChars = 60000
+		cfg.Review.AutoAfterChange = boolPtr(true)
+		cfg.Review.AutoAfterGoalIteration = boolPtr(true)
+		cfg.Review.AutoBeforeGitWrite = boolPtr(true)
+		cfg.Review.AutoRepairMaxRounds = 2
+		cfg.RequestRuntime.SemanticClassifier.Mode = RequestSemanticClassifierModeDisabled
+	case runtimePresetStrict:
+		cfg.AutoVerify = boolPtr(true)
+		cfg.InjectProjectAnalysis = boolPtr(true)
+		cfg.AutoCompactChars = 45000
+		cfg.Review.AutoAfterChange = boolPtr(true)
+		cfg.Review.AutoAfterGoalIteration = boolPtr(true)
+		cfg.Review.AutoBeforeGitWrite = boolPtr(true)
+		cfg.Review.AutoRepairMaxRounds = 2
+		cfg.RequestRuntime.SemanticClassifier.Mode = RequestSemanticClassifierModeEnabled
+	}
+	normalizeRequestSemanticClassifierConfig(&cfg.RequestRuntime.SemanticClassifier)
+	return true
 }
 
 func configVerify(cfg Config) VerifyConfig {
@@ -3182,15 +3263,15 @@ func InitMemoryTemplate(projectName string) string {
 
 func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 	sample := struct {
-		AutoCheckpointEdits *bool    `json:"auto_checkpoint_edits,omitempty"`
-		AutoVerify          *bool    `json:"auto_verify,omitempty"`
-		MaxRequestRetries   int      `json:"max_request_retries,omitempty"`
-		RequestRetryDelayMs int      `json:"request_retry_delay_ms,omitempty"`
-		RequestTimeoutSecs  int      `json:"request_timeout_seconds,omitempty"`
-		ProgressDisplay     string   `json:"progress_display,omitempty"`
-		ShellTimeoutSecs    int      `json:"shell_timeout_seconds,omitempty"`
-		ReadHintSpans       int      `json:"read_hint_spans,omitempty"`
-		ReadCacheEntries    int      `json:"read_cache_entries,omitempty"`
+		AutoCheckpointEdits *bool        `json:"auto_checkpoint_edits,omitempty"`
+		AutoVerify          *bool        `json:"auto_verify,omitempty"`
+		MaxRequestRetries   int          `json:"max_request_retries,omitempty"`
+		RequestRetryDelayMs int          `json:"request_retry_delay_ms,omitempty"`
+		RequestTimeoutSecs  int          `json:"request_timeout_seconds,omitempty"`
+		ProgressDisplay     string       `json:"progress_display,omitempty"`
+		ShellTimeoutSecs    int          `json:"shell_timeout_seconds,omitempty"`
+		ReadHintSpans       int          `json:"read_hint_spans,omitempty"`
+		ReadCacheEntries    int          `json:"read_cache_entries,omitempty"`
 		MSBuildPath         string       `json:"msbuild_path,omitempty"`
 		CMakePath           string       `json:"cmake_path,omitempty"`
 		CTestPath           string       `json:"ctest_path,omitempty"`
@@ -3206,18 +3287,18 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		WorktreeIsolation WorktreeIsolationConfig `json:"worktree_isolation,omitempty"`
 	}{
 		AutoCheckpointEdits: boolPtr(false),
-		AutoVerify:          boolPtr(true),
+		AutoVerify:          boolPtr(false),
 		MaxRequestRetries:   2,
 		RequestRetryDelayMs: 1500,
 		RequestTimeoutSecs:  1200,
-		ProgressDisplay:     "compact",
-		ShellTimeoutSecs:    currentDefaultShellTimeoutSecs,
-		ReadHintSpans:       defaultReadHintSpans,
-		ReadCacheEntries:    defaultReadCacheEntries,
-		MSBuildPath:         "",
-		CMakePath:           "",
-		CTestPath:           "",
-		NinjaPath:           "",
+		ProgressDisplay:     "quiet",
+ ShellTimeoutSecs: currentDefaultShellTimeoutSecs,
+		ReadHintSpans:    defaultReadHintSpans,
+		ReadCacheEntries: defaultReadCacheEntries,
+		MSBuildPath:      "",
+		CMakePath:        "",
+		CTestPath:        "",
+		NinjaPath:        "",
 		// Prefer Release for product trees that only maintain that matrix.
 		Verify: VerifyConfig{
 			MSBuildConfiguration: "Release",
@@ -3667,6 +3748,52 @@ func ParseCommand(input string) (Command, bool) {
 
 func HelpText() string {
 	return strings.TrimSpace(`
+Everyday:
+/help [topic|all]      Short command map, topic detail, or full catalog
+/status [detail]       Session, gate, and approvals
+/clear                 Clear conversation (/reset, /new)
+/exit                  Leave the REPL (/quit)
+/model                 Main and analysis model routing
+/provider              Configure or inspect the model provider
+/permissions           plan | edit | full
+/review                Change/plan/selection/PR/final/goal/analysis review
+/verify                Adaptive or full verification
+/gate                  Runtime gate status, clear, restore
+/diff                  Workspace git diff
+/config                Effective merged config
+
+Hubs (type the hub alone for a cheatsheet):
+/session               Sessions, continuity, jobs, handoff, audit
+/memory                Persistent memory (+ /memory evidence ...)
+/selection             Viewer open/list/use/note/tag/diff/edit
+/analyze               Project analysis, dashboard, performance, docs
+/probe                 Fuzz, source-scan, root-cause, driver PoC
+/mcp                   MCP servers, resources, prompts, skills
+/hooks                 Hook rules; /hooks reload; /hooks override
+/settings              auto-verify, locale, tool iterations, progress UI
+/checkpoint            Snapshots and rollback
+/goal                  Persistent autonomous goals
+/automation            Scheduled verification / PR review
+/suggest               Proactive next actions
+/worktree              Isolated git worktrees
+/init                  Bootstrap KERNFORGE.md / config / hooks / verify
+/specialists           Task ownership and worktree leases
+/profile               Saved provider/model profiles
+/codex-auth            OpenAI Codex OAuth (login/logout/status)
+
+Notes:
+- Use /help all for the full command catalog (including expert aliases).
+- Blocked turns show numbered recovery choices (refresh review / dismiss once / details / keep editing); Everyday footer omits gate: and slash-command menus.
+- kernforge daemon is the shared MCP daemon CLI; /automation daemon-* is a separate automation watcher.
+- Special input: !<shell>  @path  @image  @mcp:server:target  \ line continue
+`)
+}
+
+func HelpTextAll() string {
+	return strings.TrimSpace(`
+Full command catalog (also: /help all). Prefer the short /help map for daily use.
+kernforge daemon = shared MCP/share daemon CLI; /automation daemon-* = automation watcher (different).
+
 General:
 /config                Show effective runtime config
 /trust [status|on|off] Show or set project-local config and hook trust
@@ -3674,12 +3801,12 @@ General:
 /decision              Open the local decision journal, editor, profile, and export dashboard
 /exit                  Exit the CLI
 /help                  Show available commands
+/help all              Show the full command catalog
 /reload                Reload config, memory, skills, hooks, and MCP extensions
-/hook-reload           Reload hook configuration only
 /hooks                 Show loaded hook rules and warnings
-/override              Show active hook overrides for this workspace
-/override add ...      Create a temporary hook override with a reason
-/override clear ...    Remove one override, all overrides, or all for a rule
+/hooks reload          Reload hook configuration only
+/hooks override ...    Temporary hook overrides (also /override)
+/settings              Session toggles hub (also /set-auto-verify, /locale-auto, ...)
 /status                Show current provider, model, session, and memory info
 /version               Show the current application version
 
@@ -3707,32 +3834,31 @@ Conversation And Sessions:
 /retry-verify          Retry focused verification after a harness block, then finish with recorded evidence
 /continue              Resume the primary next step after a pre-final coding harness block
 /review pr [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Review a PR target, optionally with explicit GitHub writes
-/goal [start|run|status|audit|complete|cancel] Record a persistent goal, then explicitly run the autonomous loop when ready
+/goal [run|status|audit|complete|cancel] Record a persistent goal, then explicitly run the autonomous loop when ready
 /session tasks         Show the current task list
 
 Provider And Models:
 /review plan <task>   Review an implementation plan through the common review harness
 /new-feature <task>    Create tracked feature artifacts; use /new-feature and /new-feature next to continue
-/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal] Analyze the workspace or a scoped path, infer a mode-specific goal when omitted, generate a project knowledge base, docs, manifest, dashboard, and next-step handoff
-/docs-refresh          Regenerate latest analysis docs, docs manifest, dashboard, and docs-backed vector corpus from saved artifacts
-/analyze-dashboard [latest|path] Open the latest or selected project analysis document portal
-/analyze-performance [focus] Analyze likely performance bottlenecks and suggest hotspot follow-up commands
+/analyze               Project analysis hub (project|dashboard|performance|docs-refresh)
+/analyze project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal] Analyze the workspace or a scoped path
+/analyze dashboard [latest|path] Open the latest or selected project analysis document portal
+/analyze docs-refresh  Regenerate latest analysis docs, docs manifest, dashboard, and docs-backed vector corpus
+/analyze performance [focus] Analyze likely performance bottlenecks and suggest hotspot follow-up commands
 /specialists           Show task ownership profiles plus editable ownership and worktree routing state
 /model                 Show all model routing and interactively reconfigure one target
 /model analysis-worker <provider> <model> [reasoning_effort] Configure the project-analysis worker route
 /model analysis-reviewer <provider> <model> [reasoning_effort] Configure the project-analysis reviewer route
-/model analysis-worker 0 Reset only the project-analysis worker route to inherited default
-/model analysis-reviewer 0 Reset only the project-analysis reviewer route to inherited default
 /model cross-review [provider] [model] [reasoning_effort] Configure the optional independent second-pass reviewer route
-/model cross-review 0 Reset the optional cross-review route to default single-model mode
 /model analysis clear  Reset project-analysis worker/reviewer routes to inherited defaults
 /model task-owner [status|clear <owner-profile|all>|<owner-profile> <provider> <model> [reasoning_effort]] Configure optional task-owner model overrides
 /effort [target] [value] Show or set per-model reasoning effort: undefined, minimal, low, medium, high, xhigh
 /codex-auth [status|login|logout] Manage Kernforge-owned OpenAI Codex OAuth auth
 /permissions [mode]          Show or change permissions: plan, edit, full (default plan); legacy names and Codex profile ids also accepted
-/set-max-tool-iterations <n|0|unlimited|none|off> Set the maximum tool iteration count per request; 0 disables the cap
-/progress-display [auto|compact|stream] Show or set in-flight progress visibility
-/profile [list|<number>|rN|dN|pN] Show saved provider/model profiles, role model routing, or manage one explicitly
+/settings max-tool-iterations <n|0|unlimited|none|off> Set the maximum tool iteration count per request; 0 disables the cap
+/settings preset [speed|balanced|strict] Apply runtime speed/safety bundle (default speed)
+/settings progress-display [quiet|compact|auto|stream] Show or set in-flight progress visibility
+/profile [list|show|pin|unpin|rename|delete] Show saved provider/model profiles or manage one explicitly
 /provider              Choose and configure a provider
 /provider status       Show provider connectivity, key state, and budget visibility
 - Permission prompts use the same keys: y allows once, a allows for the current session, n denies, and Esc cancels.
@@ -3756,32 +3882,42 @@ Verification And Checkpoints:
 /verify config set msbuild-platform <name> Force MSBuild Platform (e.g. x64)
 /verify config set cmake-config <name> Force cmake --config / ctest -C value
 /verify config clear [msbuild-configuration|msbuild-platform|cmake-config|all]
-/set-auto-verify [on|off] Show or change automatic verification after edits
+/settings auto-verify [on|off] Show or change automatic verification after edits
 - Quote paths that contain spaces. Example: /verify tools set msbuild "C:\Program Files\...\MSBuild.exe"
 - For product trees that only maintain Release, use verify.msbuild_configuration=Release in .kernforge/config.json or /verify config set
 /investigate [subcommand] Manage live investigation sessions and guide the next snapshot, simulation, or evidence step
 /investigate dashboard Show an investigation dashboard for this workspace
 /investigate dashboard --html Generate and open an HTML investigation dashboard
 /simulate [profile]   Run risk-oriented simulation profiles and guide verification or evidence follow-up
-/fuzz-func <name> [--file <path>|@<path>] [--source-scan off|focused|full] Auto-plan directed function fuzzing for one function, reuse or run source-scan context, recover build settings when possible, and ask before heuristic execution
-/fuzz-func --file <path> or @<path> Analyze one file plus its include/import closure, then auto-pick the best representative function root
-/fuzz-func --from-candidate <candidate-id> Start focused function fuzzing from a saved /source-scan candidate
-/fuzz-func language [system|english] Choose whether /fuzz-func output follows the PC language or stays in English
-/fuzz-campaign [status|run|new|list|show] Inspect or advance the campaign planner through seed promotion, deduplicated finding lifecycle updates, parsed coverage report feedback, sanitizer/verifier artifact capture, native result reports, and evidence capture
-/source-scan [status|run|list|show|revalidate] Scan source with built-in bug-pattern matchers, persist candidates, and guide /fuzz-func --from-candidate
-/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout] Generate an x64 C++20 MSVC kernel-driver POC solution plus <driver-name>-tester.exe; omitting --type keeps the original SCM/IOCTL ping POC
-/create-driver-poc <driver-name> --type objectfilter Generate an object manager process/thread handle filter POC
-/create-driver-poc <driver-name> --type minifilter Generate a filesystem minifilter POC with user-mode decision messaging
-/create-driver-poc <driver-name> --type registryfilter Generate a registry callback filter POC
-/create-driver-poc <driver-name> --type wfpcallout Generate a WFP outbound callout POC
-/find-root-cause <problem> Analyze a reported symptom with 1-8 route-limited worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
-/root-cause-patterns [list|match|github-search|normalize|validate] Inspect and validate root-cause pattern packs
+/probe                 Security/diagnostics hub (fuzz|campaign|scan|root-cause|patterns|driver-poc)
+/probe fuzz <name> [--file <path>|@<path>] [--source-scan off|focused|full] Auto-plan directed function fuzzing
+/fuzz-func ...         Alias for /probe fuzz
+/probe campaign [status|run|new|list|show] Inspect or advance the campaign planner
+/fuzz-campaign [status|run|new|list|show] Alias for /probe campaign
+/probe scan [status|run|list|show|revalidate] Scan source with built-in bug-pattern matchers
+/source-scan [status|run|list|show|revalidate] Alias for /probe scan
+/probe driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout] Generate a kernel-driver POC
+/create-driver-poc ... Alias for /probe driver-poc
+/probe root-cause <problem> Analyze a reported symptom with route-limited worker shards
+/find-root-cause ...   Alias for /probe root-cause
+/probe patterns [list|match|github-search|normalize|validate] Inspect and validate root-cause pattern packs
+/root-cause-patterns ... Alias for /probe patterns
 /simulate dashboard    Show a simulation dashboard for this workspace
 /simulate dashboard --html Generate and open an HTML simulation dashboard
 /verify [path,...|--full] Run adaptive or full verification and suggest repair, dashboard, checkpoint, or feature workflow follow-up
 /verify dashboard [--html] [all] Show recent verification history and optionally generate an HTML report
+/checkpoint [note]     Create a workspace checkpoint snapshot and suggest diff/list follow-up
+/set-auto-verify [on|off] Alias for /settings auto-verify
+/hook-reload           Alias for /hooks reload
+/override ...          Alias for /hooks override
+/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal] Alias for /analyze project
+/docs-refresh          Alias for /analyze docs-refresh
+/analyze-dashboard [latest|path] Alias for /analyze dashboard
+/analyze-performance [focus] Alias for /analyze performance
+/reload                Reload config, memory, skills, hooks, and MCP extensions
 
 Memory:
+/memory evidence ...   Evidence records under the memory hub (also /evidence)
 /evidence              Show recent evidence records and suggest verification/dashboard/source follow-up
 /evidence search <query> Search evidence records with optional filters and follow-up guidance
 /evidence show <id>    Show one evidence record and suggest the next useful action
@@ -3797,18 +3933,20 @@ Memory:
 /memory stats          Show persistent memory storage stats
 
 Selection And Review:
-/clear-selection       Clear the current selected code range
-/clear-selections      Clear all saved selections
-/diff-selection        Show git diff limited to the current selected range
-/drop-selection <n>    Remove one saved selection by number
-/edit-selection <task> Run an edit-focused prompt on the current selection
-/note-selection <text> Set or replace the note on the active selection
-/open <path>           Open a workspace file in a separate viewer window
+/selection             Selection hub (list|open|use|drop|note|tag|clear|clear-all|diff|edit)
+/selection open <path> Open a workspace file in a separate viewer window
+/selection list        List saved selections and show the active one
+/selections            Alias for /selection list
 /review selection [...] Run the common review harness on the active selection
-/selection             Show the current selected code range
-/selections            List saved selections and show the active one
-/tag-selection <tags>  Set comma-separated tags on the active selection
-/use-selection <n>     Switch the active selection by number
+/clear-selection       Clear the current selected code range (alias)
+/clear-selections      Clear all saved selections (alias)
+/diff-selection        Show git diff limited to the current selected range (alias)
+/drop-selection <n>    Remove one saved selection by number (alias)
+/edit-selection <task> Run an edit-focused prompt on the current selection (alias)
+/note-selection <text> Set or replace the note on the active selection (alias)
+/open <path>           Open a workspace file in a separate viewer window (alias)
+/tag-selection <tags>  Set comma-separated tags on the active selection (alias)
+/use-selection <n>     Switch the active selection by number (alias)
 
 Workspace Setup:
 /init                  Create a starter KERNFORGE.md in the current workspace
@@ -3817,16 +3955,17 @@ Workspace Setup:
 /init memory-policy    Create a workspace .kernforge/memory-policy.json template
 /init skill <name>     Create a starter SKILL.md in .kernforge/skills/<name>
 /init verify           Create a workspace .kernforge/verify.json template
-/locale-auto [on|off]  Show or change automatic locale insertion in prompts
+/settings locale-auto [on|off]  Show or change automatic locale insertion in prompts
 /worktree [status|list|create|enter|attach|leave|cleanup] Manage isolated git worktrees and suggest tracked-feature follow-up
 
 MCP And Skills:
 /mcp                   Show configured MCP servers and tool status
-/prompt <target> [...] Resolve an MCP prompt by server:name and optional JSON args
-/prompts               Show discovered MCP prompts
-/resource <target>     Read an MCP resource by server:uri-or-name
-/resources             Show discovered MCP resources
-/skills                Show discovered local skills
+/mcp resources|resource|prompts|prompt|skills  MCP discovery under the hub
+/prompt <target> [...] Resolve an MCP prompt by server:name and optional JSON args (alias)
+/prompts               Show discovered MCP prompts (alias)
+/resource <target>     Read an MCP resource by server:uri-or-name (alias)
+/resources             Show discovered MCP resources (alias)
+/skills                Show discovered local skills (alias)
 
 Git:
 /diff                  Show git diff
@@ -4053,29 +4192,12 @@ func HelpDetail(topic string) (string, bool) {
 - Import a result packet from another local agent, human reviewer, or cloud task.
 - The import is normalized into .kernforge/handoff/imports/*.json and *.md, added to the conversation event log, and any completed_tasks IDs are marked completed in the TaskGraph when they match existing nodes.
 `), true
-	case "find-root-cause", "root-cause":
-		return strings.TrimSpace(`
-/find-root-cause <problem description>
-- Investigate a concrete failure symptom, such as party member limits being bypassed after invite/kick churn or a Win32 service that does not stop through sc stop.
-- If the symptom is too ambiguous, Kernforge prints the unclear parts and asks you to rerun /find-root-cause with a more precise prompt before starting agents.
-- Borderline symptom prompts may be checked by a model classifier before agents start, so concrete Korean natural-language reports are not rejected only because a keyword heuristic missed them.
-- Kernforge scans the workspace, selects likely source shards, and plans 1-8 worker agents depending on source size and count. Concurrent model calls follow the configured model route policy, so local single-model routes default to serial execution while cloud/API routes are not forced down to one request.
-- Kernforge matches symptom keywords and hypothesis signals against source paths and indexed symbols before sharding.
-- Workers inspect each assigned code area like a fuzzing investigation: input parameters, decoded payloads, DB/config values, cached state, counters, IDs, enum values, nullable references, and lifecycle state may be outside the code's expected range.
-- Workers must structure each candidate as trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom.
-- Reviewer passes validate each worker report against that causal chain. When more proof is needed, reviewers emit evidence_requests that route additional focused shards.
-- Deterministic quality gates downgrade or reject model-approved candidates that lack causal stages, evidence files, concrete state signals, valid probes, or symptom overlap.
-- Reviewer-approved candidates receive an additional deep verification pass with symbol-aware focused source excerpts before final synthesis.
-- Kernforge deduplicates near-identical candidates into clusters, tracks candidate relationships, keeps code-change-aware previous rejection/disconfirmation memory as a regression prior, and asks for probes with expected signals and disproving conditions.
-- The final answer summarizes plausible root causes, evidence files/functions, confidence breakdowns, concrete instrumentation, verification probes, and writes root_cause_audit.md/json artifacts.
-
-Examples:
-/find-root-cause 내 게임에서 파티원을 초대하고 추방하다 보면 파티원 제한 숫자를 넘어서서 파티원을 초대할 수 있게 돼
-/find-root-cause 내 Win32 서비스 프로세스가 sc stop으로 종료되지 않아
-`), true
 	case "general", "hooks", "hook-reload", "trust", "override", "override-add", "override-clear":
 		return strings.TrimSpace(`
 General commands cover high-level runtime inspection and app control.
+
+/hooks
+- Hook hub: show rules, /hooks reload, /hooks override (aliases: /hook-reload, /override).
 
 /config
 - Show the effective runtime configuration after user config, trusted project config, env vars, and flags are merged.
@@ -4161,9 +4283,12 @@ Conversation and session commands manage chat history and saved sessions.
 /session tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "provider status", "providers", "models", "model", "effort", "codex-auth", "codex-login", "permissions", "progress-display", "profile", "plan-review", "new-feature", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
+	case "provider", "provider status", "providers", "models", "model", "effort", "codex-auth", "codex-login", "permissions", "progress-display", "profile", "plan-review", "new-feature", "set-analysis-models", "set-specialist-model", "analyze", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
+
+/analyze
+- Project analysis hub. Prefer /analyze project|dashboard|performance|docs-refresh (legacy /analyze-* aliases still work).
 
 /model
 - Show current model routing, including the main model, project-analysis models, and explicit task-owner model overrides.
@@ -4190,10 +4315,12 @@ Provider and model commands control which model is active and how planning/revie
 - Authorization order matches Grok Build: hooks -> config rules (deny>ask>allow) -> remembered grants -> mode policy.
 - Legacy mode names (default, acceptEdits, bypassPermissions) and Codex profile ids (:read-only, :workspace, :danger-full-access) are accepted as aliases and normalize to plan/edit/full.
 
-/progress-display [auto|compact|stream]
+/progress-display [quiet|compact|auto|stream]
 - Show or change in-flight progress visibility.
-- auto keeps durable tool/model/route ledger lines in the transcript while noisy shell tail output stays transient.
-- compact keeps progress updates in the footer, and stream writes every progress update persistently.
+- quiet (default): spinner/footer only; final answer, failures, and blockers stay in the transcript.
+- compact: footer progress plus durable working notes.
+- auto: durable tool/model/route ledger lines; noisy shell tail stays transient.
+- stream: every progress update is written persistently.
 
 /profile
 - Show saved main provider/model profiles and each profile's stored analysis, task-owner, and review route model set.
@@ -4298,9 +4425,36 @@ Provider and model commands control which model is active and how planning/revie
 - Use /model task-owner status to show effective task owner model routing.
 - Use /model task-owner <owner-profile> <provider> <model> [reasoning_effort] to set an override, or /model task-owner clear <owner-profile|all> to remove overrides.
 `), true
-	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "fuzz-func", "fuzz-campaign", "source-scan", "source_scan", "sourcescan", "create-driver-poc", "create_driver_poc", "createdriverpoc":
+	case "find-root-cause", "root-cause":
+		return strings.TrimSpace(`
+/find-root-cause <problem description>
+- Prefer /probe root-cause <problem> (alias: /find-root-cause).
+- Investigate a concrete failure symptom, such as party member limits being bypassed after invite/kick churn or a Win32 service that does not stop through sc stop.
+- If the symptom is too ambiguous, Kernforge prints the unclear parts and asks you to rerun /find-root-cause with a more precise prompt before starting agents.
+- Borderline symptom prompts may be checked by a model classifier before agents start, so concrete Korean natural-language reports are not rejected only because a keyword heuristic missed them.
+- Kernforge scans the workspace, selects likely source shards, and plans 1-8 worker agents depending on source size and count. Concurrent model calls follow the configured model route policy, so local single-model routes default to serial execution while cloud/API routes are not forced down to one request.
+- Kernforge matches symptom keywords and hypothesis signals against source paths and indexed symbols before sharding.
+- Workers inspect each assigned code area like a fuzzing investigation: input parameters, decoded payloads, DB/config values, cached state, counters, IDs, enum values, nullable references, and lifecycle state may be outside the code's expected range.
+- Workers must structure each candidate as trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom.
+- Reviewer passes validate each worker report against that causal chain. When more proof is needed, reviewers emit evidence_requests that route additional focused shards.
+- Deterministic quality gates downgrade or reject model-approved candidates that lack causal stages, evidence files, concrete state signals, valid probes, or symptom overlap.
+- Reviewer-approved candidates receive an additional deep verification pass with symbol-aware focused source excerpts before final synthesis.
+- Kernforge deduplicates near-identical candidates into clusters, tracks candidate relationships, keeps code-change-aware previous rejection/disconfirmation memory as a regression prior, and asks for probes with expected signals and disproving conditions.
+- The final answer summarizes plausible root causes, evidence files/functions, confidence breakdowns, concrete instrumentation, verification probes, and writes root_cause_audit.md/json artifacts.
+
+Examples:
+/find-root-cause 내 게임에서 파티원을 초대하고 추방하다 보면 파티원 제한 숫자를 넘어서서 파티원을 초대할 수 있게 돼
+/find-root-cause 내 Win32 서비스 프로세스가 sc stop으로 종료되지 않아
+`), true
+	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "settings", "set-max-tool-iterations", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "probe", "fuzz-func", "fuzz-campaign", "source-scan", "source_scan", "sourcescan", "create-driver-poc", "create_driver_poc", "createdriverpoc", "root-cause-patterns":
 		return strings.TrimSpace(`
 Verification and checkpoint commands help you validate changes and recover safely.
+
+/settings
+- Session toggles hub: auto-verify, locale-auto, max-tool-iterations, progress-display.
+
+/probe
+- Security/diagnostics hub: fuzz, campaign, scan, root-cause, patterns, driver-poc (legacy /fuzz-*, /source-scan, /find-root-cause aliases still work).
 
 /verify [path,...|--full]
 - Run adaptive or full verification for the current workspace.
@@ -4632,43 +4786,27 @@ When an automatic review is skipped or blocked, review artifacts preserve the or
 /review waive <finding-id> --reason <text>
 - Record a finding waiver with an explicit reason.
 `), true
-	case "selection", "selections", "edit-selection", "open":
+	case "selection", "selections", "edit-selection", "open", "use-selection", "drop-selection", "note-selection", "tag-selection", "clear-selection", "clear-selections", "diff-selection":
 		return strings.TrimSpace(`
-Selection and review commands let you work on a focused code region instead of the whole workspace.
-
-/open <path>
-- Open a workspace file in the viewer window.
+/selection is the viewer-selection hub. Legacy /…-selection commands remain as aliases.
 
 /selection
-- Show the active selection.
+- Show the active selection, or a cheatsheet when none is active.
 
-/selections
-- List saved selections and show which one is active.
+/selection open <path>
+- Open a workspace file in the viewer window (alias: /open).
 
-/use-selection <n>
-- Switch the active selection by index.
+/selection list
+- List saved selections (alias: /selections).
 
-/drop-selection <n>
-- Remove one saved selection.
+/selection use <n> | drop <n> | note <text> | tag <tags>
+- Manage the active selection (aliases: /use-selection, /drop-selection, /note-selection, /tag-selection).
 
-/clear-selection
-/clear-selections
-- Clear the active selection or all saved selections.
-
-/note-selection <text>
-- Set or replace the note attached to the active selection.
-
-/tag-selection <tags>
-- Set comma-separated tags on the active selection.
-
-/diff-selection
-- Show git diff limited to the selected range. On Windows this prefers the internal read-only diff viewer.
+/selection clear | clear-all | diff | edit <task>
+- Clear, diff, or edit the selection (aliases: /clear-selection, /clear-selections, /diff-selection, /edit-selection).
 
 /review selection [...]
 - Run the common review harness on the active selection.
-
-/edit-selection <task>
-- Run an edit-focused prompt scoped to the active selection.
 `), true
 	case "init", "workspace", "workspace-setup", "locale-auto", "worktree":
 		return strings.TrimSpace(`
@@ -4727,25 +4865,28 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 `), true
 	case "mcp", "resource", "resources", "prompt", "prompts", "skills":
 		return strings.TrimSpace(`
-MCP and skills commands expose local skills plus external MCP tools, resources, and prompts.
-
-/skills
-- Show discovered local skills.
+/mcp is the MCP and skills hub. Legacy /resources, /resource, /prompts, /prompt, and /skills remain as aliases.
 
 /mcp
 - Show configured MCP servers and their tool/resource/prompt counts.
 
-/resources
-- List discovered MCP resources.
+/mcp add|remove|enable|disable|auth ...
+- Manage MCP server registration and OAuth.
 
-/resource <target>
-- Read one MCP resource by server and uri/name.
+/mcp resources
+- List discovered MCP resources (alias: /resources).
 
-/prompts
-- List discovered MCP prompts.
+/mcp resource <target>
+- Read one MCP resource by server and uri/name (alias: /resource).
 
-/prompt <target> [json]
-- Resolve an MCP prompt by server:name, with optional JSON arguments.
+/mcp prompts
+- List discovered MCP prompts (alias: /prompts).
+
+/mcp prompt <target> [json-arguments]
+- Resolve one MCP prompt (alias: /prompt).
+
+/mcp skills
+- Show discovered local skills (alias: /skills).
 
 Web research setup:
 - Mark web-capable MCP servers with capabilities like "web_search" and "web_fetch" in ~/.kernforge/config.json.
@@ -4763,17 +4904,19 @@ Git commands expose lightweight repository inspection helpers.
 `), true
 	case "help":
 		return strings.TrimSpace(`
-/help [topic]
+/help [topic|all]
 
-- Without arguments, show the grouped command list.
-- With a command name, command path, or topic, show detailed help.
+- Without arguments, show the Everyday + Hubs map.
+- /help all shows the full catalog, including expert aliases.
+- With a command name, hub, or topic, show detailed help.
 
 Examples:
+- /help
+- /help all
 - /help verify
-- /help /verify
 - /help selection
-- /help memory
-- /help mcp
+- /help probe
+- /help settings
 `), true
 	}
 	return "", false

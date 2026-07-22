@@ -209,7 +209,7 @@ func TestRecordReviewRunClearsDismissalForNewReview(t *testing.T) {
 	}
 }
 
-func TestRuntimeGateRecoveryMentionsGateClear(t *testing.T) {
+func TestRuntimeGateRecoveryCTAOmitsSlashCommands(t *testing.T) {
 	ledger := RuntimeGateLedger{
 		ID:       "lg",
 		Action:   runtimeGateActionFinalAnswer,
@@ -221,13 +221,13 @@ func TestRuntimeGateRecoveryMentionsGateClear(t *testing.T) {
 	ledger.Normalize()
 	lines := runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(false)}, nil, ledger)
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "Option 1)") ||
-		!strings.Contains(joined, "Option 2)") ||
-		!strings.Contains(joined, "/gate clear") {
-		t.Fatalf("expected peer options including /gate clear, got:\n%s", joined)
+	if !strings.Contains(joined, "numbered option") ||
+		strings.Contains(joined, "/gate clear") ||
+		strings.Contains(joined, "/review") {
+		t.Fatalf("expected command-free CTA, got:\n%s", joined)
 	}
 
-	// Already-dismissed gates should not keep advertising /gate clear.
+	// Active dismissal does not change the Everyday CTA shape (still no slash ads).
 	session := &Session{
 		RuntimeGateDismissal: &RuntimeGateDismissal{
 			ClearedAt:              time.Now(),
@@ -239,7 +239,6 @@ func TestRuntimeGateRecoveryMentionsGateClear(t *testing.T) {
 	lines = runtimeGateRecoveryGuidanceLines(Config{AutoLocale: boolPtr(false)}, session, ledger)
 	joined = strings.Join(lines, "\n")
 	if strings.Contains(joined, "/gate clear") {
-		t.Fatalf("active dismissal must not re-offer /gate clear, got:\n%s", joined)
+		t.Fatalf("CTA must never advertise /gate clear, got:\n%s", joined)
 	}
 }
-

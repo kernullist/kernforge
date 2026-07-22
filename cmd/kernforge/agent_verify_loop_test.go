@@ -4020,8 +4020,11 @@ func TestAgentSuppressesDuplicateToolPreambleEmitsWithinATurn(t *testing.T) {
 		Workspace: ws,
 		Session:   session,
 		Store:     store,
-		EmitAssistant: func(text string) {
-			emitted = append(emitted, text)
+		// Tool-turn working notes go through progress events (not EmitAssistant).
+		EmitProgressEvent: func(event ProgressEvent) {
+			if event.Kind == progressKindModelThought && event.Status == "working_note" {
+				emitted = append(emitted, event.Message)
+			}
 		},
 	}
 

@@ -100,7 +100,7 @@ func TestAnalysisOnlyStallRecoveryPrefersAnswerNotRepair(t *testing.T) {
 	if !requestLooksLikeAnalysisOnlyTurn(query) {
 		t.Fatalf("expected analysis-only classification")
 	}
-	recovery := buildStallBlockedRecoveryWithMode(Config{}, harnessRecoveryCauseReadChurn, "stopped", []string{"README.md"}, true)
+	recovery := buildStallBlockedRecoveryWithMode(Config{}, nil, harnessRecoveryCauseReadChurn, "stopped", []string{"README.md"}, true)
 	if len(recovery.Actions) < 2 {
 		t.Fatalf("expected analysis recovery actions, got %#v", recovery.Actions)
 	}

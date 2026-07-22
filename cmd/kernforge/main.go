@@ -114,6 +114,9 @@ type runtimeState struct {
 	requestCancelIgnoreUntil        time.Time
 	lastAssistantMu                 sync.Mutex
 	lastAssistantPrinted            string
+	turnPlanCaptureBuf              string
+	lastTurnPlanMu                  sync.Mutex
+	lastTurnPlanPrinted             string
 	alwaysApprovePreview            bool
 	alwaysApproveWrites             bool
 	alwaysApproveVerification       bool
@@ -511,6 +514,9 @@ func run(args []string) error {
 		EmitAssistantDelta: func(text string) {
 			rt.appendAssistantStream(text)
 		},
+		EmitTurnPlan: func(text string) {
+			rt.printPersistentTurnPlanLine(text)
+		},
 		EmitProgress: func(text string) {
 			// EmitProgress fires at meaningful phase transitions (plan-review
 			// start, tool-budget extension, autoVerify start, etc.). Reset
@@ -522,7 +528,11 @@ func run(args []string) error {
 			rt.printProgressMessage(text)
 		},
 		EmitProgressEvent: func(event ProgressEvent) {
-			rt.resetThinkingTimer()
+			// Turn-plan lines are orientation for the operator; do not reset the
+			// thinking timer (that made the spinner look like it "ate" the line).
+			if strings.TrimSpace(event.Kind) != progressKindTurnPlan {
+				rt.resetThinkingTimer()
+			}
 			rt.printProgressEvent(event)
 		},
 	}
@@ -1252,7 +1262,7 @@ func (rt *runtimeState) showBanner() {
 func (rt *runtimeState) redrawScreen() {
 	rt.bannerShown = false
 	rt.showBanner()
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Type a task or /help to begin."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Type a task or /help to begin. Everyday commands and hubs are listed; use /help all for the full catalog."))
 }
 
 func (rt *runtimeState) runREPL() error {
@@ -1368,12 +1378,12 @@ func (rt *runtimeState) printOperatorFooter() {
 		return
 	}
 	snapshot := rt.operatorStatusSnapshot(runtimeGateActionFinalAnswer)
-	line := rt.ui.statusSummaryBlock("status", snapshot.Items, operatorFooterDisplayWidth(terminalWidth()))
+	// Everyday footer omits the gate: pill; recovery CTA below replaces it.
+	line := rt.ui.statusSummaryBlock("status", operatorStatusItemsWithoutGate(snapshot.Items), operatorFooterDisplayWidth(terminalWidth()))
 	if strings.TrimSpace(line) != "" {
 		fmt.Fprintln(rt.writer, line)
 	}
-	// When the gate is blocked or needs review, show plain recovery steps above
-	// the prompt so users do not have to discover /status detail first.
+	// When the gate is blocked or needs review, show a short CTA (no slash commands).
 	rt.printRuntimeGateRecoveryGuidance(snapshot.Ledger)
 }
 
@@ -1385,7 +1395,24 @@ func (rt *runtimeState) operatorFooterLineForWidth(width int) string {
 	if rt == nil {
 		return ""
 	}
-	return rt.ui.statusSummaryBlock("status", rt.operatorStatusSnapshot(runtimeGateActionFinalAnswer).Items, operatorFooterDisplayWidth(width))
+	items := operatorStatusItemsWithoutGate(rt.operatorStatusSnapshot(runtimeGateActionFinalAnswer).Items)
+	return rt.ui.statusSummaryBlock("status", items, operatorFooterDisplayWidth(width))
+}
+
+// operatorStatusItemsWithoutGate drops the Everyday-facing gate: status pill.
+// /status overview keeps the gate item via the full snapshot.
+func operatorStatusItemsWithoutGate(items []statusSummaryItem) []statusSummaryItem {
+	if len(items) == 0 {
+		return items
+	}
+	out := make([]statusSummaryItem, 0, len(items))
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Label), "gate") {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // printRuntimeGateRecoveryGuidance prints short "what to do" lines for a
@@ -1408,9 +1435,7 @@ func (rt *runtimeState) printRuntimeGateRecoveryGuidance(ledger RuntimeGateLedge
 		switch {
 		case i == 0 && blocked:
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(line))
-		case strings.HasPrefix(line, "Do now:") || strings.HasPrefix(line, "지금 할 일:") ||
-			strings.HasPrefix(line, "Option ") || strings.HasPrefix(line, "방법 ") ||
-			strings.HasPrefix(line, "Or:") || strings.HasPrefix(line, "또는:"):
+		case i == 0:
 			fmt.Fprintln(rt.writer, rt.ui.activityLine("next", line))
 		default:
 			fmt.Fprintln(rt.writer, rt.ui.hintLine(line))
@@ -1723,6 +1748,7 @@ func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context
 	}
 	rt.resetAssistantDedup()
 	rt.resetAssistantStream()
+	rt.turnPlanCaptureBuf = ""
 	rt.allowThinkingIndicator()
 	rt.clearThinkingStatus()
 	rt.clearThinkingDetails()
@@ -1947,6 +1973,17 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		return
 	}
 
+	planToPrint, text, hold := rt.prepareAssistantStreamDelta(text)
+	if planToPrint != "" {
+		rt.printPersistentTurnPlanLine(planToPrint)
+	}
+	if hold || strings.TrimSpace(text) == "" {
+		return
+	}
+	rt.writeAssistantStreamDelta(text)
+}
+
+func (rt *runtimeState) prepareAssistantStreamDelta(text string) (plan string, remainder string, hold bool) {
 	rt.streamMu.Lock()
 	defer rt.streamMu.Unlock()
 
@@ -1954,9 +1991,27 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		rt.pendingAssistantSpacing = ""
 		text = strings.TrimLeftFunc(text, unicode.IsSpace)
 		if text == "" {
-			return
+			return "", "", true
+		}
+		if promoted, rest, ok := rt.promoteTurnPlanFromAssistantDeltaLocked(text); ok {
+			plan = promoted
+			text = rest
+			if strings.TrimSpace(text) == "" {
+				return plan, "", true
+			}
+			text = strings.TrimLeftFunc(text, unicode.IsSpace)
+			if text == "" {
+				return plan, "", true
+			}
 		}
 	}
+	return plan, text, false
+}
+
+func (rt *runtimeState) writeAssistantStreamDelta(text string) {
+	rt.streamMu.Lock()
+	defer rt.streamMu.Unlock()
+
 	if rt.streamingAssistant && isAssistantBlankLineChunk(text) {
 		rt.pendingAssistantSpacing += text
 		if countLineBreaks(rt.pendingAssistantSpacing) >= 3 {
@@ -1999,6 +2054,31 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 	}
 	rt.streamedAssistantText.WriteString(text)
 	rt.writeOutput(rt.ui.renderAssistantStreamDelta(text, &rt.assistantStreamCtx, &rt.assistantStreamLine, &rt.assistantStreamRowCells))
+}
+
+// promoteTurnPlanFromAssistantDeltaLocked peels the first orientation line from
+// the main-turn stream when preflight announce was skipped/failed.
+func (rt *runtimeState) promoteTurnPlanFromAssistantDeltaLocked(delta string) (plan string, rest string, ok bool) {
+	if rt == nil || rt.agent == nil || !rt.agent.firstLineTurnPlanCaptureArmed() {
+		return "", delta, false
+	}
+	rt.turnPlanCaptureBuf += delta
+	if line, remainder, complete := splitFirstCompleteLine(rt.turnPlanCaptureBuf); complete {
+		plan = sanitizeTurnPlanAnnouncement(line)
+		rt.turnPlanCaptureBuf = ""
+		rt.agent.clearFirstLineTurnPlanCapture()
+		if plan == "" {
+			return "", line + "\n" + remainder, true
+		}
+		return plan, remainder, true
+	}
+	if utf8.RuneCountInString(rt.turnPlanCaptureBuf) > turnPlanAnnounceMaxRunes {
+		rest = rt.turnPlanCaptureBuf
+		rt.turnPlanCaptureBuf = ""
+		rt.agent.clearFirstLineTurnPlanCapture()
+		return "", rest, true
+	}
+	return "", "", true
 }
 
 // emitAssistantClosingRail terminates the assistant block that is currently
@@ -2162,6 +2242,26 @@ func (rt *runtimeState) printProgressEvent(event ProgressEvent) {
 	if text == "" {
 		return
 	}
+	// Turn-start plan must be a durable transcript line, never spinner/footer
+	// status — otherwise the thinking indicator visually covers or replaces it.
+	if strings.TrimSpace(event.Kind) == progressKindTurnPlan {
+		rt.printPersistentTurnPlanLine(text)
+		return
+	}
+	lower := strings.ToLower(text)
+	mode := configProgressDisplay(rt.cfg)
+	// Quiet mode: drop shell body spam entirely; keep an occasional heartbeat at most.
+	if mode == "quiet" {
+		if strings.HasPrefix(lower, "run_shell output:") {
+			return
+		}
+		if strings.Contains(lower, "run_shell still running after") ||
+			strings.Contains(lower, "shell still running after") {
+			rt.setThinkingStatus(compactThinkingStatus(rt.cfg, text))
+			_ = rt.showTransientProgressFooter(text)
+			return
+		}
+	}
 	kind := progressEventActivityKind(event, text)
 	rt.setThinkingStatus(compactThinkingStatus(rt.cfg, text))
 	if rt.shouldPersistProgressEvent(event, text) {
@@ -2174,13 +2274,71 @@ func (rt *runtimeState) printProgressEvent(event ProgressEvent) {
 	rt.printWhileThinking(rt.ui.activityLine(kind, text))
 }
 
+// printPersistentTurnPlanLine writes the turn-start orientation above the
+// thinking spinner as a normal scrollback line (not a transient footer).
+func (rt *runtimeState) printPersistentTurnPlanLine(text string) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || rt == nil || rt.writer == nil {
+		return
+	}
+	line := rt.ui.activityLine("thought", trimmed)
+	if line == "" {
+		return
+	}
+	rt.lastTurnPlanMu.Lock()
+	rt.lastTurnPlanPrinted = sanitizeTurnPlanAnnouncement(trimmed)
+	rt.lastTurnPlanMu.Unlock()
+	rt.flushAssistantStream()
+	rt.clearThinkingDetails()
+	resumeThinking := rt.suspendThinkingIndicator()
+	defer resumeThinking()
+	rt.outputMu.Lock()
+	defer rt.outputMu.Unlock()
+	rt.clearFooterLineLocked()
+	// Print the plan plus a blank separator so later multi-line footer clears
+	// (\x1b[nA + \x1b[J) are less likely to erase the orientation line.
+	fmt.Fprintln(rt.writer, line)
+	fmt.Fprintln(rt.writer)
+}
+
+// stripPrintedTurnPlanPrefix removes a leading orientation line that was already
+// shown via printPersistentTurnPlanLine / stream promotion, so printAssistant
+// does not replay it inside a second >> assistant block.
+func (rt *runtimeState) stripPrintedTurnPlanPrefix(text string) string {
+	if rt == nil {
+		return text
+	}
+	rt.lastTurnPlanMu.Lock()
+	plan := strings.TrimSpace(rt.lastTurnPlanPrinted)
+	rt.lastTurnPlanMu.Unlock()
+	if plan == "" {
+		return text
+	}
+	planNorm := normalizeAssistantDisplayText(plan)
+	if planNorm == "" {
+		return text
+	}
+	if line, rest, ok := splitFirstCompleteLine(text); ok {
+		if normalizeAssistantDisplayText(sanitizeTurnPlanAnnouncement(line)) == planNorm {
+			return strings.TrimLeftFunc(rest, unicode.IsSpace)
+		}
+	}
+	// Full reply may be "plan\n\nbody" with Windows newlines already normalized,
+	// or the plan may be the entire first paragraph before a blank line.
+	trimmed := strings.TrimSpace(text)
+	if normalizeAssistantDisplayText(sanitizeTurnPlanAnnouncement(trimmed)) == planNorm {
+		return ""
+	}
+	return text
+}
+
 func progressEventActivityKind(event ProgressEvent, text string) string {
 	switch strings.TrimSpace(event.Kind) {
 	case progressKindMemoryContext:
 		return "memory"
 	case progressKindAnalysisContext:
 		return "analysis"
-	case progressKindModelThought:
+	case progressKindTurnPlan, progressKindModelThought:
 		return "thought"
 	case progressKindModelRequestStart, progressKindModelRequestWait, progressKindModelRequestDone,
 		progressKindModelRouteWait, progressKindModelRouteAcquired,
@@ -2198,9 +2356,14 @@ func (rt *runtimeState) shouldPersistProgressEvent(event ProgressEvent, text str
 	if rt == nil || !rt.interactive {
 		return true
 	}
+	// Turn-start orientation must remain visible even when quiet hides other
+	// mid-turn progress; otherwise long model waits look like a silent hang.
+	if strings.TrimSpace(event.Kind) == progressKindTurnPlan {
+		return true
+	}
 	mode := configProgressDisplay(rt.cfg)
 	switch mode {
-	case "compact":
+	case "quiet", "compact":
 		return false
 	case "stream":
 		return true
@@ -2865,6 +3028,9 @@ func (rt *runtimeState) resetAssistantDedup() {
 	rt.lastAssistantMu.Lock()
 	rt.lastAssistantPrinted = ""
 	rt.lastAssistantMu.Unlock()
+	rt.lastTurnPlanMu.Lock()
+	rt.lastTurnPlanPrinted = ""
+	rt.lastTurnPlanMu.Unlock()
 }
 
 func (rt *runtimeState) shouldPrintAssistant(text string) bool {
@@ -2874,7 +3040,7 @@ func (rt *runtimeState) shouldPrintAssistant(text string) bool {
 	}
 	rt.lastAssistantMu.Lock()
 	defer rt.lastAssistantMu.Unlock()
-	if normalized == rt.lastAssistantPrinted {
+	if assistantDisplayTextRedundant(rt.lastAssistantPrinted, normalized) {
 		return false
 	}
 	rt.lastAssistantPrinted = normalized
@@ -2882,27 +3048,124 @@ func (rt *runtimeState) shouldPrintAssistant(text string) bool {
 }
 
 func (rt *runtimeState) printAssistant(text string) {
+	// Flush any in-flight stream first so lastAssistantPrinted reflects what the
+	// operator already saw. Checking before flush caused stream+block duplicates.
+	rt.flushAssistantStream()
+	if plan, rest, peeled := rt.peelTurnPlanFromText(text); peeled {
+		if plan != "" {
+			rt.printPersistentTurnPlanLine(plan)
+		}
+		text = rest
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+	}
+	// Stream promotion already cleared firstLineTurnPlanCapture, so also strip a
+	// leading plan line that matches the durable thought we already printed.
+	text = rt.stripPrintedTurnPlanPrefix(text)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
-	rt.flushAssistantStream()
 	rt.clearThinkingStatus()
 	rt.clearThinkingDetails()
 	rt.suppressThinkingIndicator()
 	rt.stopThinkingIndicator()
+	display := softenAssistantDisplayText(rt.cfg, text)
 	rt.outputMu.Lock()
 	defer rt.outputMu.Unlock()
-	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
+	fmt.Fprintln(rt.writer, rt.ui.assistant(display))
 	rt.assistantBlockOpen = true
+}
+
+func (rt *runtimeState) peelTurnPlanFromText(text string) (plan string, rest string, ok bool) {
+	if rt == nil || rt.agent == nil || !rt.agent.firstLineTurnPlanCaptureArmed() {
+		return "", text, false
+	}
+	if line, remainder, complete := splitFirstCompleteLine(text); complete {
+		plan = sanitizeTurnPlanAnnouncement(line)
+		rt.turnPlanCaptureBuf = ""
+		rt.agent.clearFirstLineTurnPlanCapture()
+		if plan == "" {
+			return "", text, true
+		}
+		return plan, remainder, true
+	}
+	rt.agent.clearFirstLineTurnPlanCapture()
+	rt.turnPlanCaptureBuf = ""
+	return "", text, false
+}
+
+// assistantDisplayTextRedundant reports whether next would repeat content the
+// operator already saw (exact match, near-subset, or very high token overlap).
+func assistantDisplayTextRedundant(previous, next string) bool {
+	previous = strings.TrimSpace(previous)
+	next = strings.TrimSpace(next)
+	if previous == "" || next == "" {
+		return false
+	}
+	if previous == next {
+		return true
+	}
+	prevRunes := utf8.RuneCountInString(previous)
+	nextRunes := utf8.RuneCountInString(next)
+	const minSubsetRunes = 80
+	if prevRunes >= minSubsetRunes && strings.Contains(next, previous) {
+		return true
+	}
+	if nextRunes >= minSubsetRunes && strings.Contains(previous, next) {
+		return true
+	}
+	if prevRunes >= 200 && nextRunes >= 200 {
+		return assistantDisplayTokenOverlap(previous, next) >= 0.92
+	}
+	return false
+}
+
+func assistantDisplayTokenOverlap(a, b string) float64 {
+	aFields := strings.Fields(a)
+	bFields := strings.Fields(b)
+	if len(aFields) == 0 || len(bFields) == 0 {
+		return 0
+	}
+	counts := make(map[string]int, len(aFields))
+	for _, tok := range aFields {
+		counts[tok]++
+	}
+	shared := 0
+	for _, tok := range bFields {
+		if counts[tok] > 0 {
+			shared++
+			counts[tok]--
+		}
+	}
+	denom := len(aFields)
+	if len(bFields) > denom {
+		denom = len(bFields)
+	}
+	if denom == 0 {
+		return 0
+	}
+	return float64(shared) / float64(denom)
 }
 
 func (rt *runtimeState) printAssistantWhileThinking(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
-	// Working notes (requirement analysis, plan direction) must stay visible
-	// like Claude Code / Grok Build. Only short one-liners may use the
-	// transient panel; multi-line thoughts always persist.
+	mode := configProgressDisplay(rt.cfg)
+	// Quiet: keep mid-turn thoughts in the transient footer only — Cursor/Codex style.
+	if mode == "quiet" {
+		status := compactThinkingStatus(rt.cfg, text)
+		rt.setThinkingStatus(status)
+		_ = rt.showTransientPanelWhileThinking(rt.ui.activityLine("thought", status))
+		return
+	}
+	// Working notes (requirement analysis, plan direction) stay visible in
+	// compact/auto/stream like Claude Code / Grok Build. Only short one-liners
+	// may use the transient panel; multi-line thoughts persist outside quiet.
 	kind := "thought"
 	lineCount := strings.Count(text, "\n") + 1
 	if lineCount > 1 || utf8.RuneCountInString(strings.TrimSpace(text)) > 96 {
@@ -8267,13 +8530,17 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	switch cmd.Name {
 	case "help":
 		fmt.Fprintln(rt.writer, rt.ui.section("Help"))
-		if detail, ok := HelpDetail(cmd.Args); ok {
+		helpArgs := strings.TrimSpace(cmd.Args)
+		if strings.EqualFold(helpArgs, "all") {
+			fmt.Fprintln(rt.writer, rt.ui.highlightCommands(HelpTextAll()))
+		} else if detail, ok := HelpDetail(helpArgs); ok {
 			fmt.Fprintln(rt.writer, rt.ui.highlightCommands(detail))
 		} else {
 			fmt.Fprintln(rt.writer, rt.ui.highlightCommands(HelpText()))
-			if strings.TrimSpace(cmd.Args) != "" {
+			if helpArgs != "" {
 				fmt.Fprintln(rt.writer)
-				fmt.Fprintln(rt.writer, rt.ui.warnLine("No detailed help found for "+cmd.Args))
+				fmt.Fprintln(rt.writer, rt.ui.warnLine("No detailed help found for "+helpArgs))
+				fmt.Fprintln(rt.writer, rt.ui.hintLine("Try /help all or /help <hub> (for example /help selection)."))
 			}
 		}
 	case "status":
@@ -8476,26 +8743,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Permissions set to "+canonical))
 	case "set-max-tool-iterations":
-		if cmd.Args == "" {
-			fmt.Fprintln(rt.writer, rt.ui.infoLine("max_tool_iterations: "+formatMaxToolIterations(configMaxToolIterations(rt.cfg))))
-			return false, nil
-		}
-		argText := strings.TrimSpace(cmd.Args)
-		var val int
-		if strings.EqualFold(argText, "unlimited") || strings.EqualFold(argText, "none") || strings.EqualFold(argText, "off") {
-			val = 0
-		} else {
-			parsed, err := strconv.Atoi(argText)
-			if err != nil || parsed < 0 {
-				return false, fmt.Errorf("invalid value: must be a non-negative integer (0 or \"unlimited\" disables the cap)")
-			}
-			val = parsed
-		}
-		rt.cfg.MaxToolIterations = val
-		if err := rt.saveUserConfig(); err != nil {
+		if err := rt.handleSetMaxToolIterationsCommand(cmd.Args); err != nil {
 			return false, err
 		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("max_tool_iterations set to "+formatMaxToolIterations(val)))
 	case "progress-display":
 		if err := rt.handleProgressDisplayCommand(cmd.Args); err != nil {
 			return false, err
@@ -8618,8 +8868,16 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleRootCausePatternsCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "probe":
+		if err := rt.handleProbeFamilyCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "checkpoint":
 		if err := rt.handleCheckpointFamilyCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "settings":
+		if err := rt.handleSettingsFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "set-auto-verify":
@@ -8635,131 +8893,29 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 	case "skills":
-		items := rt.skills.Items()
-		if len(items) == 0 {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("No skills discovered."))
-			return false, nil
-		}
-		fmt.Fprintln(rt.writer, rt.ui.section("Skills"))
-		for _, skill := range items {
-			label := skill.Name
-			if skill.Enabled {
-				label += " [enabled]"
-			}
-			fmt.Fprintln(rt.writer, label)
-			fmt.Fprintln(rt.writer, rt.ui.dim("  "+skill.Path))
-			if strings.TrimSpace(skill.Summary) != "" {
-				fmt.Fprintln(rt.writer, rt.ui.dim("  "+skill.Summary))
-			}
+		if err := rt.printSkills(); err != nil {
+			return false, err
 		}
 	case "mcp":
-		if fields := tokenizeCommandArgs(cmd.Args); len(fields) > 0 {
-			if err := rt.handleMCPSubcommand(fields); err != nil {
-				return false, err
-			}
-			return false, nil
-		}
-		statuses := rt.mcpStatus()
-		if len(statuses) == 0 {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("No MCP servers configured."))
-			return false, nil
-		}
-		fmt.Fprintln(rt.writer, rt.ui.section("MCP"))
-		for _, status := range statuses {
-			environmentID := mcpStatusEnvironmentID(status)
-			authSuffix := mcpStatusAuthSuffix(status)
-			if strings.TrimSpace(status.Error) != "" {
-				fmt.Fprintf(rt.writer, "%s  transport=%s  env=%s%s  error=%s\n", status.Name, valueOrDefault(status.Transport, "stdio"), environmentID, authSuffix, status.Error)
-				continue
-			}
-			extra := ""
-			if rt.mcp != nil {
-				if server, ok := rt.mcp.ServerConfig(status.Name); ok {
-					extra = webResearchMCPStatusSummary(server, os.Getenv)
-				}
-			}
-			location := status.Cwd
-			locationLabel := "cwd"
-			if strings.TrimSpace(status.URL) != "" {
-				location = status.URL
-				locationLabel = "url"
-			}
-			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  transport=%s  env=%s%s  %s=%s%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, valueOrDefault(status.Transport, "stdio"), environmentID, authSuffix, locationLabel, location, extra)
+		if err := rt.handleMCPFamilyCommand(cmd.Args); err != nil {
+			return false, err
 		}
 	case "resources":
-		items := rt.mcpResources()
-		if len(items) == 0 {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("No MCP resources discovered."))
-			return false, nil
-		}
-		fmt.Fprintln(rt.writer, rt.ui.section("Resources"))
-		for _, item := range items {
-			label := item.Resource.URI
-			if label == "" {
-				label = item.Resource.Name
-			}
-			line := fmt.Sprintf("%s:%s", item.Server, label)
-			if item.Resource.Name != "" && item.Resource.Name != label {
-				line += " (" + item.Resource.Name + ")"
-			}
-			fmt.Fprintln(rt.writer, line)
-			if strings.TrimSpace(item.Resource.Description) != "" {
-				fmt.Fprintln(rt.writer, rt.ui.dim("  "+item.Resource.Description))
-			}
+		if err := rt.printMCPResources(); err != nil {
+			return false, err
 		}
 	case "resource":
-		if strings.TrimSpace(cmd.Args) == "" {
-			return false, fmt.Errorf("usage: /resource <server:resource-uri-or-name>")
-		}
-		if rt.mcp == nil {
-			return false, fmt.Errorf("no MCP servers configured")
-		}
-		display, text, err := rt.mcp.ReadResource(context.Background(), cmd.Args)
-		if err != nil {
+		if err := rt.readMCPResource(cmd.Args); err != nil {
 			return false, err
 		}
-		fmt.Fprintln(rt.writer, rt.ui.section("Resource"))
-		fmt.Fprintln(rt.writer, rt.ui.dim(display))
-		fmt.Fprintln(rt.writer, text)
 	case "prompts":
-		items := rt.mcpPrompts()
-		if len(items) == 0 {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("No MCP prompts discovered."))
-			return false, nil
-		}
-		fmt.Fprintln(rt.writer, rt.ui.section("Prompts"))
-		for _, item := range items {
-			args := []string{}
-			for _, arg := range item.Prompt.Arguments {
-				label := arg.Name
-				if arg.Required {
-					label += "*"
-				}
-				args = append(args, label)
-			}
-			fmt.Fprintf(rt.writer, "%s:%s(%s)\n", item.Server, item.Prompt.Name, strings.Join(args, ", "))
-			if strings.TrimSpace(item.Prompt.Description) != "" {
-				fmt.Fprintln(rt.writer, rt.ui.dim("  "+item.Prompt.Description))
-			}
+		if err := rt.printMCPPrompts(); err != nil {
+			return false, err
 		}
 	case "prompt":
-		if strings.TrimSpace(cmd.Args) == "" {
-			return false, fmt.Errorf("usage: /prompt <server:prompt-name> [json-arguments]")
-		}
-		if rt.mcp == nil {
-			return false, fmt.Errorf("no MCP servers configured")
-		}
-		target, args, err := parsePromptCommandArgs(cmd.Args)
-		if err != nil {
+		if err := rt.runMCPPrompt(cmd.Args); err != nil {
 			return false, err
 		}
-		display, text, err := rt.mcp.GetPrompt(context.Background(), target, args)
-		if err != nil {
-			return false, err
-		}
-		fmt.Fprintln(rt.writer, rt.ui.section("Prompt"))
-		fmt.Fprintln(rt.writer, rt.ui.dim(display))
-		fmt.Fprintln(rt.writer, text)
 	case "reload":
 		if err := rt.reloadRuntimeConfig(); err != nil {
 			return false, err
@@ -8769,7 +8925,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		rt.reloadHooks()
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Reloaded hook configuration"))
 	case "hooks":
-		rt.handleHooksCommand()
+		if err := rt.handleHooksFamilyCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "init":
 		if err := rt.handleInitCommand(cmd.Args); err != nil {
 			return false, err
@@ -8779,7 +8937,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 	case "selection":
-		if err := rt.handleSelectionCommand(); err != nil {
+		if err := rt.handleSelectionFamilyCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "selections":
@@ -8973,6 +9131,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleNewFeatureCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "analyze":
+		if err := rt.handleAnalyzeFamilyCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "analyze-project":
 		if err := rt.handleAnalyzeProjectCommand(cmd.Args); err != nil {
 			return false, err
@@ -9062,7 +9224,7 @@ func (rt *runtimeState) handleProgressDisplayCommand(args string) error {
 	}
 	normalized, ok := parseProgressDisplayInput(args)
 	if !ok || strings.TrimSpace(args) == "" {
-		return fmt.Errorf("usage: /progress-display [auto|compact|stream]")
+		return fmt.Errorf("usage: /progress-display [quiet|compact|auto|stream]")
 	}
 	rt.cfg.ProgressDisplay = normalized
 	if err := rt.saveUserConfig(); err != nil {
@@ -10831,7 +10993,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		}
 		rt.setThinkingStatus(compactThinkingStatus(rt.cfg, status))
 		line := rt.ui.activityLine("analysis", status)
-		if configProgressDisplay(rt.cfg) == "compact" {
+		if configProgressDisplay(rt.cfg) == "compact" || configProgressDisplay(rt.cfg) == "quiet" {
 			if !rt.showTransientWhileThinking(line) {
 				rt.printPersistentWhileThinking(line)
 			}

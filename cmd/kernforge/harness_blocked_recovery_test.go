@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -381,5 +382,58 @@ func TestAgentForcesEditGuidanceAfterSyntaxFailureAndBlocksReread(t *testing.T) 
 	}
 	if !foundRedirect {
 		t.Fatalf("expected read_file to be redirected after syntax failure, reply=%q", reply)
+	}
+}
+
+func TestBuildFinalGateBlockedRecoveryOffersChoiceActions(t *testing.T) {
+	session := &Session{
+		RuntimeGateLedger: &RuntimeGateLedger{
+			ID:          "lg",
+			Action:      runtimeGateActionFinalAnswer,
+			Status:      runtimeGateStatusBlocked,
+			ReviewRunID: "review-stale",
+			Blockers:    []string{runtimeGateBlockerStaleReviewPrefix + " reviewed files changed since review: x.h"},
+			StaleReasons: []string{
+				"reviewed files changed since review: x.h",
+			},
+		},
+	}
+	session.RuntimeGateLedger.Normalize()
+
+	recovery := buildFinalGateBlockedRecovery(Config{AutoLocale: boolPtr(false)}, session, "blocked", nil)
+	if recovery.Cause != harnessRecoveryCauseFinalGate {
+		t.Fatalf("cause=%q", recovery.Cause)
+	}
+	kinds := make([]string, 0, len(recovery.Actions))
+	for _, action := range recovery.Actions {
+		kinds = append(kinds, action.Kind)
+	}
+	want := []string{
+		harnessRecoveryActionReview,
+		harnessRecoveryActionDismiss,
+		harnessRecoveryActionStatus,
+		harnessRecoveryActionContinueEditing,
+	}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("actions=%v want %v", kinds, want)
+	}
+	for _, action := range recovery.Actions {
+		if strings.Contains(action.TitleEN, "gate") || strings.Contains(action.TitleKO, "게이트") {
+			t.Fatalf("everyday titles must avoid gate jargon: %#v", action)
+		}
+	}
+
+	// Active dismissal hides the dismiss option.
+	session.RuntimeGateDismissal = &RuntimeGateDismissal{
+		ClearedAt:              time.Now(),
+		ReviewRunID:            "review-stale",
+		IgnoreReviewUntilNewer: true,
+		Scope:                  runtimeGateDismissalScopeSession,
+	}
+	recovery = buildFinalGateBlockedRecovery(Config{}, session, "blocked", nil)
+	for _, action := range recovery.Actions {
+		if action.Kind == harnessRecoveryActionDismiss {
+			t.Fatalf("active dismissal must not offer dismiss again: %#v", recovery.Actions)
+		}
 	}
 }
