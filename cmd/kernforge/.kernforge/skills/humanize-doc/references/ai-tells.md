@@ -13,6 +13,7 @@ humanize-doc 루프의 바닥선이다. 실행할 때마다 웹 조사로 확장
 6. 구조 tells
 7. 톤 tells
 8. 사람 전문가처럼 다시 쓰기
+9. no-ai-slop 패턴 표 (이름 체계 정렬)
 
 ## 1. 영어 어휘 tells
 
@@ -149,3 +150,32 @@ moreover, furthermore, additionally, notably, consequently, thus, hence,
 금지:
 - 인위적 오타, 은어, 이모티콘으로 "사람 흉내"를 내지 마라. 전문 문서에서는 그 자체가 부자연스럽고, 문서의 신뢰도를 깎는다.
 - 의미 변경, 사실 추가, 과장 금지. 문체를 고치다 내용이 바뀌면 실패다.
+
+## 9. no-ai-slop 패턴 표 (이름 체계 정렬)
+
+출처: https://github.com/petergyang/no-ai-slop (MIT). 위 1–8절과 겹치면
+여기 이름을 탐지/보고에 쓰고, 수정 방향은 이 표 + 8절을 함께 쓴다.
+생성 시점 계약(`document_authoring_style`)도 같은 이름을 쓴다.
+
+| 패턴 이름 | 냄새 예시 | 수정 방향 |
+|---|---|---|
+| Binary contrasts | "It's not X. It's Y." / "X가 아니라 Y다" 프레임 | Y를 바로 진술 |
+| Throat-clearing openers | "Here's the thing," "살펴보겠습니다" | 오프너 삭제 후 본론 |
+| Faux-insight setups | "What nobody tells you," "대부분이 놓치는" | 설정 삭제, 주장만 |
+| Colon reveals | "The best part: it learns." | 평범한 문장으로 재작성 |
+| Superficial analysis | "...highlighting the team's commitment" | 실제 효과/메커니즘으로 |
+| Importance puffery | "marks a pivotal moment," "중요한 역할" | 사실만 쓰고 평가는 독자에게 |
+| Weasel attribution | "experts agree," "studies show" | 출처 명시 또는 주장 삭제 |
+| Fake-strong verbs | "serves as a centralized hub" | is/has 또는 구체 동사 |
+| Synonym cycling | agent → assistant → tool 로테이션 | 한 용어로 고정 |
+| Negative listing | "Not X. Not Y. A Z." | Z만 |
+| Dramatic fragmentation | "That's it. That's the whole thing." | 완전 문장 |
+| Robotic rhythm | 동일 문형·문단 구조 반복 | 길이·구조를 흔듦 |
+| Rhetorical setups | "What if I told you," "Plot twist:" | 설정 삭제 |
+| Fake-profound kickers | 마지막 비유/격언 한 방 | 삭제. 더 멋진 비유로 바꾸지 말 것 |
+| Summary-recap endings | "In conclusion," "결론적으로" | 마지막 구체 점/다음 행동으로 끝 |
+| Formatting slop | 이모지 헤딩, 장식 볼드, 과소 섹션 헤더 | 내용에 맞는 최소 서식 |
+| Em-dash overuse | — 를 리듬 버팀목으로 남발 | 쉼표/괄호/문장 분리 |
+
+탐지 전용 응답 형식: 패턴 이름 + 인용 한 줄 + 짧은 수정 방향. 다시 쓰지 말고
+점수나 "AI가 썼다" 단정도 하지 않는다. 패턴이 증거다.

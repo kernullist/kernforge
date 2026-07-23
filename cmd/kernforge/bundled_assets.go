@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -32,6 +34,10 @@ var bundledBuiltinSkills embed.FS
 // that maps onto the user skills directory. Everything under it is written to
 // userConfigDir()/skills/<same-relative-path>.
 const bundledBuiltinSkillsEmbedRoot = ".kernforge/skills"
+
+// bundledSkillHashSuffix marks content we last wrote for a built-in skill file.
+// Used to upgrade shipped skills without clobbering user customizations.
+const bundledSkillHashSuffix = ".bundled-sha256"
 
 func deployedWebResearchMCPScriptPath() string {
 	return filepath.Join(userConfigDir(), "mcp", "web-research-mcp.js")
@@ -69,9 +75,12 @@ func ensureBundledUserAssets() error {
 // ensureBundledBuiltinSkills seeds each embedded built-in skill file into the
 // user skills directory. It walks the embedded tree and mirrors the layout under
 // userConfigDir()/skills so a skill's supporting files (references/, templates/)
-// land next to its SKILL.md and stay resolvable by read_file. Seeding is
-// non-destructive: ensureSeedUserFile writes a file only when it is absent, so a
-// user's local edits to a previously seeded skill are preserved across restarts.
+// land next to its SKILL.md and stay resolvable by read_file.
+//
+// Upgrade policy (ensureUpgradableBundledSkillFile):
+//   - missing file: write content + hash marker
+//   - file still matches last bundled hash (or no marker yet, one-time migrate): upgrade
+//   - file differs from marker hash: treat as user customization and leave alone
 func ensureBundledBuiltinSkills() error {
 	skillsRoot := filepath.Join(userConfigDir(), "skills")
 	return fs.WalkDir(bundledBuiltinSkills, bundledBuiltinSkillsEmbedRoot, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -92,7 +101,7 @@ func ensureBundledBuiltinSkills() error {
 		if readErr != nil {
 			return readErr
 		}
-		return ensureSeedUserFile(filepath.Join(skillsRoot, rel), data, 0o644)
+		return ensureUpgradableBundledSkillFile(filepath.Join(skillsRoot, rel), data, 0o644)
 	})
 }
 
@@ -125,4 +134,61 @@ func ensureSeedUserFile(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.WriteFile(path, data, mode)
+}
+
+func bundledSkillHashPath(path string) string {
+	return path + bundledSkillHashSuffix
+}
+
+func hashBundledSkillContent(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// ensureUpgradableBundledSkillFile writes bundled skill content when missing, and
+// upgrades when the on-disk file is still the previously shipped version. User
+// edits (content hash != marker) are preserved.
+func ensureUpgradableBundledSkillFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	wantHash := hashBundledSkillContent(data)
+	markerPath := bundledSkillHashPath(path)
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if writeErr := os.WriteFile(path, data, mode); writeErr != nil {
+			return writeErr
+		}
+		return os.WriteFile(markerPath, []byte(wantHash+"\n"), 0o644)
+	}
+	if bytes.Equal(existing, data) {
+		// Already current; refresh marker so future upgrades have a baseline.
+		return os.WriteFile(markerPath, []byte(wantHash+"\n"), 0o644)
+	}
+	marker, markerErr := os.ReadFile(markerPath)
+	if markerErr != nil {
+		if !os.IsNotExist(markerErr) {
+			return markerErr
+		}
+		// Legacy seed without marker: one-time upgrade to the new bundled body.
+		// Users who customized before markers existed may be overwritten once.
+		if writeErr := os.WriteFile(path, data, mode); writeErr != nil {
+			return writeErr
+		}
+		return os.WriteFile(markerPath, []byte(wantHash+"\n"), 0o644)
+	}
+	recorded := strings.TrimSpace(string(marker))
+	currentHash := hashBundledSkillContent(existing)
+	if recorded != "" && recorded == currentHash {
+		// Still the last bundled revision the user has not customized.
+		if writeErr := os.WriteFile(path, data, mode); writeErr != nil {
+			return writeErr
+		}
+		return os.WriteFile(markerPath, []byte(wantHash+"\n"), 0o644)
+	}
+	// Marker missing match: customized file, leave alone.
+	return nil
 }

@@ -232,9 +232,249 @@ func TestDefaultSkillSearchPathsExcludeLegacyLocations(t *testing.T) {
 	}
 }
 
+func TestSkillSearchProjectDirsStopsAtProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	// Simulate a repo root with go.mod and a nested cwd under the user-like tree.
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	nested := filepath.Join(root, "cmd", "app")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	// A fake "home" skill dir above the repo must not be walked into.
+	dirs := skillSearchProjectDirs(nested)
+	if len(dirs) == 0 {
+		t.Fatal("expected at least cwd")
+	}
+	if dirs[0] != nested && filepath.Clean(dirs[0]) != filepath.Clean(nested) {
+		// Abs may differ in clean form.
+		absNested, _ := filepath.Abs(nested)
+		if filepath.Clean(dirs[0]) != filepath.Clean(absNested) {
+			t.Fatalf("nearest dir should be cwd, got %q want %q", dirs[0], absNested)
+		}
+	}
+	foundRoot := false
+	for _, dir := range dirs {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			foundRoot = true
+		}
+		// Must not climb to parent of repo root.
+		if filepath.Clean(dir) == filepath.Clean(filepath.Dir(root)) {
+			t.Fatalf("must stop at project root, climbed to %q", dir)
+		}
+	}
+	if !foundRoot {
+		t.Fatalf("expected project root with go.mod in search dirs, got %#v", dirs)
+	}
+}
+
 func isolateUserConfigDir(t *testing.T) {
 	t.Helper()
 	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir isolated home: %v", err)
+	}
+	// Env vars alone are unreliable on some Windows Go runtimes (UserHomeDir
+	// can ignore mid-process USERPROFILE changes). Force the config base.
+	prev := userConfigDirOverride
+	userConfigDirOverride = home
+	t.Cleanup(func() {
+		userConfigDirOverride = prev
+	})
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	if got := userConfigDir(); !strings.HasPrefix(got, home) {
+		t.Fatalf("userConfigDir isolation failed: got %q want under %q", got, home)
+	}
+}
+
+func TestLoadSkillsIncludesBuiltinHumanizeDocWithoutSeed(t *testing.T) {
+	isolateUserConfigDir(t)
+	// Empty user skills dir, empty workspace: humanize-doc must still resolve
+	// from the binary embed.
+	catalog, warnings := LoadSkills(t.TempDir(), nil, nil)
+	for _, warn := range warnings {
+		if strings.Contains(strings.ToLower(warn), "humanize-doc") {
+			t.Fatalf("unexpected humanize-doc load warning: %s", warn)
+		}
+	}
+	skill, ok := catalog.Lookup("humanize-doc")
+	if !ok {
+		t.Fatalf("expected built-in humanize-doc in catalog, got %#v", catalog.Items())
+	}
+	if !skill.Builtin {
+		t.Fatalf("expected humanize-doc.Builtin=true, got %#v", skill)
+	}
+	if !strings.Contains(skill.Content, "AI 문체 제거") && !strings.Contains(skill.Content, "Humanize") {
+		t.Fatalf("expected humanize-doc body from embed, got %q", skill.Content)
+	}
+	if !strings.Contains(skill.Content, "Bundled references (built-in copy)") {
+		t.Fatalf("expected inlined ai-tells reference in built-in body")
+	}
+	if !strings.Contains(skill.Content, "Binary contrasts") {
+		t.Fatalf("expected no-ai-slop pattern table in built-in body")
+	}
+	catalogText := catalog.CatalogPrompt()
+	if !strings.Contains(catalogText, "humanize-doc (built-in)") {
+		t.Fatalf("catalog should label humanize-doc as built-in, got:\n%s", catalogText)
+	}
+}
+
+func TestLoadSkillsKeepsUserCustomizedHumanizeDoc(t *testing.T) {
+	isolateUserConfigDir(t)
+	// Place the customized skill under the workspace cwd so ancestor walks from
+	// TempDir cannot pick a real home-directory humanize-doc first.
+	root := t.TempDir()
+	path := filepath.Join(root, ".kernforge", "skills", "humanize-doc", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	custom := []byte("---\nname: humanize-doc\ndescription: custom humanize\n---\n\n# custom humanize body only\n")
+	if err := os.WriteFile(path, custom, 0o644); err != nil {
+		t.Fatalf("write custom: %v", err)
+	}
+	// Marker for a different hash so the file is treated as user-customized.
+	if err := os.WriteFile(path+bundledSkillHashSuffix, []byte("deadbeef\n"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+
+	catalog, _ := LoadSkills(root, nil, nil)
+	skill, ok := catalog.Lookup("humanize-doc")
+	if !ok {
+		t.Fatal("expected humanize-doc present")
+	}
+	if skill.Builtin {
+		t.Fatalf("customized disk skill must not be replaced by built-in, got %#v", skill)
+	}
+	if !strings.Contains(skill.Content, "custom humanize body only") {
+		t.Fatalf("expected customized body preserved, got %q", skill.Content)
+	}
+	if !strings.EqualFold(skill.Path, path) {
+		t.Fatalf("expected customized workspace skill path %q, got %q", path, skill.Path)
+	}
+}
+
+func TestInjectPromptContextAutoActivatesBuiltinHumanizeDoc(t *testing.T) {
+	isolateUserConfigDir(t)
+	catalog, _ := LoadSkills(t.TempDir(), nil, nil)
+
+	skill, ok := catalog.Lookup("humanize-doc")
+	if !ok || !skill.Builtin {
+		t.Fatalf("precondition: humanize-doc must be built-in, got ok=%v %#v", ok, skill)
+	}
+
+	enriched := catalog.InjectPromptContext("이 README에서 AI 티 제거해줘")
+	if !strings.Contains(enriched, "Activated skills for this request:") {
+		t.Fatalf("expected auto-activated skill section, got %q", enriched)
+	}
+	if !strings.Contains(enriched, "### humanize-doc") {
+		t.Fatalf("expected humanize-doc section, got %q", enriched)
+	}
+	if !strings.Contains(enriched, "Origin: shipped inside the kernforge binary") {
+		t.Fatalf("expected built-in origin note, got %q", enriched)
+	}
+
+	// Ordinary code edit must not auto-activate humanize-doc.
+	plain := catalog.InjectPromptContext("main.go 버그를 고쳐줘")
+	if strings.Contains(plain, "Activated skills for this request:") {
+		t.Fatalf("code-edit request must not auto-activate skills, got %q", plain)
+	}
+}
+
+func TestInjectPromptContextForRequestIgnoresEnrichedContextFalsePositives(t *testing.T) {
+	isolateUserConfigDir(t)
+	catalog, _ := LoadSkills(t.TempDir(), nil, nil)
+	// Enriched message mentions humanize-doc in internal guidance, but the
+	// external request is a plain code fix — must not auto-activate.
+	request := "main.go 버그를 고쳐줘"
+	message := request + "\n\nRequest mode: document-authoring.\n- If the user asks to remove AI tone, use $humanize-doc after the draft exists.\n"
+	out := catalog.InjectPromptContextForRequest(request, message)
+	if strings.Contains(out, "Activated skills for this request:") {
+		t.Fatalf("enriched envelope mention must not auto-activate humanize-doc, got %q", out)
+	}
+	// Real humanize request still activates even when the message is enriched.
+	humanizeReq := "AI 티 제거해줘"
+	humanizeMsg := humanizeReq + "\n\nRequest envelope:\n- Allows file mutation: true.\n"
+	out = catalog.InjectPromptContextForRequest(humanizeReq, humanizeMsg)
+	if !strings.Contains(out, "### humanize-doc") {
+		t.Fatalf("real humanize request must still activate, got %q", out)
+	}
+}
+
+func TestLoadSkillsDoesNotOverwriteProjectLocalHumanizeDoc(t *testing.T) {
+	isolateUserConfigDir(t)
+	root := t.TempDir()
+	path := filepath.Join(root, ".kernforge", "skills", "humanize-doc", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Project skill with no hash marker must still win over the binary embed.
+	projectBody := []byte("---\nname: humanize-doc\ndescription: project humanize\n---\n\n# project-local humanize procedure\n")
+	if err := os.WriteFile(path, projectBody, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	catalog, _ := LoadSkills(root, nil, nil)
+	skill, ok := catalog.Lookup("humanize-doc")
+	if !ok {
+		t.Fatal("expected humanize-doc")
+	}
+	if skill.Builtin {
+		t.Fatalf("project-local skill without marker must not be replaced by built-in, got %#v", skill)
+	}
+	if !strings.Contains(skill.Content, "project-local humanize procedure") {
+		t.Fatalf("expected project body, got %q", skill.Content)
+	}
+}
+
+func TestSelectableCountIgnoresAlwaysAvailableBuiltinAlone(t *testing.T) {
+	isolateUserConfigDir(t)
+	// Empty workspace: only binary humanize-doc is present.
+	catalog, _ := LoadSkills(t.TempDir(), nil, nil)
+	if _, ok := catalog.Lookup("humanize-doc"); !ok {
+		t.Fatal("expected built-in humanize-doc")
+	}
+	if catalog.SelectableCount() != 0 {
+		t.Fatalf("always-available builtin alone must not force SelectableCount>0, got %d", catalog.SelectableCount())
+	}
+	// Without other selectable skills, ordinary code turns must not inject catalog.
+	if shouldIncludeSkillCatalogInSystemPrompt("please refactor this parser", catalog) {
+		t.Fatalf("humanize-doc alone must not force skill catalog into every turn")
+	}
+	// Explicit skill keyword still surfaces the catalog (and built-in entry).
+	if !shouldIncludeSkillCatalogInSystemPrompt("show available skills", catalog) {
+		t.Fatalf("skill keyword must still include catalog")
+	}
+}
+
+func TestLooksLikeHumanizeDocRequest(t *testing.T) {
+	positives := []string{
+		"AI 티 제거해줘",
+		"이 문서를 humanize 해줘",
+		"$humanize-doc README.md",
+		"humanize-doc 로 다듬어",
+		"make this sound human",
+		"remove ai slop from the report",
+		"로봇 같은 말투 다듬어줘",
+	}
+	for _, q := range positives {
+		if !looksLikeHumanizeDocRequest(q) {
+			t.Fatalf("expected humanize intent for %q", q)
+		}
+	}
+	negatives := []string{
+		"main.go 버그를 고쳐줘",
+		"AI 모델 API를 연동해줘",
+		"문서를 작성해줘",
+		"README 내용을 설명해줘",
+		"AI detector false positive를 수정해",
+		"edit the humanize helper function",
+		"fix AI telemetry path",
+		"path/to/humanize-doc-notes.md 읽어줘",
+	}
+	for _, q := range negatives {
+		if looksLikeHumanizeDocRequest(q) {
+			t.Fatalf("did not expect humanize intent for %q", q)
+		}
+	}
 }

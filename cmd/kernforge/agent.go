@@ -455,7 +455,9 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	if confirmedReviewerGateRepair {
 		enriched += "\n\nPending reviewer-gate repair confirmation:\n- The user selected `y` after a pre-write reviewer gate failed or returned weak output.\n- This is not approval to write without review and not approval to bypass the reviewer gate.\n- Continue repairing only the actionable non-reviewer findings and the last edit proposal already stored in this session.\n- Use the normal edit tool path so the pre-write review gate runs again before any file write.\n- Do not run package-wide tests unless the user explicitly requests them; use focused verification only.\n"
 	}
-	enriched = a.Skills.InjectPromptContext(enriched)
+	// Auto-activate built-ins from the external user text only; $name tokens are
+	// still rewritten inside the enriched message.
+	enriched = a.Skills.InjectPromptContextForRequest(userText, enriched)
 	if a.LongMem != nil {
 		memoryPolicy := persistentMemoryPromptPolicyForRequest(userText)
 		if memoryPolicy.IncludeContinuity || memoryPolicy.IncludeQueryMatches {
@@ -12195,6 +12197,16 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString(renderedEnvelope)
 		b.WriteString("\n")
 	}
+	if requestEnvelopeNeedsDocumentAuthoringStyle(requestEnvelope) {
+		if docStyle := strings.TrimSpace(a.renderPromptBlockOrFallback(
+			PromptBlockDocumentAuthoringStyle,
+			nil,
+			documentAuthoringStylePromptFallback(),
+		)); docStyle != "" {
+			b.WriteString(docStyle)
+			b.WriteString("\n")
+		}
+	}
 	if requestContract := strings.TrimSpace(a.codexGradeRequestHandlingPrompt(latestUser)); requestContract != "" {
 		b.WriteString(requestContract)
 		b.WriteString("\n")
@@ -12479,7 +12491,7 @@ func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
 		b.WriteString("- Treat detection/policy design forks the same way: alternative evidence models, correlation vs coarse attribute heuristics, or shared-infrastructure threat-model splits are material tradeoffs that should pause for present_implementation_decision when more than one approach remains plausible.\n")
 	}
 	b.WriteString("- For review-only requests, use a code-review stance: findings first, ordered by severity, with concrete file/function/line evidence when available; do not edit files unless the user asks for a fix.\n")
-	b.WriteString("- For document_artifact requests, use artifact-quality checks as the primary gate: artifact exists, requested topic is covered, content is not placeholder/TODO-only, and verification claims are not unsupported.\n")
+	b.WriteString("- For document_artifact requests, use artifact-quality checks as the primary gate: artifact exists, requested topic is covered, content is not placeholder/TODO-only, and verification claims are not unsupported. Prefer expert technical voice over chatbot tone and self-check before writing the file.\n")
 	b.WriteString("- For review_then_modify requests, produce review findings first, tie the repair plan to those findings, patch narrowly, then run post-change review or single-model second pass.\n")
 	b.WriteString("- For modification requests, implement directly with focused edits, then perform a second-pass regression review of touched functions, call sites, ABI or data contracts, initialization defaults, buffer sizes, error paths, cancellation or timeout behavior, logging/output compatibility, and stale docs.\n")
 	b.WriteString("- After edits, run the most relevant available validation, starting focused and broadening only when justified; if validation cannot run, explain the blocker and the next best check.\n")

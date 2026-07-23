@@ -2,6 +2,28 @@
 
 의미 있는 변경 이력. 날짜는 절대 형식(YYYY-MM-DD), 최신 항목이 위에 온다.
 
+## 2026-07-23
+
+### humanize-doc 바이너리 1급 내장
+
+- 계획서: [[docs/plan/2026-07-23-builtin-humanize-doc.md]]
+- `humanize-doc`을 go:embed에서 항상 카탈로그에 병합. seed 디렉터리가 비어 있어도 `$humanize-doc` / `load_skill` 가능.
+- `ai-tells.md`를 스킬 본문에 built-in copy로 인라인 — supporting file 없이도 절차 완결.
+- "AI 티 제거" 등 자연어 humanize 의도 시 `$name` 없이 자동 활성화.
+- 사용자 커스터마이즈(hash marker 불일치) 디스크 스킬은 보존.
+- 스킬 검색: cwd→부모 first-wins + 프로젝트 루트(go.mod/.git)까지. 사용자 홈은 올라가지 않음(Windows TEMP가 홈 아래일 때 `~/.kernforge/skills` 오염 방지).
+- 사이드이펙트 수정: (1) 프로젝트 로컬 humanize-doc 무마커 덮어쓰기 금지 — seed 경로만 embed 업그레이드 (2) `$humanize-doc`는 외부 user 요청에 있을 때만 활성화 — envelope 안내 문구만으로는 본문 주입 안 함 (3) always-available builtin만으로는 SelectableCount/매 턴 skill catalog 강제 안 함 (4) humanize 의도 matcher 좁힘 — 코드 식별자/경로 false positive 감소.
+- YAML `description: >` folded scalar 파싱 지원.
+
+### 문서 작성 시 전문가 문체 계약 (anti-AI-slop)
+
+- 계획서: [[docs/plan/2026-07-23-expert-document-writing-style.md]], 연구: [[docs/research/2026-07-23-expert-doc-writing-anti-slop.md]]
+- document-authoring 턴에만 `Document authoring style contract` 시스템 프롬프트 주입 (`prompts/document_authoring_style.md`). no-ai-slop 패턴 + Microsoft/Google 기술문서 원칙 + 한/영 filler 금지 + 쓰기 전 self-check.
+- `request_envelope` document 분기에 전문가 문체·self-check·`$humanize-doc` 안내 추가.
+- 내장 `humanize-doc` 스킬: no-ai-slop 패턴 표·eval 자기 검수 단계 정렬 (`references/ai-tells.md` 9절).
+- 수정: continuation(`계속`)에서 acceptance contract의 document-authoring 유실 → 문체 계약 미주입 버그 수정. `applyPolicy`를 session context 적용 후에 재실행.
+- 수정: 내장 스킬 seed를 hash marker 기반 업그레이드로 전환 — 미커스터마이즈 파일은 새 바이너리로 갱신, 사용자 수정본은 보존. 마커 없는 legacy seed는 1회 마이그레이트.
+
 ## 2026-07-22
 
 ### 런타임 게이트를 세션 스코프로 전환 (cross-session attach 제거)

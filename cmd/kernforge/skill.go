@@ -18,6 +18,10 @@ type Skill struct {
 	Enabled                bool
 	DisableModelInvocation bool
 	UserInvocable          bool
+	// Builtin is true when the skill body comes from the kernforge binary
+	// (go:embed). Built-ins are always catalogued; on-disk user customizations
+	// still win when skillPathLooksUserCustomized reports true.
+	Builtin bool
 }
 
 type SkillCatalog struct {
@@ -46,11 +50,22 @@ func LoadSkills(cwd string, extraPaths, enabledNames []string) (SkillCatalog, []
 			warnings = append(warnings, fmt.Sprintf("skill %s: missing name", file))
 			continue
 		}
-		if _, exists := itemsByName[key]; !exists {
-			order = append(order, key)
+		// First wins: earlier search paths are more specific (cwd/project before
+		// parent directories before the user-global skills dir). Overwriting with a
+		// later hit would let a home-directory skill shadow a workspace skill
+		// when the working directory lives under the user profile (common on Windows).
+		if _, exists := itemsByName[key]; exists {
+			continue
 		}
+		order = append(order, key)
 		itemsByName[key] = skill
 	}
+
+	// Binary-resident skills (humanize-doc, ...) always join the catalog.
+	// User-customized disk skills keep winning over the embed body.
+	var builtinWarns []string
+	order, itemsByName, builtinWarns = mergeEmbeddedBuiltinSkills(order, itemsByName)
+	warnings = append(warnings, builtinWarns...)
 
 	enabledSet := map[string]bool{}
 	for _, name := range enabledNames {
@@ -82,16 +97,104 @@ func LoadSkills(cwd string, extraPaths, enabledNames []string) (SkillCatalog, []
 }
 
 func defaultSkillSearchPaths(cwd string) []string {
-	paths := []string{
-		filepath.Join(userConfigDir(), "skills"),
-	}
-	for _, dir := range ancestorDirs(cwd) {
+	// Prefer project-local skills (cwd, then parents up to the nearest project
+	// root) over the user-global skills directory. Do not climb past a project
+	// root all the way to the user home: on Windows the temp dir often lives
+	// under %USERPROFILE%, and unbounded ancestor walks would pick up
+	// ~/.kernforge/skills as a "project" path and shadow built-ins / tests.
+	// Built-ins are merged later from the binary and still override
+	// uncustomized seeded copies under userConfigDir()/skills.
+	paths := []string{}
+	for _, dir := range skillSearchProjectDirs(cwd) {
 		paths = append(paths,
 			filepath.Join(dir, userConfigDirName, "skills"),
 			filepath.Join(dir, "skills"),
 		)
 	}
+	paths = append(paths, filepath.Join(userConfigDir(), "skills"))
 	return paths
+}
+
+// skillSearchProjectDirs returns cwd→parent directories up to and including the
+// nearest project root (go.mod, .git, ...). Nearest-first order. Never climbs
+// into the user home directory: user-global skills are loaded only via
+// userConfigDir()/skills, and temp dirs under %USERPROFILE% must not surface
+// ~/.kernforge/skills as a project path.
+func skillSearchProjectDirs(cwd string) []string {
+	abs, err := filepath.Abs(strings.TrimSpace(cwd))
+	if err != nil || strings.TrimSpace(abs) == "" {
+		return nil
+	}
+	var nearestFirst []string
+	current := abs
+	for {
+		if skillSearchIsUserHomeDir(current) {
+			// Stop before including the home directory itself.
+			break
+		}
+		nearestFirst = append(nearestFirst, current)
+		if skillSearchStopsAtDir(current) {
+			break
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return nearestFirst
+}
+
+func skillSearchStopsAtDir(dir string) bool {
+	// Markers that define a project boundary for skill discovery.
+	for _, marker := range []string{
+		".git",
+		"go.mod",
+		"go.work",
+		"Cargo.toml",
+		"package.json",
+		"pyproject.toml",
+		"CMakeLists.txt",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// processStartUserHome is captured once at package init before tests rewrite
+// USERPROFILE/HOME. Skill discovery must never climb through the real user
+// profile when the working directory is under %TEMP% (common on Windows).
+var processStartUserHome string
+
+func init() {
+	processStartUserHome, _ = os.UserHomeDir()
+}
+
+func skillSearchIsUserHomeDir(dir string) bool {
+	dir = filepath.Clean(dir)
+	candidates := []string{
+		processStartUserHome,
+		platformUserConfigBaseDir(),
+	}
+	if strings.TrimSpace(userConfigDirOverride) != "" {
+		candidates = append(candidates, userConfigDirOverride)
+	}
+	// Also treat the parent of userConfigDir as home (override-safe).
+	if cfg := userConfigDir(); cfg != "" {
+		candidates = append(candidates, filepath.Dir(cfg))
+	}
+	for _, home := range candidates {
+		home = strings.TrimSpace(home)
+		if home == "" {
+			continue
+		}
+		if sameFilePath(dir, home) {
+			return true
+		}
+	}
+	return false
 }
 
 func collectSkillFiles(paths []string) ([]string, []string) {
@@ -149,6 +252,10 @@ func loadSkillFile(path string) (Skill, []string, error) {
 	if err != nil {
 		return Skill{}, nil, err
 	}
+	return loadSkillFromBytes(path, data)
+}
+
+func loadSkillFromBytes(path string, data []byte) (Skill, []string, error) {
 	front, body := parseSkillFrontmatter(string(data))
 	content := strings.TrimSpace(body)
 
@@ -253,7 +360,32 @@ func parseSkillFrontmatter(raw string) (map[string]string, string) {
 		return front, normalized
 	}
 	lastKey := ""
+	blockScalar := false
 	for _, line := range lines[:closeIndex] {
+		// Folded/literal block scalar body lines are indented continuations of
+		// the previous key (description: > / |). Collect them before the
+		// blank/comment skip so multi-line skill summaries stay intact.
+		if blockScalar && lastKey != "" {
+			if strings.TrimSpace(line) == "" {
+				// Blank line inside a block scalar: keep a space so words do not
+				// glue across paragraphs, then continue the block.
+				if front[lastKey] != "" && !strings.HasSuffix(front[lastKey], " ") {
+					front[lastKey] = front[lastKey] + " "
+				}
+				continue
+			}
+			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+				blockScalar = false
+			} else {
+				piece := strings.TrimSpace(line)
+				if front[lastKey] == "" || front[lastKey] == ">" || front[lastKey] == "|" {
+					front[lastKey] = piece
+				} else {
+					front[lastKey] = front[lastKey] + " " + piece
+				}
+				continue
+			}
+		}
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
@@ -284,6 +416,7 @@ func parseSkillFrontmatter(raw string) (map[string]string, string) {
 		}
 		front[key] = value
 		lastKey = key
+		blockScalar = value == ">" || value == "|"
 	}
 	body := ""
 	if closeIndex+1 < len(lines) {
@@ -396,6 +529,10 @@ func (c SkillCatalog) EnabledCount() int {
 
 // SelectableCount reports how many discovered skills are not enabled by
 // default and therefore remain available for on-demand selection by relevance.
+// Always-available built-ins (e.g. humanize-doc) are excluded so their presence
+// alone does not force the skill catalog into every system prompt; they still
+// appear in CatalogPrompt when the catalog is shown for other reasons, and they
+// still auto-activate / load via $name and load_skill.
 func (c SkillCatalog) SelectableCount() int {
 	count := 0
 	for _, skill := range c.items {
@@ -403,9 +540,13 @@ func (c SkillCatalog) SelectableCount() int {
 		// (CatalogPrompt skips it), so it is not selectable on demand by the model;
 		// excluding it keeps SelectableCount in sync with the catalog and avoids
 		// triggering an empty catalog build.
-		if !skill.Enabled && !skill.DisableModelInvocation {
-			count++
+		if skill.Enabled || skill.DisableModelInvocation {
+			continue
 		}
+		if skill.Builtin && isAlwaysAvailableBuiltinName(skill.Name) {
+			continue
+		}
+		count++
 	}
 	return count
 }
@@ -435,9 +576,14 @@ func (c SkillCatalog) CatalogPrompt() string {
 		if summary == "" {
 			summary = "No summary available."
 		}
-		if skill.Enabled {
+		switch {
+		case skill.Enabled && skill.Builtin:
+			lines = append(lines, fmt.Sprintf("- %s (built-in, enabled by default): %s", skill.Name, summary))
+		case skill.Enabled:
 			lines = append(lines, fmt.Sprintf("- %s (enabled by default): %s", skill.Name, summary))
-		} else {
+		case skill.Builtin:
+			lines = append(lines, fmt.Sprintf("- %s (built-in): %s", skill.Name, summary))
+		default:
 			lines = append(lines, fmt.Sprintf("- %s: %s", skill.Name, summary))
 		}
 	}
@@ -455,33 +601,71 @@ func (c SkillCatalog) DefaultPrompt() string {
 	return strings.Join(sections, "\n\n")
 }
 
+// InjectPromptContext rewrites $name tokens in input and auto-activates
+// built-ins based on the same text. Prefer InjectPromptContextForRequest when
+// input has been enriched with envelope/memory so intent matching stays on the
+// raw user request.
 func (c SkillCatalog) InjectPromptContext(input string) string {
-	if !explicitSkillPattern.MatchString(input) {
-		return input
-	}
+	return c.InjectPromptContextForRequest(input, input)
+}
+
+// InjectPromptContextForRequest rewrites $name tokens in message and decides
+// activation from request only. request should be the external user text, not
+// the fully enriched tool prompt (envelope/memory must not inject huge skills).
+func (c SkillCatalog) InjectPromptContextForRequest(request, message string) string {
 	var sections []string
 	seen := map[string]bool{}
-	// Replace each $name token exactly via the pattern, NOT strings.ReplaceAll:
-	// ReplaceAll("$foo", ...) would also rewrite the "$foo" prefix inside an
-	// unrelated "$foobar" token. ReplaceAllStringFunc evaluates each matched token
-	// independently, so $foo and $foobar never collide.
-	input = explicitSkillPattern.ReplaceAllStringFunc(input, func(token string) string {
-		name := strings.TrimPrefix(token, "$")
-		skill, ok := c.Lookup(name)
-		if !ok {
-			return token
-		}
-		key := normalizeSkillName(skill.Name)
-		// A $name mention activates a non-enabled, user-invocable skill once.
-		// enabled skills are already injected in full; user-invocable:false skills
-		// are model-only and are not reachable by a user $name mention (Claude Code
-		// hides them from the user menu).
-		if !seen[key] && !skill.Enabled && skill.UserInvocable {
+	input := message
+	intentSource := request
+	if strings.TrimSpace(intentSource) == "" {
+		intentSource = input
+	}
+
+	// Activate only $name tokens that appear in the external request. Tokens that
+	// only exist in enriched guidance (e.g. "use $humanize-doc after …") must not
+	// inject the full skill body.
+	if explicitSkillPattern.MatchString(intentSource) {
+		for _, token := range explicitSkillPattern.FindAllString(intentSource, -1) {
+			name := strings.TrimPrefix(token, "$")
+			skill, ok := c.Lookup(name)
+			if !ok {
+				continue
+			}
+			key := normalizeSkillName(skill.Name)
+			if seen[key] || skill.Enabled || !skill.UserInvocable {
+				continue
+			}
 			seen[key] = true
 			sections = append(sections, renderSkillPromptSection(skill))
 		}
-		return skill.Name
-	})
+	}
+
+	// Cosmetic rewrite of $name in the message for known skills (including
+	// guidance-only mentions). Does not activate by itself.
+	if explicitSkillPattern.MatchString(input) {
+		input = explicitSkillPattern.ReplaceAllStringFunc(input, func(token string) string {
+			name := strings.TrimPrefix(token, "$")
+			skill, ok := c.Lookup(name)
+			if !ok {
+				return token
+			}
+			return skill.Name
+		})
+	}
+
+	// Built-in skills can auto-activate from natural language (e.g. "AI 티 제거").
+	for _, skill := range c.items {
+		if !shouldAutoActivateBuiltinSkill(skill, intentSource) {
+			continue
+		}
+		key := normalizeSkillName(skill.Name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		sections = append(sections, renderSkillPromptSection(skill))
+	}
+
 	if len(sections) == 0 {
 		return input
 	}
@@ -489,9 +673,16 @@ func (c SkillCatalog) InjectPromptContext(input string) string {
 }
 
 func renderSkillPromptSection(skill Skill) string {
-	header := fmt.Sprintf("### %s\nSource: %s", skill.Name, skill.Path)
-	if dir := filepath.Dir(skill.Path); strings.TrimSpace(dir) != "" && dir != "." {
-		header += fmt.Sprintf("\nBundled files: any supporting files this skill references (scripts, templates, docs) live in its directory %s; read them with read_file. Instruction paths are relative to that directory.", dir)
+	source := skill.Path
+	if skill.Builtin && (source == "" || strings.HasPrefix(source, "builtin:")) {
+		source = "kernforge built-in (" + skill.Name + ")"
+	}
+	header := fmt.Sprintf("### %s\nSource: %s", skill.Name, source)
+	if skill.Builtin {
+		header += "\nOrigin: shipped inside the kernforge binary; always available without a user skills install."
+	}
+	if dir := filepath.Dir(skill.Path); strings.TrimSpace(dir) != "" && dir != "." && !strings.HasPrefix(skill.Path, "builtin:") {
+		header += fmt.Sprintf("\nBundled files: any supporting files this skill references (scripts, templates, docs) live in its directory %s; read them with read_file. Instruction paths are relative to that directory. Built-in reference text may also be inlined in this skill body.", dir)
 	}
 	if note := skillAllowedToolsNote(skill); note != "" {
 		header += "\n" + note

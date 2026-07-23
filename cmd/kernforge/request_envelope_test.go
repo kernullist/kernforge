@@ -319,6 +319,48 @@ func TestAgentReplyRendersSessionAwareContinuationEnvelope(t *testing.T) {
 	}
 }
 
+func TestApplySessionRequestEnvelopePreservesDocumentAuthoringOnContinue(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt:      "SampleGame/BugReport.md 버그 보고서를 문서로 작성해줘",
+		RequestClass:      reviewRequestClassDocumentArtifact,
+		Mode:              "inspect_and_fix",
+		RequiredArtifacts: []string{"SampleGame/BugReport.md"},
+	}
+	agent := &Agent{Session: session}
+	envelope := buildRequestEnvelope("계속 진행해")
+	if envelope.DocumentAuthoring {
+		t.Fatalf("bare continue must not look like document authoring on its own, got %#v", envelope)
+	}
+	agent.applySessionRequestEnvelopeContext(&envelope)
+	envelope.applyPolicy()
+	envelope.Normalize()
+	if !envelope.DocumentAuthoring {
+		t.Fatalf("continuation must preserve document authoring from contract, got %#v", envelope)
+	}
+	if !requestEnvelopeNeedsDocumentAuthoringStyle(envelope) {
+		t.Fatalf("continuation document turn must need document style contract, got %#v", envelope)
+	}
+	if !envelope.AllowsFileMutation {
+		t.Fatalf("continuation document turn must allow file mutation, got %#v", envelope)
+	}
+}
+
+func TestRequestEnvelopeNeedsDocumentAuthoringStyle(t *testing.T) {
+	if !requestEnvelopeNeedsDocumentAuthoringStyle(RequestEnvelope{DocumentAuthoring: true}) {
+		t.Fatal("DocumentAuthoring flag should require style")
+	}
+	if !requestEnvelopeNeedsDocumentAuthoringStyle(RequestEnvelope{ReviewRequestClass: reviewRequestClassDocumentArtifact}) {
+		t.Fatal("document_artifact review class should require style")
+	}
+	if !requestEnvelopeNeedsDocumentAuthoringStyle(RequestEnvelope{PrimaryClass: RequestClassDocument}) {
+		t.Fatal("PrimaryClass document should require style")
+	}
+	if requestEnvelopeNeedsDocumentAuthoringStyle(RequestEnvelope{PrimaryClass: RequestClassEdit, ExplicitEditRequest: true}) {
+		t.Fatal("plain code edit must not require document style")
+	}
+}
+
 func TestAgentReplyStoresRequestEnvelopeAndSeparatesInternalContext(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))

@@ -847,8 +847,17 @@ func configSearchPathsWithProfile(cwd string, profile string) []string {
 	return paths
 }
 
+// userConfigDirOverride, when non-empty, replaces platformUserConfigBaseDir for
+// tests that must not touch the real user home (.kernforge under %USERPROFILE%).
+// Production code never sets this.
+var userConfigDirOverride string
+
 func userConfigDir() string {
-	return filepath.Join(platformUserConfigBaseDir(), userConfigDirName)
+	base := platformUserConfigBaseDir()
+	if strings.TrimSpace(userConfigDirOverride) != "" {
+		base = userConfigDirOverride
+	}
+	return filepath.Join(base, userConfigDirName)
 }
 
 func userConfigPath() string {
@@ -3292,13 +3301,13 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		RequestRetryDelayMs: 1500,
 		RequestTimeoutSecs:  1200,
 		ProgressDisplay:     "quiet",
- ShellTimeoutSecs: currentDefaultShellTimeoutSecs,
-		ReadHintSpans:    defaultReadHintSpans,
-		ReadCacheEntries: defaultReadCacheEntries,
-		MSBuildPath:      "",
-		CMakePath:        "",
-		CTestPath:        "",
-		NinjaPath:        "",
+		ShellTimeoutSecs:    currentDefaultShellTimeoutSecs,
+		ReadHintSpans:       defaultReadHintSpans,
+		ReadCacheEntries:    defaultReadCacheEntries,
+		MSBuildPath:         "",
+		CMakePath:           "",
+		CTestPath:           "",
+		NinjaPath:           "",
 		// Prefer Release for product trees that only maintain that matrix.
 		Verify: VerifyConfig{
 			MSBuildConfiguration: "Release",

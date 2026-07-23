@@ -18,6 +18,7 @@ const (
 	PromptBlockSystemBase             PromptBlockID = "system_base"
 	PromptBlockToolPolicy             PromptBlockID = "tool_policy"
 	PromptBlockRequestEnvelope        PromptBlockID = "request_envelope"
+	PromptBlockDocumentAuthoringStyle PromptBlockID = "document_authoring_style"
 	PromptBlockEmptyStopRetry         PromptBlockID = "empty_stop_retry"
 	PromptBlockRepeatedToolRedirect   PromptBlockID = "repeated_tool_redirect"
 	PromptBlockBlockedTool            PromptBlockID = "blocked_tool"
@@ -30,6 +31,7 @@ var promptBlockAssetPaths = map[PromptBlockID]string{
 	PromptBlockSystemBase:             "prompts/system_base.md",
 	PromptBlockToolPolicy:             "prompts/tool_policy.md",
 	PromptBlockRequestEnvelope:        "prompts/request_envelope.md",
+	PromptBlockDocumentAuthoringStyle: "prompts/document_authoring_style.md",
 	PromptBlockEmptyStopRetry:         "prompts/empty_stop_retry.md",
 	PromptBlockRepeatedToolRedirect:   "prompts/repeated_tool_redirect.md",
 	PromptBlockBlockedTool:            "prompts/blocked_tool.md",
@@ -101,6 +103,21 @@ type ToolContractPromptData struct {
 	ToolCallID       string
 	ToolCallsSummary string
 	Guidance         string
+}
+
+// documentAuthoringStylePromptFallback is used when the embedded style block
+// fails to load. Keep key markers aligned with prompts/document_authoring_style.md
+// so degraded assembly still triggers the same model constraints and tests.
+func documentAuthoringStylePromptFallback() string {
+	return strings.TrimSpace(`Document authoring style contract (expert technical writing):
+Write the deliverable as a senior engineer handing notes to a sharp peer. Not as a chatbot or marketing page.
+Lead with the decision or claim, use active voice and concrete facts, take a stance when comparing options, and vary sentence rhythm.
+Ban these AI-slop patterns (English and Korean): binary contrasts, throat-clearing, faux-insight setups, colon reveals, importance puffery, weasel attribution, synonym cycling, dramatic fragments, fake-profound endings, summary-recap endings, formatting slop, and em-dash overuse.
+Before writing or rewriting the document file, self-check:
+1. Any banned pattern without a technical reason?
+2. Any claim of importance without a concrete fact?
+3. Would a peer engineer accept this as peer writing, not AI paste?
+If the user asks to humanize or remove AI tone, use $humanize-doc after the draft exists.`)
 }
 
 func PromptBlockIDs() []PromptBlockID {

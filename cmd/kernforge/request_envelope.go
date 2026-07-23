@@ -613,6 +613,9 @@ func (e RequestEnvelope) renderPromptSectionFallback() string {
 		b.WriteString("- Produce the requested document or report as the deliverable.\n")
 		b.WriteString("- You may create or update the target document file (for example a .md file) using the available file tools.\n")
 		b.WriteString("- Do not modify, fix, or refactor source code; describe needed changes in the document instead unless the user gives an explicit source-edit command.\n")
+		b.WriteString("- Write the document in expert technical voice (peer engineer notes), not chatbot or marketing tone. Follow the Document authoring style contract in this system prompt.\n")
+		b.WriteString("- Self-check the draft against that contract before writing or rewriting the file.\n")
+		b.WriteString("- If the user explicitly asks to remove AI tone, humanize, or polish for publication, use $humanize-doc after the draft exists.\n")
 	} else if e.ExplicitEditRequest {
 		b.WriteString("\nRequest mode: inspect-and-fix.\n")
 		b.WriteString("- Investigate the referenced code and apply the necessary fix directly when needed.\n")
@@ -655,12 +658,16 @@ func (a *Agent) latestRequestEnvelopeFor(request string) RequestEnvelope {
 		current.Normalize()
 		if strings.EqualFold(strings.TrimSpace(baseUserQueryText(current.ExternalUserText)), base) {
 			a.applySessionRequestEnvelopeContext(&current)
+			// Re-apply policy after session context may flip DocumentAuthoring /
+			// AllowsFileMutation on continuation turns.
+			current.applyPolicy()
 			current.Normalize()
 			return current
 		}
 	}
 	envelope := buildRequestEnvelope(base)
 	a.applySessionRequestEnvelopeContext(&envelope)
+	envelope.applyPolicy()
 	envelope.Normalize()
 	return envelope
 }
@@ -681,12 +688,36 @@ func (a *Agent) applySessionRequestEnvelopeContext(envelope *RequestEnvelope) {
 		return
 	}
 	contract := a.Session.AcceptanceContract
+	// Continuations like "계속" do not restate document-authoring intent. Preserve
+	// it from the acceptance contract / source prompt so document style contracts
+	// and document gates keep applying for the rest of the work.
+	if requestEnvelopeContractLooksLikeDocumentAuthoring(contract) {
+		envelope.DocumentAuthoring = true
+		envelope.ReadOnlyAnalysis = false
+		envelope.ExplicitEditRequest = false
+		envelope.PrimaryClass = RequestClassDocument
+		envelope.Classes = appendRequestClass(envelope.Classes, RequestClassDocument)
+		if normalizeReviewRequestClass(envelope.ReviewRequestClass) == "" ||
+			normalizeReviewRequestClass(envelope.ReviewRequestClass) == reviewRequestClassGeneral {
+			envelope.ReviewRequestClass = reviewRequestClassDocumentArtifact
+		}
+		if strings.TrimSpace(envelope.ReviewLifecycleKind) == "" {
+			envelope.ReviewLifecycleKind = reviewLifecycleKindDocumentArtifact
+		}
+		envelope.Evidence = append(envelope.Evidence, RequestEvidence{
+			Source: "acceptance_contract",
+			Signal: "preserved_document_authoring_context",
+			Detail: firstNonBlankString(normalizeReviewRequestClass(contract.RequestClass), "source_prompt"),
+		})
+	}
 	if requestEnvelopeContractAllowsFileMutation(contract) {
 		envelope.AllowsFileMutation = true
 		envelope.RequiresVerification = true
 		envelope.ReadOnlyAnalysis = false
 		envelope.Boundary = ActionBoundaryMayEdit
-		envelope.Classes = appendRequestClass(envelope.Classes, RequestClassEdit)
+		if !envelope.DocumentAuthoring {
+			envelope.Classes = appendRequestClass(envelope.Classes, RequestClassEdit)
+		}
 		envelope.Evidence = append(envelope.Evidence, RequestEvidence{
 			Source: "acceptance_contract",
 			Signal: "preserved_mutable_context",
@@ -709,13 +740,49 @@ func (a *Agent) applySessionRequestEnvelopeContext(envelope *RequestEnvelope) {
 		envelope.RequiresVerification = true
 		envelope.ReadOnlyAnalysis = false
 		envelope.Boundary = ActionBoundaryMayEdit
-		envelope.Classes = appendRequestClass(envelope.Classes, RequestClassEdit)
+		if !envelope.DocumentAuthoring {
+			envelope.Classes = appendRequestClass(envelope.Classes, RequestClassEdit)
+		}
 		envelope.Evidence = append(envelope.Evidence, RequestEvidence{
 			Source: "patch_transaction",
 			Signal: "preserved_mutable_context",
 			Detail: "previous_file_mutation",
 		})
 	}
+}
+
+// requestEnvelopeContractLooksLikeDocumentAuthoring reports whether the active
+// acceptance contract is a document-deliverable turn. Used on continuations where
+// the latest user text is only "continue" / "계속".
+func requestEnvelopeContractLooksLikeDocumentAuthoring(contract *AcceptanceContract) bool {
+	if contract == nil {
+		return false
+	}
+	if normalizeReviewRequestClass(contract.RequestClass) == reviewRequestClassDocumentArtifact {
+		return true
+	}
+	source := strings.TrimSpace(baseUserQueryText(contract.SourcePrompt))
+	if source == "" {
+		return false
+	}
+	if looksLikeImperativeSourceEditCommand(source) && !requestLooksLikePureDocumentAuthoring(source) {
+		return false
+	}
+	return looksLikeDocumentAuthoringIntent(source) ||
+		looksLikeReviewArtifactAuthoringRequest(source) ||
+		requestLooksLikePureDocumentAuthoring(source)
+}
+
+// requestEnvelopeNeedsDocumentAuthoringStyle is true when the system prompt
+// should inject the expert document-writing style contract.
+func requestEnvelopeNeedsDocumentAuthoringStyle(envelope RequestEnvelope) bool {
+	if envelope.DocumentAuthoring {
+		return true
+	}
+	if normalizeReviewRequestClass(envelope.ReviewRequestClass) == reviewRequestClassDocumentArtifact {
+		return true
+	}
+	return envelope.PrimaryClass == RequestClassDocument
 }
 
 func requestEnvelopeContractAllowsFileMutation(contract *AcceptanceContract) bool {

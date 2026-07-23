@@ -1106,6 +1106,66 @@ func TestSystemPromptExplainsDocumentReadConfirmationGuidance(t *testing.T) {
 	}
 }
 
+func TestSystemPromptInjectsDocumentAuthoringStyleOnlyForDocumentTurns(t *testing.T) {
+	root := t.TempDir()
+
+	// Markers unique to prompts/document_authoring_style.md (not codex-grade
+	// generic document_artifact one-liners that appear on code-edit turns too).
+	styleMarkers := []string{
+		"Document authoring style contract (expert technical writing):",
+		"Ban these AI-slop patterns (English and Korean):",
+		"Would a peer engineer accept this as peer writing, not AI paste?",
+	}
+
+	docSession := NewSession(root, "provider", "model", "", "default")
+	docSession.AddMessage(Message{Role: "user", Text: "docs/plan/example.md 설계 계획서를 작성해줘"})
+	docAgent := &Agent{Config: Config{}, Session: docSession}
+	docPrompt := docAgent.systemPrompt()
+	for _, want := range append(styleMarkers, "Request mode: document-authoring.", "expert technical voice") {
+		if !strings.Contains(docPrompt, want) {
+			t.Fatalf("document-authoring system prompt missing %q, got:\n%s", want, docPrompt)
+		}
+	}
+
+	editSession := NewSession(root, "provider", "model", "", "default")
+	editSession.AddMessage(Message{Role: "user", Text: "main.go 버그를 고쳐줘"})
+	editAgent := &Agent{Config: Config{}, Session: editSession}
+	editPrompt := editAgent.systemPrompt()
+	for _, banned := range styleMarkers {
+		if strings.Contains(editPrompt, banned) {
+			t.Fatalf("code-edit system prompt must not inject document style block marker %q, got:\n%s", banned, editPrompt)
+		}
+	}
+}
+
+func TestSystemPromptInjectsDocumentStyleOnDocumentContinuation(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt:      "docs/plan/example.md 설계 계획서를 작성해줘",
+		RequestClass:      reviewRequestClassDocumentArtifact,
+		Mode:              "inspect_and_fix",
+		RequiredArtifacts: []string{"docs/plan/example.md"},
+	}
+	session.AddMessage(Message{Role: "user", Text: "docs/plan/example.md 설계 계획서를 작성해줘"})
+	session.AddMessage(Message{Role: "assistant", Text: "초안 작성 중"})
+	session.AddMessage(Message{Role: "user", Text: "계속 진행해"})
+	agent := &Agent{Config: Config{}, Session: session}
+
+	// Ensure the cached envelope path also preserves document authoring.
+	env := agent.latestRequestEnvelopeFor("계속 진행해")
+	agent.rememberRequestEnvelope(env)
+	prompt := agent.systemPrompt()
+	for _, want := range []string{
+		"Document authoring style contract (expert technical writing):",
+		"Ban these AI-slop patterns (English and Korean):",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("document continuation system prompt missing %q, envelope=%#v\nprompt:\n%s", want, env, prompt)
+		}
+	}
+}
+
 func TestSystemPromptIncludesActiveBackgroundBundles(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

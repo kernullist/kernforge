@@ -12,6 +12,7 @@ func TestPromptAssetsLoadAllBlocks(t *testing.T) {
 		PromptBlockSystemBase:             true,
 		PromptBlockToolPolicy:             true,
 		PromptBlockRequestEnvelope:        true,
+		PromptBlockDocumentAuthoringStyle: true,
 		PromptBlockEmptyStopRetry:         true,
 		PromptBlockRepeatedToolRedirect:   true,
 		PromptBlockBlockedTool:            true,
@@ -75,6 +76,44 @@ func TestRenderPromptRequestEnvelopeIncludesMajorFields(t *testing.T) {
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected request envelope render to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestRenderPromptRequestEnvelopeDocumentAuthoringStyleLines(t *testing.T) {
+	envelope := buildRequestEnvelope("docs/plan/example.md 설계 계획서를 작성해줘")
+	if !envelope.DocumentAuthoring {
+		t.Fatalf("expected document authoring envelope, got %#v", envelope)
+	}
+	rendered, err := RenderRequestEnvelopePromptBlock(envelope)
+	if err != nil {
+		t.Fatalf("render request envelope: %v", err)
+	}
+	for _, want := range []string{
+		"Request mode: document-authoring.",
+		"Document authoring style contract",
+		"Self-check the draft against that contract",
+		"$humanize-doc",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected document authoring envelope to contain %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestLoadDocumentAuthoringStylePromptBlock(t *testing.T) {
+	text, err := LoadPromptBlock(PromptBlockDocumentAuthoringStyle)
+	if err != nil {
+		t.Fatalf("load document authoring style: %v", err)
+	}
+	for _, want := range []string{
+		"Document authoring style contract",
+		"Binary contrasts",
+		"self-check",
+		"$humanize-doc",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("document authoring style block missing %q, got:\n%s", want, text)
 		}
 	}
 }

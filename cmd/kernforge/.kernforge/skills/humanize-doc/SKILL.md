@@ -21,6 +21,14 @@ description: >
 사라질 때까지 탐지-수정-판정 루프를 반복한다. 성공 기준은 하나다:
 문서 전체가 해당 분야의 사람 전문가가 직접 쓴 글로 판정받는 것.
 
+이 스킬은 kernforge 바이너리에 내장된다. 사용자 skills 디렉터리 시드가 없거나
+삭제돼도 `$humanize-doc` / `load_skill` / "AI 티 제거" 자연어로 항상 활성화된다.
+생성 시점 예방은 document-authoring 시스템 프롬프트의 Document authoring style
+contract가 담당한다. 이 스킬은 초안이 이미 있을 때 후처리 polish용이다.
+패턴 이름·eval 자기 검수는 [no-ai-slop](https://github.com/petergyang/no-ai-slop)
+(MIT, Peter Yang)과 `references/ai-tells.md` baseline(본문 하단 built-in copy 포함)을
+정렬해 쓴다.
+
 ## KernForge 도구 매핑
 
 이 스킬은 KernForge 네이티브 도구만 쓴다.
@@ -105,6 +113,25 @@ SEO성 글은 단어 후보 수집용으로만 쓴다. 검색이 실패하거나
 - 구체성을 살린다: 원문에 이미 있는 수치, 도구명, 조건을 문장의 중심으로 끌어온다. 단, 없는 사실을 만들어내면 안 된다 — 불변 조건 1이 우선이다.
 
 세부 재작성 기법은 `references/ai-tells.md` 8절을 참조한다.
+no-ai-slop 패턴 표(binary contrasts, colon reveals, synonym cycling 등)는
+`references/ai-tells.md` 9절을 참조한다.
+
+#### Step 3b: eval 자기 검수 (별도 agent 없이)
+
+수정 직후, 블라인드 판정 전에 같은 턴에서 아래를 pass/fail로 훑는다.
+하나라도 fail이면 Step 3으로 돌아가 고친 뒤 다시 검수한다.
+
+1. 의미·사실을 추가하거나 바꾸지 않았는가.
+2. 금지 단어·이정표·binary contrast·colon reveal·puffery·weasel attribution이
+   보호 영역 밖에서 남아 있지 않은가.
+3. fake-profound kicker / summary-recap ending을 삭제했는가 (더 멋진 비유로 바꾸지 말 것).
+4. formatting slop(이모지 헤딩, 장식 볼드, 2문장 섹션 헤더)을 제거했는가.
+5. em-dash 남용을 줄였는가 (짧은 글은 0, 긴 글도 꼭 필요할 때만 1–2개).
+6. 문장 리듬이 균일 병렬 스택으로 다시 굳지 않았는가.
+7. 소리 내어 읽었을 때 동료 엔지니어 메모처럼 들리는가.
+
+이 단계는 no-ai-slop `eval.md`의 pass/fail 자기 검수를 문서 polish에 맞춘 축소판이다.
+탐지 전용 요청이면 이 단계를 건너뛰고 패턴 이름 + 인용 + 짧은 수정 방향만 보고한다.
 
 #### Step 4: 판정
 
