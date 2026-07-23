@@ -67,11 +67,21 @@ func TestParseGoalReviewDecisionEmptyIsNeedsRevision(t *testing.T) {
 }
 
 func TestRenderGoalUserCriteriaSection(t *testing.T) {
-	if renderGoalUserCriteriaSection(GoalState{}) != "" {
-		t.Fatalf("expected empty section without criteria")
+	// Empty goals still compile a substance criterion so process-only completion
+	// cannot be treated as done.
+	bare := renderGoalUserCriteriaSection(GoalState{})
+	if !strings.Contains(bare, "Acceptance criteria") {
+		t.Fatalf("expected Acceptance criteria header, got:\n%s", bare)
 	}
-	section := renderGoalUserCriteriaSection(GoalState{UserCriteria: []string{"criterion one", "criterion two"}})
-	for _, want := range []string{"User acceptance criteria", "criterion one", "criterion two", "NEEDS_REVISION"} {
+	lowerBare := strings.ToLower(bare)
+	if !strings.Contains(lowerBare, "objective") && !strings.Contains(lowerBare, "workspace") {
+		t.Fatalf("expected compiled substance checklist for empty goal, got:\n%s", bare)
+	}
+	section := renderGoalUserCriteriaSection(GoalState{
+		Objective:    "fix the detector",
+		UserCriteria: []string{"criterion one", "criterion two"},
+	})
+	for _, want := range []string{"Acceptance criteria", "criterion one", "criterion two", "do not treat the goal as complete"} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("section missing %q:\n%s", want, section)
 		}

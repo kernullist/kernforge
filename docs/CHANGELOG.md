@@ -4,6 +4,14 @@
 
 ## 2026-07-23
 
+### Goal OS PR1: AcceptanceSpec 컴파일러
+
+- 계획: [[docs/plan/2026-07-23-autonomous-goal-system.md]], 연구: [[docs/research/2026-07-23-autonomous-goal-systems.md]]
+- `GoalAcceptanceSpec` / `compileGoalAcceptanceSpec`: 목표+`--criteria` → substance criteria, risk_class, research_mode, non-goals.
+- Semantic/implement 프롬프트가 **primary acceptance checklist**를 강제; process-meta CompletionCriteria는 secondary.
+- Progress fingerprint에 criteria 포함, 검증 없는 파일 churn 점수 하향.
+- 후속: Slice DAG (PR2), Runner v2 (PR3).
+
 ### humanize-doc 바이너리 1급 내장
 
 - 계획서: [[docs/plan/2026-07-23-builtin-humanize-doc.md]]

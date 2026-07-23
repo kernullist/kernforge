@@ -80,10 +80,13 @@ type GoalState struct {
 	SemanticRejectCount     int                 `json:"semantic_reject_count,omitempty"`
 	CompletionCriteria      []string            `json:"completion_criteria,omitempty"`
 	// UserCriteria holds explicit, user-provided acceptance criteria (from
-	// --criteria / --criteria-file). Unlike the boilerplate CompletionCriteria,
-	// these are surfaced to the semantic reviewer as an explicit pass/fail
-	// checklist so completion is judged against the actual objective.
+	// --criteria / --criteria-file). They are compiled into AcceptanceSpec as
+	// source=user items and remain the highest-priority checklist entries.
 	UserCriteria []string `json:"user_criteria,omitempty"`
+	// AcceptanceSpec is the compiled primary acceptance contract (substance
+	// criteria, risk, research mode). Semantic completion must judge this, not
+	// process-meta CompletionCriteria alone.
+	AcceptanceSpec *GoalAcceptanceSpec `json:"acceptance_spec,omitempty"`
 	// RequireIndependentReview blocks auto-completion when the final semantic
 	// review could not run against an independent reviewer route (no cross-review
 	// model or consent), instead of silently auto-approving.
@@ -327,6 +330,7 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 		CreatedAt:                now,
 		UpdatedAt:                now,
 	}
+	ensureGoalAcceptanceSpec(&goal)
 	goal.Normalize()
 	rt.primeGoalRuntimeState(&goal, "created")
 	if !options.Run {
@@ -1107,7 +1111,7 @@ func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
 		}
 		b.WriteString("\n")
 	}
-	if section := renderGoalUserCriteriaSection(goal); section != "" {
+	if section := renderGoalAcceptanceCriteriaSection(goal); section != "" {
 		b.WriteString(section)
 	}
 	b.WriteString("Codex-grade staged loop:\n")
@@ -2437,6 +2441,13 @@ func (g *GoalState) Normalize() {
 	}
 	g.CompletionCriteria = normalizeTaskStateList(g.CompletionCriteria, 16)
 	g.UserCriteria = normalizeTaskStateList(g.UserCriteria, 16)
+	if g.AcceptanceSpec != nil {
+		g.AcceptanceSpec.Normalize()
+	}
+	// Keep a compiled spec available for durable goals that predate this field.
+	if g.AcceptanceSpec == nil || len(g.AcceptanceSpec.Criteria) == 0 {
+		ensureGoalAcceptanceSpec(g)
+	}
 	g.Plan = normalizeGoalPlanItems(g.Plan)
 	for i := range g.CheckpointRefs {
 		g.CheckpointRefs[i].Normalize()

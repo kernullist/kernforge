@@ -135,6 +135,7 @@ func (t CreateGoalTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+	ensureGoalAcceptanceSpec(&goal)
 	goal.Normalize()
 	primeGoalSessionState(session, &goal, "created", "")
 	goal.updateUsageTelemetry(session)

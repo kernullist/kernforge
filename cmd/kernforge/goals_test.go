@@ -112,9 +112,20 @@ func seedGoalPassingVerification(t *testing.T, rt *runtimeState, changed []strin
 	rt.recordGoalVerificationReport(context.Background(), report, changed)
 }
 
+// enableGoalIterationAutoReview turns on review.auto_after_goal_iteration so
+// full-loop tests exercise implement → review → (repair) → verify → semantic
+// through goalReply. Production default remains false (opt-in model review).
+func enableGoalIterationAutoReview(rt *runtimeState) {
+	if rt == nil {
+		return
+	}
+	rt.cfg.Review.AutoAfterGoalIteration = boolPtr(true)
+}
+
 func useFastGoalRuntime(t *testing.T, rt *runtimeState) {
 	t.Helper()
 	useFastGoalVerificationAndAudit(rt)
+	enableGoalIterationAutoReview(rt)
 	previousEvidenceBuilder := goalIterationReviewEvidenceBuilder
 	goalIterationReviewEvidenceBuilder = func(root string, iteration GoalIteration, checkpoints *CheckpointManager) string {
 		_ = root
@@ -1346,6 +1357,7 @@ func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
 		},
 	}
 	useFastGoalVerificationAndAudit(rt)
+	enableGoalIterationAutoReview(rt)
 
 	if err := rt.handleGoalCommand("--run --max-iterations 1 create generated review artifact"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
@@ -1780,6 +1792,7 @@ func TestGoalRunInterruptDuringVerificationKeepsGoalActive(t *testing.T) {
 	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
+	enableGoalIterationAutoReview(rt)
 	rt.goalReply = func(ctx context.Context, prompt string) (string, error) {
 		replyCount++
 		return "fake goal reply", nil

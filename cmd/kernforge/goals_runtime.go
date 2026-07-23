@@ -72,6 +72,7 @@ func primeGoalSessionState(session *Session, goal *GoalState, reason string, rev
 	state.SetNextStep("Run the next autonomous goal iteration.")
 	state.RecordEvent(conversationEventKindGoal, "", "", "Goal runtime primed.", strings.TrimSpace(reason), "active", true)
 	session.AcceptanceContract = goalAcceptanceContract(goal.Objective)
+	ensureGoalAcceptanceSpec(goal)
 	criteria := goalCompletionCriteria(goal.Objective, session.AcceptanceContract)
 	if len(goal.CompletionCriteria) == 0 {
 		goal.CompletionCriteria = criteria
@@ -1158,21 +1159,11 @@ func goalReviewerReplyWasSkipped(reply string) bool {
 		strings.Contains(lower, "reviewer skipped because")
 }
 
-// renderGoalUserCriteriaSection formats the user-provided acceptance criteria as
-// an explicit pass/fail checklist. Natural-language criteria cannot be asserted
-// deterministically, so they are handed to the reviewer as required checks; the
-// section is empty when the user provided none.
+// renderGoalUserCriteriaSection keeps the historical name used by tests and
+// prompts. It now renders the full compiled AcceptanceSpec checklist (user
+// criteria first, then compiler substance items).
 func renderGoalUserCriteriaSection(goal GoalState) string {
-	if len(goal.UserCriteria) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("User acceptance criteria (EVERY item must be satisfied; if any is unmet or unverifiable, start with NEEDS_REVISION and name the failing item):\n")
-	for _, item := range goal.UserCriteria {
-		fmt.Fprintf(&b, "- [ ] %s\n", item)
-	}
-	b.WriteString("\n")
-	return b.String()
+	return renderGoalAcceptanceCriteriaSection(goal)
 }
 
 func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact, iteration GoalIteration, root string, checkpoints *CheckpointManager) string {
@@ -1180,14 +1171,15 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 	fmt.Fprintf(&b, "Final semantic goal review for autonomous goal %s.\n\n", valueOrUnset(goal.ID))
 	fmt.Fprintf(&b, "Objective:\n%s\n\n", strings.TrimSpace(goal.Objective))
 	b.WriteString("Decide whether the actual workspace state satisfies the goal, not merely whether a command succeeded.\n")
-	b.WriteString("Start with APPROVED only if the objective, completion criteria, verification result, and completion audit evidence are all sufficient.\n")
+	b.WriteString("Start with APPROVED only if the objective, primary acceptance criteria, verification result, and completion audit evidence are all sufficient.\n")
 	b.WriteString("Start with NEEDS_REVISION if any meaningful implementation, test, documentation, artifact, or evidence gap remains.\n")
-	b.WriteString("There is no deterministic, objective-specific completion check for arbitrary repositories, so you are the authority on whether the objective's substance is actually implemented. Do not APPROVE on the basis of a green build, passing pre-existing tests, or a zero-blocker audit alone when the requested behavior is not demonstrably present in the workspace.\n\n")
-	if section := renderGoalUserCriteriaSection(goal); section != "" {
+	b.WriteString("There is no deterministic, objective-specific completion check for arbitrary repositories, so you are the authority on whether the objective's substance is actually implemented. Do not APPROVE on the basis of a green build, passing pre-existing tests, a zero-blocker audit, or process-meta criteria alone when the requested behavior is not demonstrably present in the workspace.\n")
+	b.WriteString("Process-meta items (\"audit ready\", \"loop ran\", \"plan updated\") are never sufficient by themselves.\n\n")
+	if section := renderGoalAcceptanceCriteriaSection(goal); section != "" {
 		b.WriteString(section)
 	}
 	if len(goal.CompletionCriteria) > 0 {
-		b.WriteString("Completion criteria:\n")
+		b.WriteString("Process / loop criteria (secondary; not sufficient without primary acceptance criteria):\n")
 		for _, item := range goal.CompletionCriteria {
 			fmt.Fprintf(&b, "- %s\n", item)
 		}
@@ -1438,7 +1430,22 @@ func (rt *runtimeState) evaluateGoalProgress(goal GoalState, audit CompletionAud
 	}
 	openTasks := len(audit.OpenTasks)
 	failureSignature := goalFailureSignature(audit, iteration)
-	fingerprint := goalProgressFingerprint(changed, verification, audit, failureSignature)
+	primaryCriteria := []string{}
+	if goal.AcceptanceSpec != nil {
+		primaryCriteria = goal.AcceptanceSpec.PrimaryCriteriaTexts()
+	}
+	fingerprint := goalProgressFingerprintWithCriteria(changed, verification, audit, failureSignature, primaryCriteria)
+	// File touches alone must not dominate score when audit is not ready.
+	if len(changed) > 0 && !audit.Ready {
+		// Keep the +20 for changed files only when verification also moved.
+		if verification == "" {
+			score -= 10
+			if score < 0 {
+				score = 0
+			}
+			signals = append(signals, "changed files without verification evidence (reduced progress weight)")
+		}
+	}
 	progress := GoalProgressState{
 		Score:            score,
 		Fingerprint:      fingerprint,
@@ -1516,7 +1523,17 @@ func goalFailureSignature(audit CompletionAuditArtifact, iteration GoalIteration
 }
 
 func goalProgressFingerprint(changed []string, verification string, audit CompletionAuditArtifact, failureSignature string) string {
+	return goalProgressFingerprintWithCriteria(changed, verification, audit, failureSignature, nil)
+}
+
+// goalProgressFingerprintWithCriteria hashes evidence that represents real
+// progress. Callers should pass primary acceptance criteria texts so mere file
+// churn against an unchanged objective does not look like a new fingerprint
+// once verification and audit state are stable.
+func goalProgressFingerprintWithCriteria(changed []string, verification string, audit CompletionAuditArtifact, failureSignature string, primaryCriteria []string) string {
 	parts := []string{
+		// Path set only (not content) — content churn without verify/audit change
+		// still risks fake progress; criteria+verify+audit dominate the hash.
 		strings.Join(normalizeTaskStateList(changed, 128), "|"),
 		strings.TrimSpace(verification),
 		strings.TrimSpace(audit.Status),
@@ -1524,6 +1541,7 @@ func goalProgressFingerprint(changed []string, verification string, audit Comple
 		strings.TrimSpace(failureSignature),
 		strings.Join(normalizeTaskStateList(audit.Blockers, 16), "|"),
 		strings.Join(normalizeTaskStateList(audit.Warnings, 16), "|"),
+		strings.Join(normalizeTaskStateList(primaryCriteria, 24), "|"),
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
 	return hex.EncodeToString(sum[:12])
