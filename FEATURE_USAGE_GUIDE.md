@@ -253,43 +253,30 @@ Purpose:
 3. Repeat implementation, self-review, verification, completion audit, final semantic review, and recovery until the goal is complete or a concrete blocker is recorded.
 
 Useful commands:
-- `/goal "add the missing recovery tests and update docs"` records a persistent goal, asks the active model for an editable plan preview, and points to `/goal run latest`
-- `/goal --run "add the missing recovery tests and update docs"` records and immediately runs the autonomous loop
-- `/goal @GOAL.md` records a markdown goal without running it
+- `/goal "add the missing recovery tests and update docs"` designs a plan then runs until complete (or blocked)
+- `/goal @GOAL.md` loads a markdown objective and runs the same flow
+- Bare `/goal` resumes an incomplete goal or prints a snapshot when idle
 - `/goal --file GOAL.md --max-iterations 12`
-- `/goal --time-budget 10m --until-complete @GOAL.md`
+- `/goal --time-budget 10m @GOAL.md`
 - `/goal --token-budget 120000 "finish the refactor without exceeding context budget"`
+- `/goal --research "survey latest TPM attestation trends"`
+- `/goal --worktree "risky refactor in isolation"`
 - `/goal --rollback-on-regression "finish the refactor and keep verification green"`
-- `/goal --no-run @GOAL.md`
-- `/goal run latest`
-- `/goal status`
-- `/goal audit`
-- `/goal complete`
-- `/goal cancel`
 - `kernforge -goal "finish the verification policy change"`
 - `kernforge -goal "finish the refactor" -goal-token-budget 120000 -goal-max-iterations 12`
 - `kernforge -goal-file GOAL.md`
 
 Current behavior:
-1. `/goal` creates a `GoalState` in the session, asks the active model to draft an objective-specific execution plan, prints that editable plan preview plus `/goal run latest`, and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json`; it records the goal without launching the autonomous execution loop unless `--run` or `--until-complete` is present.
-2. Markdown goals can be passed as `@GOAL.md`, `--file GOAL.md`, or the `-goal-file` CLI flag; one-shot `-goal` and `-goal-file` runs support matching max-iteration, time-budget, token-budget, until-complete, and rollback flags and execute immediately.
-3. Goal recording primes an acceptance contract, task graph, completion criteria, status artifact, and model-drafted plan before execution. Edit `## Execution Plan` in `.kernforge/goals/latest.md` before `/goal run latest` if the plan needs changes; the run command reloads that section. Asking for a "goal prompt" is a drafting request, not an active goal; save that prompt or pass it to `/goal` when you want Kernforge to record or run it. A draft-only goal prompt request stays non-mutating unless it includes `/goal`, `-goal`, `--run`, file input, or an explicit save-to-file instruction. The old `start` subcommand is removed so create and run roles stay separate.
-4. Each iteration records a checkpoint when checkpoint storage is configured, sends an implementation prompt, then runs an independent review verdict gate.
-5. The review prompt includes concrete evidence whenever available: the implementation reply, checkpoint diff from the iteration start, git status/diff context, changed-file summaries, and bounded untracked-file excerpts.
-6. A `NEEDS_REVISION` review triggers an automatic repair pass before verification. The repair prompt preserves structured reviewer issues plus the same implementation context, so the worker receives actionable findings rather than only a short revision summary.
-7. During goal execution, write, diff preview, shell, and git approvals are session-bypassed so the loop does not stop for those confirmations. Implicit model-backed review gates can still ask `Run model review now? [y=run once, a=session auto-review, n=skip, Esc=cancel]` according to `review.model_review_consent`; on a single-model route (no independent reviewer configured) they are skipped automatically with `skipped_single_model_route` and no prompt appears.
-8. After the agent pass, Kernforge runs adaptive verification, writes `/session audit`, runs a final semantic reviewer when the audit is ready, and if needed runs `/session recover execute-safe` or a semantic repair pass before the next iteration. Full verification runs on the scheduled full cadence instead of every iteration.
-9. Goal verification scope filters generated/runtime/build artifacts such as `.kernforge`, `.vs`, `x64`, `Debug`, `Release`, logs, tlog/PDB/OBJ binaries, and archives. These files can still appear as workspace dirt, but they do not inflate patch review coverage, adaptive verification scope, or goal progress.
-10. If the latest failing verification signature repeats and no patch-scope edit changed since the previous failure, Kernforge records a repeated-verification blocker instead of rerunning the same command. The user can repair, waive, or explicitly rerun after changing scope.
-11. Verification terminal summaries show the first actionable compiler/linker/test error and clamp long single-line output; the full raw output stays in artifacts. Windows MSBuild output is decoded through UTF-8 or Korean/ANSI code pages where needed.
-12. Compact goal progress prints `goal_step` and `goal_detail` for implementation, review, verification, completion audit, semantic review, and recovery. Verification detail includes adaptive versus full mode, the next full-verification iteration, and changed-path count.
-13. Goal recovery still refreshes continuity and completion-audit artifacts, but nested slash-command output is suppressed in the terminal so the visible stream stays on the current recovery summary and artifact refs.
-14. The final semantic reviewer receives the same workspace evidence model, and unclear or insufficient review evidence is treated as `NEEDS_REVISION` instead of approval.
-15. The progress ledger tracks patch-scope changed files, verification, audit blockers/warnings, review verdicts, final semantic verdicts, no-progress count, repeated failure signatures, token usage estimate, and command history.
-16. The loop completes only when the completion audit is `ready=true` and final semantic review returns `APPROVED`; otherwise it keeps iterating until canceled, blocked by an unrecoverable runtime error, stopped by the configured iteration/time/token cap, or stopped by repeated no-progress/failure detection.
-17. `/goal run` resumes a pending or blocked goal from the latest persisted state.
-18. `/goal audit` re-runs the completion audit for the goal objective without running another implementation pass or marking the goal complete.
-19. `/goal complete` is the explicit completion gate: it re-runs audit, runs semantic review, and marks complete only if both approve.
+1. `/goal` creates a `GoalState`, compiles acceptance criteria, drafts plan/slices, writes `.kernforge/goals/*` artifacts, prints a plan preview plus live progress snapshots, and immediately starts the autonomous loop.
+2. Markdown goals use `@GOAL.md`, `--file GOAL.md`, or `-goal-file`. One-shot `-goal` / `-goal-file` execute immediately with matching budget flags.
+3. Interrupt with Esc; bare `/goal` resumes. Edit `## Execution Plan` in `latest.md` while interrupted if needed; resume reloads it. Draft-only "write a goal prompt" stays chat unless `/goal`/`-goal`/file/save is explicit.
+4. Each iteration: checkpoint (when configured) → implement → independent review gate → optional repair → adaptive verify → completion audit → semantic review (slice-scoped when a DAG exists).
+5. Review prompts include implementation replies, checkpoint diffs, git context, and bounded untracked excerpts.
+6. Session-bypasses write/diff/shell/git confirmations during the loop; model-review consent still applies for implicit reviews (`skipped_single_model_route` on single-model routes).
+7. Full verification follows the scheduled cadence. Generated/runtime/build artifacts are filtered from goal patch/progress scope.
+8. Repeated identical verification failures without patch-scope edits block instead of looping.
+9. Progress ledger tracks files, verify/audit, review/semantic verdicts, no-progress, failure signatures, token estimate, and command history.
+10. Completes only when audit is ready and semantic review approves (all slices complete when a DAG exists); otherwise iterates until budget/blocker/interrupt.
 
 ### Local Automations MVP
 

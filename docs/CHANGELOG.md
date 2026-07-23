@@ -11,6 +11,7 @@
 - bare `/goal` = incomplete 재개, 없으면 최신 스냅샷.
 - 루프 중 `printGoalProgressSnapshot` (iteration/slice/verify/semantic/complete/block).
 - Esc 인터럽트 유지; 교체는 새 `/goal` + 확인.
+- 리뷰 수정: `run the …` 같은 목표 문장 선두 예약어 오인 방지; terminal 상태 스냅샷 중복 출력 제거; QUICKSTART/README/FEATURE 가이드 동기화.
 
 ## 2026-07-23
 

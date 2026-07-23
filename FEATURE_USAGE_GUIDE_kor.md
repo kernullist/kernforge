@@ -250,43 +250,30 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. 구현, 자체 리뷰, 검증, completion audit, 최종 semantic review, recovery를 목표 완료 또는 구체 blocker 기록까지 반복한다.
 
 대표 명령:
-- `/goal "missing recovery test와 docs를 추가해"`는 persistent goal을 기록하고 active model이 작성한 편집 가능한 plan preview와 `/goal run latest`를 보여준다.
-- `/goal --run "missing recovery test와 docs를 추가해"`는 goal을 기록한 뒤 즉시 autonomous loop를 실행한다.
-- `/goal @GOAL.md`는 markdown goal을 기록하되 실행하지 않는다.
+- `/goal "missing recovery test와 docs를 추가해"` — plan 설계 후 완료/block까지 바로 실행
+- `/goal @GOAL.md` — markdown 목표 + 동일 design-then-run
+- bare `/goal` — incomplete 재개 또는 idle 스냅샷
 - `/goal --file GOAL.md --max-iterations 12`
-- `/goal --time-budget 10m --until-complete @GOAL.md`
+- `/goal --time-budget 10m @GOAL.md`
 - `/goal --token-budget 120000 "context budget을 넘기지 않고 refactor를 끝내"`
+- `/goal --research "최신 TPM 동향 조사 노트"`
+- `/goal --worktree "위험한 리팩터"`
 - `/goal --rollback-on-regression "refactor를 끝내고 verification green 유지"`
-- `/goal --no-run @GOAL.md`
-- `/goal run latest`
-- `/goal status`
-- `/goal audit`
-- `/goal complete`
-- `/goal cancel`
 - `kernforge -goal "verification policy change를 끝내"`
 - `kernforge -goal "refactor를 끝내" -goal-token-budget 120000 -goal-max-iterations 12`
 - `kernforge -goal-file GOAL.md`
 
 현재 동작:
-1. `/goal`은 session에 `GoalState`를 만들고 active model이 목표별 실행 plan을 작성하게 한 뒤, 편집 가능한 plan preview와 `/goal run latest`를 출력하고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. `--run` 또는 `--until-complete`가 없으면 autonomous execution loop는 시작하지 않는다.
-2. Markdown goal은 `@GOAL.md`, `--file GOAL.md`, `-goal-file` CLI flag로 지정할 수 있으며 비대화형 `-goal`과 `-goal-file`은 max-iteration, time-budget, token-budget, until-complete, rollback flag를 지원하고 즉시 실행한다.
-3. goal 기록은 실행 전에 acceptance contract, task graph, completion criteria, status artifact, model-drafted plan을 준비한다. plan을 바꾸려면 `/goal run latest` 전에 `.kernforge/goals/latest.md`의 `## Execution Plan`을 수정한다. run 명령은 이 section을 다시 읽어 실행 plan에 반영한다. "goal prompt 작성" 요청은 draft 요청이지 active goal이 아니며, 그 prompt를 저장하거나 `/goal`에 넘길 때 goal이 기록 또는 실행된다. draft만 요청한 goal prompt는 `/goal`, `-goal`, `--run`, 파일 입력, 또는 파일 저장 지시가 있을 때만 기록/실행으로 승격된다. 예전 `start` 서브커맨드는 생성과 실행 역할을 명확히 나누기 위해 제거했다.
-4. 각 iteration은 checkpoint 저장소가 설정된 경우 checkpoint를 남기고, 구현 prompt 뒤에 독립 review verdict gate를 실행한다.
-5. review prompt는 가능한 경우 implementation reply, iteration 시작 checkpoint diff, git status/diff context, changed-file summary, 제한된 untracked 파일 excerpt 같은 실제 증거를 포함한다.
-6. review가 `NEEDS_REVISION`이면 verification 전에 자동 repair pass를 한 번 더 실행한다. repair prompt는 구조화된 reviewer issue와 같은 implementation context를 보존하므로 worker는 짧고 모호한 revision summary가 아니라 실제 지적 사항을 받는다.
-7. goal 실행 중에는 write, diff preview, shell, git approval을 session 안에서 bypass해서 해당 확인으로 멈추지 않는다. 다만 암시적 model-backed review gate는 `review.model_review_consent`에 따라 `Run model review now? [y=이번만 실행, a=세션 자동 리뷰, n=건너뛰기, Esc=취소]`를 물을 수 있다. 독립 reviewer가 없는 single-model route에서는 이 gate를 `skipped_single_model_route`로 자동 생략하고 prompt를 띄우지 않는다.
-8. agent pass 뒤에는 Kernforge가 adaptive verification, `/session audit`, audit ready 시 최종 semantic reviewer를 실행하고, 필요 시 `/session recover execute-safe` 또는 semantic repair pass를 실행한 뒤 다음 iteration으로 넘어간다. full verification은 매 iteration이 아니라 정해진 full cadence에서 실행된다.
-9. goal verification scope는 `.kernforge`, `.vs`, `x64`, `Debug`, `Release`, log, tlog/PDB/OBJ binary, archive 같은 runtime/build/generated artifact를 제외한다. 이런 파일은 workspace dirt로는 보일 수 있지만 patch review coverage, adaptive verification scope, goal progress를 부풀리지 않는다.
-10. 최신 verification 실패 signature가 이전 실패 이후 새 patch-scope 수정 없이 반복되면 Kernforge는 같은 명령을 다시 돌리지 않고 repeated-verification blocker를 기록한다. 사용자는 수리, waiver, 또는 scope 변경 뒤 명시적 rerun으로 풀 수 있다.
-11. verification terminal summary는 첫 compiler/linker/test error를 보여주고 긴 단일 라인을 clamp한다. 전체 raw output은 artifact에 남기며 Windows MSBuild 출력은 UTF-8 또는 한국어/ANSI code page로 decode한다.
-12. compact goal progress는 구현, review, verification, completion audit, semantic review, recovery마다 `goal_step`과 `goal_detail`을 출력한다. verification detail에는 adaptive/full 모드, 다음 full verification iteration, changed path 수가 들어간다.
-13. goal recovery는 continuity와 completion-audit artifact를 계속 갱신하지만, terminal에는 중첩 slash command 출력을 반복하지 않고 현재 recovery summary와 artifact ref 중심으로 보여준다.
-14. 최종 semantic reviewer도 같은 workspace evidence 모델을 받으며, 증거가 부족하거나 실제 작업을 확인할 수 없으면 approval이 아니라 `NEEDS_REVISION`으로 처리한다.
-15. progress ledger는 patch-scope changed files, verification, audit blockers/warnings, review verdict, final semantic verdict, no-progress count, repeated failure signature, token usage estimate, command history를 기록한다.
-16. completion audit이 `ready=true`이고 최종 semantic review가 `APPROVED`를 반환해야 완료된다. 그 전에는 취소, 회복 불가능 runtime error, iteration/time/token cap, repeated no-progress/failure 감지에 걸릴 때까지 계속 반복한다.
-17. `/goal run`은 pending 또는 blocked goal을 최신 영속 상태에서 재개한다.
-18. `/goal audit`은 구현 pass 없이 goal objective 기준 completion audit만 다시 실행하고 goal을 완료 처리하지 않는다.
-19. `/goal complete`는 명시적 완료 게이트다. audit을 다시 실행하고 semantic review를 거쳐 둘 다 통과할 때만 complete로 표시한다.
+1. `/goal`은 `GoalState` 생성, acceptance criteria 컴파일, plan/slice 초안, `.kernforge/goals/*` 기록, plan preview + live snapshot 출력 후 autonomous loop를 즉시 시작한다.
+2. Markdown goal은 `@GOAL.md`, `--file`, `-goal-file`. 비대화형 `-goal`/`-goal-file`은 budget flag와 함께 즉시 실행.
+3. Esc로 인터럽트 후 bare `/goal`로 재개. 중단 중 `latest.md`의 `## Execution Plan` 수정 가능(재개 시 재로드). draft-only "goal prompt"는 chat 유지.
+4. 각 iteration: checkpoint → implement → review → (repair) → adaptive verify → completion audit → semantic(slice 단위 가능).
+5. review/repair는 implementation reply, checkpoint diff, git context 등 실제 증거를 포함한다.
+6. loop 중 write/diff/shell/git confirmation은 bypass. model-review consent는 유지(single-model은 auto-skip).
+7. full verification은 cadence 기준. generated/runtime/build artifact는 progress/patch scope에서 제외.
+8. 동일 verification 실패가 patch-scope 수정 없이 반복되면 block.
+9. progress ledger: files, verify/audit, review/semantic, no-progress, failure signature, token estimate, command history.
+10. audit ready + semantic APPROVED(및 전 slice 완료)일 때만 complete. 그 외 budget/blocker/interrupt까지 반복.
 
 ### Local Automations MVP
 

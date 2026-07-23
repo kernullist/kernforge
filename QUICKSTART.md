@@ -127,12 +127,12 @@ Planning and tracked feature work:
 - `/new-feature next`
 
 Autonomous goals:
-- `/goal "<objective>"` records a persistent goal, generates an editable plan preview with the active model, and prints `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`
-- Edit `## Execution Plan` in `.kernforge/goals/latest.md` before `/goal run latest` when the plan needs adjustment
-- `/goal --run "<objective>"` records and immediately runs the autonomous loop
-- `/goal @GOAL.md` records a markdown goal; `/goal run latest` starts or resumes it later
+- `/goal "<objective>"` designs a plan (and optional slice DAG), then runs the autonomous loop until complete or blocked; progress snapshots print live
+- `/goal @GOAL.md` loads a markdown objective and runs the same design-then-run flow
+- Bare `/goal` resumes an incomplete goal, or prints a status snapshot when idle; Esc interrupts (goal stays active)
+- Edit `## Execution Plan` in `.kernforge/goals/latest.md` while interrupted if needed; resume reloads that section
 - `kernforge -goal "<objective>"` and `kernforge -goal-file GOAL.md` run the loop in one-shot CLI mode
-- Asking for a goal prompt draft does not start or record a goal unless you explicitly use `/goal`, `-goal`, a goal file, `--run`, or a save-to-file instruction
+- Asking for a goal prompt draft does not start a goal unless you explicitly use `/goal`, `-goal`, a goal file, or a save-to-file instruction
 
 Provider and runtime inspection:
 - `/provider status`

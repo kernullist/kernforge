@@ -127,12 +127,12 @@ $goal-to-slice-planner 이 기능을 검토 가능한 slice와 검증/문서 작
 - `/new-feature next`
 
 Autonomous goal:
-- `/goal "<objective>"`는 persistent goal을 기록하고 active model이 작성한 편집 가능한 plan preview와 `.kernforge/goals/latest.md`, `.kernforge/goals/latest.json` 경로를 출력한다.
-- plan을 조정하려면 `/goal run latest` 전에 `.kernforge/goals/latest.md`의 `## Execution Plan`을 수정한다.
-- `/goal --run "<objective>"`는 goal을 기록한 뒤 즉시 autonomous loop를 실행한다.
-- `/goal @GOAL.md`는 markdown goal을 기록한다. 나중에 `/goal run latest`로 시작하거나 재개한다.
+- `/goal "<objective>"`는 plan(및 slice DAG)을 설계한 뒤 완료/block까지 autonomous loop를 바로 돌린다. 중간에 progress snapshot이 출력된다.
+- `/goal @GOAL.md`는 markdown 목표를 읽고 같은 design-then-run 흐름을 실행한다.
+- bare `/goal`은 incomplete goal을 재개하거나, idle이면 최신 스냅샷을 보여준다. Esc는 인터럽트(goal은 active 유지).
+- 중단 중 plan을 고치려면 `.kernforge/goals/latest.md`의 `## Execution Plan`을 수정한 뒤 bare `/goal`로 재개한다.
 - `kernforge -goal "<objective>"`와 `kernforge -goal-file GOAL.md`는 비대화형 단발 모드에서 loop를 바로 실행한다.
-- goal prompt 초안 작성 요청은 `/goal`, `-goal`, goal 파일, `--run`, 또는 파일 저장 지시가 있을 때만 goal 기록/실행으로 승격된다.
+- goal prompt 초안 작성 요청은 `/goal`, `-goal`, goal 파일, 또는 파일 저장 지시가 있을 때만 goal 실행으로 승격된다.
 
 provider 및 런타임 확인:
 - `/provider status`

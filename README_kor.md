@@ -205,25 +205,18 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### Autonomous Goals
 
-- `/goal <objective>`는 persistent goal을 기록하고 active model이 목표별 실행 plan을 작성하게 한 뒤, 편집 가능한 plan preview와 `/goal run latest`를 보여주고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. 이 단계는 autonomous loop를 시작하지 않는다.
-- model이 작성한 plan을 조정하려면 `/goal run latest` 전에 `.kernforge/goals/latest.md`의 `## Execution Plan`을 수정한다.
-- `/goal --run <objective>`는 goal을 만들고 즉시 autonomous loop를 시작한다. 이미 기록한 goal은 `/goal run latest`로 시작하거나 재개한다.
-- `/goal @GOAL.md`는 markdown 파일에서 목표를 읽어 기록한다. `kernforge -goal-file GOAL.md`는 비대화형 단발 모드에서 파일 goal을 읽고 바로 실행한다.
-- `kernforge -goal "..."`는 REPL에 들어가지 않고 같은 루프를 실행하며, `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-until-complete`, `-goal-rollback-on-regression` 제어도 지원한다.
-- assistant에게 goal prompt 작성을 요청하는 것은 draft 요청이며 active goal이 아니다. 준비된 prompt를 markdown으로 저장하거나 `/goal`에 넘길 때 goal이 기록 또는 실행된다.
-- "goal prompt 작성"처럼 draft만 요청한 문장은 본문에 구현 내용이 있어도 일반 chat/review 라우팅으로 남는다. `/goal`, `-goal`, `--run`, 파일 입력, 또는 파일 저장 요청이 있을 때만 goal을 기록하거나 실행한다.
-- 각 iteration은 agent에게 실제 코드 확인, 개발, 수정, 자체 리뷰, 최종 semantic goal review, 버그 수정을 맡긴다. write, diff preview, shell, git confirmation은 goal 세션 안에서 bypass하지만, 암시적 model-backed review gate는 `review.model_review_consent`에 따라 여전히 사용자에게 물을 수 있다.
-- goal runtime은 각 목표를 acceptance contract, task graph, 독립 review verdict, progress ledger, command history, checkpoint 저장소가 설정된 경우 iteration별 checkpoint에 연결한다.
-- goal reviewer는 implementation reply, 가능한 경우 checkpoint diff, git status/diff context, 제한된 untracked 파일 excerpt 같은 실제 workspace 증거를 함께 받는다. review가 `NEEDS_REVISION`이면 repair prompt는 구조화된 reviewer issue와 같은 구현 context를 보존해서 worker가 모호한 요약이 아니라 실제 지적 사항을 기준으로 수정할 수 있게 한다.
-- 그 다음 Kernforge가 adaptive verification, `/session audit`, 최종 semantic review, 필요 시 `/session recover execute-safe`를 실행한 뒤 다음 iteration으로 넘어간다. full verification은 매 iteration이 아니라 정해진 cadence에서 실행된다.
-- goal verification scope는 `.kernforge`, `.vs`, `x64`, `Debug`, `Release`, log, obj/PDB 같은 runtime/build/generated artifact를 제외한다. 최신 verification 실패 signature가 새 patch-scope 수정 없이 반복되면 같은 명령을 다시 돌리지 않고 repeated-verification blocker를 기록한다.
-- verification summary는 terminal에 첫 compiler/linker/test error를 먼저 보여주고 전체 raw output은 artifact에 보존한다. Windows MSBuild 출력은 UTF-8 또는 한국어/ANSI code page로 decode한다.
-- `/goal run` 중 compact progress는 구현, review, verification, completion audit, semantic review, recovery마다 `goal_step`과 `goal_detail`을 출력한다. verification detail에는 adaptive/full 모드, 다음 full verification iteration, changed path 수가 들어간다.
-- goal recovery는 continuity와 completion-audit artifact를 갱신하되 중첩된 내부 명령 출력을 terminal에 반복하지 않고, 현재 recovery summary와 artifact ref만 읽기 쉽게 남긴다.
-- completion audit이 ready이고 최종 semantic review가 승인하거나, 목표가 cancel되거나, provider failure/token/time/iteration cap/반복 failure signature/no-progress loop 같은 회복 불가능 blocker가 기록될 때만 루프가 멈춘다.
-- 목표 상태와 이력은 `.kernforge/goals/latest.md`, `.kernforge/goals/latest.json` 및 goal별 사본으로 남는다.
-- interactive goal은 `--run`, `--until-complete`, `/goal run` 중 하나를 명시할 때만 실행된다. 비대화형 `-goal`과 `-goal-file`은 바로 실행한다. 예전 `start` 서브커맨드는 생성과 실행 역할을 명확히 나누기 위해 제거했다. `--time-budget 10m`, `--token-budget N`, `--until-complete`, `--rollback-on-regression`, `--no-rollback`으로 autonomous stop/recovery 정책을 조정할 수 있다.
-- `/goal status`, `/goal audit`, `/goal complete`, `/goal run`, `/goal cancel`로 active goal을 확인, 재감사, 명시적 완료, 재개, 중단할 수 있다.
+- `/goal <objective>`는 단일 명령이다. acceptance criteria 컴파일, plan/slice 설계 후 완료 또는 block까지 autonomous loop를 바로 실행한다.
+- 루프 중 progress snapshot(`goal_id`, iteration, slices, cost, audit/semantic)과 phase용 `goal_step`/`goal_detail`을 출력한다.
+- bare `/goal`은 incomplete goal 재개 또는 idle 시 스냅샷. Esc는 인터럽트(goal은 active 유지).
+- `/goal @GOAL.md`는 markdown 목표를 읽고 같은 design-then-run 흐름을 실행한다. `kernforge -goal-file GOAL.md`는 비대화형 단발 모드.
+- `kernforge -goal "..."`는 REPL 없이 동일 루프를 돌리며 `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-rollback-on-regression`을 지원한다.
+- "goal prompt 작성"은 draft 요청이며 `/goal`/`-goal`/파일/저장 지시가 있을 때만 실행 계약으로 승격된다.
+- 각 iteration: implement → review/repair → adaptive verify → completion audit → semantic review(slice DAG 있으면 slice 단위). full verification은 cadence 기준.
+- reviewer는 implementation reply, checkpoint diff, git context 등 실제 증거를 받는다. `NEEDS_REVISION`이면 구조화된 repair pass.
+- generated/runtime/build artifact는 goal patch/progress scope에서 제외. 동일 verification 실패가 patch-scope 수정 없이 반복되면 block.
+- 산출물: `.kernforge/goals/latest.md|json`, goal별 사본, SlicePlan 시 `latest.slices.md`.
+- 옵션: `--max-iterations`, `--time-budget`, `--token-budget`, `--criteria`, `--research`, `--worktree`, `--require-review`, `--rollback-on-regression`.
+- 레거시 서브커맨드(`run`, `status`, `audit`, `complete`, `cancel`, `--no-run`)는 제거됐다.
 
 ### 소스 레벨 Function Fuzzing
 

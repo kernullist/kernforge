@@ -732,6 +732,8 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 						} else {
 							rt.printPersistentBlockWhileThinking(rt.ui.successLine("Slice complete; continuing remaining slices"))
 						}
+						// Non-terminal: emit snapshot here (finishGoalIteration only
+						// dashboards terminal statuses).
 						rt.printGoalProgressSnapshot(goal, "slice complete")
 						rt.session.SetPlanNodeLifecycle("plan-06", "in_progress", "Active slice approved; remaining slices still open.")
 					} else {
@@ -752,7 +754,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 						}
 						appendGoalIterationEvent(&goal, iteration, goalEventComplete, goalCostSummary(goal))
 						rt.session.SetPlanNodeLifecycle("plan-06", "completed", "Completion audit and semantic goal review are ready.")
-						rt.printGoalProgressSnapshot(goal, "complete")
+						// Terminal snapshot is printed once in finishGoalIteration.
 						if semanticReview.IndependentReviewSkipped {
 							rt.printPersistentBlockWhileThinking(rt.ui.warnLine(localizedText(rt.cfg,
 								"goal completed WITHOUT an independent semantic review (no cross-review route or consent); completion is process-gated on the deterministic audit and verification only. Configure /model cross-review or pass --require-review for stronger assurance.",
@@ -770,7 +772,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 					goal.Status = goalStatusBlocked
 					goal.LastError = blocker
 					appendGoalIterationEvent(&goal, iteration, goalEventSemanticReject, blocker)
-					rt.printGoalProgressSnapshot(goal, "semantic blocked")
+					// Terminal snapshot is printed once in finishGoalIteration.
 					rt.session.SetPlanNodeLifecycle("plan-06", "blocked", blocker)
 					if goal.AutoRollback {
 						iteration.RollbackStatus = rt.rollbackGoalIterationCheckpoint(goal, iteration)

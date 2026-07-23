@@ -733,6 +733,32 @@ func TestRenderGoalMarkdownDoesNotSuggestRunForPausedUnrunGoal(t *testing.T) {
 	}
 }
 
+func TestRemovedGoalCommandActionFromFields(t *testing.T) {
+	// Legacy subcommands (alone or with selectors) must stay rejected.
+	for _, fields := range [][]string{
+		{"run"},
+		{"run", "latest"},
+		{"status"},
+		{"complete", "goal-20260724-000000-001"},
+		{"cancel", "active"},
+	} {
+		action, removed := removedGoalCommandActionFromFields(fields)
+		if !removed || action == "" {
+			t.Fatalf("expected removed subcommand for %#v, got action=%q removed=%v", fields, action, removed)
+		}
+	}
+	// Free-form objectives that start with a reserved word must not be rejected.
+	for _, fields := range [][]string{
+		{"run", "the", "race", "detector"},
+		{"status", "page", "for", "admin"},
+		{"complete", "the", "export", "pipeline"},
+	} {
+		if action, removed := removedGoalCommandActionFromFields(fields); removed {
+			t.Fatalf("objective-like fields %#v must not be treated as removed action %q", fields, action)
+		}
+	}
+}
+
 func TestGoalRemovedSubcommandsDoNotCreateGoals(t *testing.T) {
 	cases := []struct {
 		action string
@@ -768,20 +794,25 @@ func TestGoalRemovedSubcommandsDoNotCreateGoals(t *testing.T) {
 				},
 			}
 
-			err := rt.handleGoalCommand(tc.action + " finish sample objective")
-			if err == nil {
-				t.Fatalf("expected removed /goal %s subcommand to fail", tc.action)
-			}
-			for _, want := range tc.want {
-				if !strings.Contains(err.Error(), want) {
-					t.Fatalf("expected removed %s error to contain %q, got %q", tc.action, want, err.Error())
+			// Invoke as a bare legacy verb (and verb+selector). Free-form text
+			// like "run the flaky suite" is a valid objective and is covered by
+			// TestRemovedGoalCommandActionFromFields.
+			for _, args := range []string{tc.action, tc.action + " latest"} {
+				err := rt.handleGoalCommand(args)
+				if err == nil {
+					t.Fatalf("expected removed /goal %s (%q) to fail", tc.action, args)
 				}
-			}
-			if !strings.Contains(err.Error(), "quote it") && !strings.Contains(err.Error(), "quote the objective") {
-				t.Fatalf("expected removed %s error to explain quoted objective fallback, got %q", tc.action, err.Error())
-			}
-			if _, ok := session.ActiveGoal(); ok {
-				t.Fatalf("removed /goal %s must not create a goal", tc.action)
+				for _, want := range tc.want {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("expected removed %s error to contain %q, got %q", tc.action, want, err.Error())
+					}
+				}
+				if !strings.Contains(err.Error(), "quote it") && !strings.Contains(err.Error(), "quote the objective") {
+					t.Fatalf("expected removed %s error to explain quoted objective fallback, got %q", tc.action, err.Error())
+				}
+				if _, ok := session.ActiveGoal(); ok {
+					t.Fatalf("removed /goal %s must not create a goal", tc.action)
+				}
 			}
 		})
 	}

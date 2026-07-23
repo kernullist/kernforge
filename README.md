@@ -210,25 +210,18 @@ Its current differentiators are:
 
 ### Autonomous Goals
 
-- `/goal <objective>` records a persistent goal, asks the active model to draft an objective-specific execution plan, shows the editable plan preview plus `/goal run latest`, and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json` without starting the autonomous loop
-- Edit `## Execution Plan` in `.kernforge/goals/latest.md` before `/goal run latest` when you want to adjust the model-drafted plan
-- `/goal --run <objective>` creates the goal and immediately starts the autonomous loop; `/goal run latest` starts or resumes a goal that was only recorded
-- `/goal @GOAL.md` records an objective from a markdown file; `kernforge -goal-file GOAL.md` loads and runs it in one-shot CLI mode
-- `kernforge -goal "..."` runs the same loop without entering the REPL, with matching `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, and `-goal-rollback-on-regression` controls
-- Asking the assistant to write a goal prompt is a drafting request, not an active goal. Save the prompt as markdown or pass it to `/goal` when you are ready to record or run it.
-- Draft-only goal prompt requests such as "write a goal prompt" stay in normal chat/review routing even if the draft mentions implementation; only `/goal`, `-goal`, `--run`, file input, or an explicit save-to-file request records or runs a goal.
-- Each iteration asks the agent to inspect, develop, modify, review its own changes, run final semantic goal review, and fix bugs without write, diff preview, shell, or git confirmation prompts. Implicit model-backed review gates can still ask according to `review.model_review_consent`.
-- The runtime now binds each goal to an acceptance contract, task graph, independent review verdict, progress ledger, command history, and per-iteration checkpoint when checkpoint storage is configured
-- Goal reviewers receive concrete workspace evidence, including implementation replies, checkpoint diffs when available, git status/diff context, and bounded untracked-file excerpts. If review says `NEEDS_REVISION`, the repair prompt preserves structured reviewer issues and the same implementation context so the worker can act on the actual findings instead of a vague summary.
-- Kernforge then runs adaptive verification, `/session audit`, final semantic review, and if needed `/session recover execute-safe` before the next iteration. Full verification runs on the scheduled full cadence rather than every iteration.
-- Goal verification scope ignores generated/runtime/build artifacts such as `.kernforge`, `.vs`, `x64`, `Debug`, `Release`, logs, and object/PDB binaries. If the latest failing verification signature repeats with no new patch-scope edit, Kernforge records a repeated-verification blocker instead of rerunning the same command.
-- Verification summaries surface the first actionable compiler/linker/test error in the terminal while keeping the full command output in artifacts; Windows MSBuild output is decoded through UTF-8 or the local Korean/ANSI code page when needed.
-- During `/goal run`, compact progress lines print `goal_step` and `goal_detail` for implementation, review, verification, completion audit, semantic review, and recovery. Verification details identify adaptive versus full mode, the next full-verification iteration, and the changed-path count.
-- Goal recovery refreshes continuity and completion-audit artifacts while suppressing nested duplicate terminal output, so the visible stream stays focused on the current recovery summary and artifact refs.
-- The loop stops only when the completion audit is ready and final semantic review approves, the goal is canceled, or an unrecoverable blocker such as provider failure, explicit token/time/iteration cap, repeated failure signature, or no-progress loop is recorded
-- Goal state and history are written under `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`, with per-goal copies for later audit
-- Interactive goals run only after `--run`, `--until-complete`, or `/goal run`; one-shot `-goal` and `-goal-file` run immediately. The old `start` subcommand was removed so create and run roles stay distinct. Use `--max-iterations N`, `--time-budget 10m`, `--token-budget N`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
-- `/goal status`, `/goal audit`, `/goal complete`, `/goal run`, and `/goal cancel` inspect, re-audit, explicitly complete, resume, or stop the active goal
+- `/goal <objective>` is a single command: compile acceptance criteria, draft an execution/slice plan, then run the autonomous loop until complete or blocked
+- Progress snapshots print during the loop (`goal_id`, iteration, slices, cost, audit/semantic). Compact `goal_step` / `goal_detail` lines still mark each phase
+- Bare `/goal` resumes an incomplete goal or shows a snapshot when idle; Esc interrupts (goal stays active for resume)
+- `/goal @GOAL.md` loads a markdown objective and runs the same design-then-run flow; `kernforge -goal-file GOAL.md` is the one-shot CLI form
+- `kernforge -goal "..."` runs without the REPL, with `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, and `-goal-rollback-on-regression`
+- Asking for a "goal prompt" draft is normal chat unless you explicitly use `/goal`, `-goal`, a goal file, or save-to-file
+- Each iteration: implement → review/repair → adaptive verify → completion audit → semantic review (slice-scoped when a DAG exists). Full verification follows the scheduled cadence
+- Reviewers receive workspace evidence (implementation replies, checkpoint diffs, git context). `NEEDS_REVISION` triggers a structured repair pass
+- Verification ignores generated/runtime/build artifacts; repeated identical failures without patch-scope edits block instead of looping forever
+- Artifacts: `.kernforge/goals/latest.md|json`, per-goal copies, and `latest.slices.md` when a SlicePlan exists
+- Optional flags: `--max-iterations`, `--time-budget`, `--token-budget`, `--criteria`, `--research`, `--worktree`, `--require-review`, `--rollback-on-regression`
+- Legacy subcommands (`run`, `status`, `audit`, `complete`, `cancel`, `--no-run`) were removed
 
 ### Source-Level Function Fuzzing
 

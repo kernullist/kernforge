@@ -233,8 +233,10 @@ func (rt *runtimeState) handleGoalCommand(args string) error {
 		}
 		return rt.printGoalProgressSnapshotLatest("status")
 	}
-	action := strings.ToLower(strings.TrimSpace(fields[0]))
-	if isRemovedGoalCommandAction(action) {
+	// Only treat legacy verbs as removed when used alone or with a selector
+	// (e.g. "run latest"). Free-form text like "run the race detector" is an
+	// objective and must reach handleGoalStart intact.
+	if action, removed := removedGoalCommandActionFromFields(fields); removed {
 		return removedGoalCommandActionError(action)
 	}
 	// Public surface is a single command: design then run until complete.
@@ -263,6 +265,37 @@ func isRemovedGoalCommandAction(action string) bool {
 	default:
 		return false
 	}
+}
+
+// removedGoalCommandActionFromFields returns a legacy verb only when the user
+// invoked it as a subcommand (alone or with a goal selector), not when it is
+// the first word of an objective sentence.
+func removedGoalCommandActionFromFields(fields []string) (string, bool) {
+	if len(fields) == 0 {
+		return "", false
+	}
+	action := strings.ToLower(strings.TrimSpace(fields[0]))
+	if !isRemovedGoalCommandAction(action) {
+		return "", false
+	}
+	if len(fields) == 1 {
+		return action, true
+	}
+	second := strings.TrimSpace(fields[1])
+	if second == "" {
+		return action, true
+	}
+	lower := strings.ToLower(second)
+	if lower == "latest" || lower == "active" || lower == "list" {
+		return action, true
+	}
+	// Per-goal selectors from the old CLI (goal-YYYYMMDD-...).
+	if strings.HasPrefix(lower, "goal-") {
+		return action, true
+	}
+	// Anything else is free-form objective text that happens to start with a
+	// reserved word (e.g. "run the flaky test suite").
+	return "", false
 }
 
 func removedGoalCommandActionError(action string) error {
