@@ -2903,15 +2903,14 @@ func TestHelpDetailClarifiesGoalRecordAndRunBoundary(t *testing.T) {
 	}
 	for _, needle := range []string{
 		"/goal <objective>",
-		"ask the active model to draft an editable execution plan",
-		"Review or edit ## Execution Plan in latest.md first",
-		"no autonomous loop starts until you pass --run, pass --until-complete, or use /goal run",
+		"Single command",
+		"autonomous loop until complete",
+		"Progress snapshots",
+		"Bare /goal resumes",
 		".kernforge/goals/latest.md",
-		"/goal run latest",
-		"/goal --run <objective>",
-		"Create the goal and immediately start the autonomous loop",
-		"adaptive verification with scheduled full cadence",
-		"repeated failing verification without new patch-scope edits",
+		"--max-iterations",
+		"--research",
+		"Esc interrupts",
 	} {
 		if !strings.Contains(detail, needle) {
 			t.Fatalf("expected goal help detail to contain %q", needle)

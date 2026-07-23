@@ -223,49 +223,22 @@ func (rt *runtimeState) handleGoalCommand(args string) error {
 	}
 	fields := splitGoalFields(args)
 	if len(fields) == 0 {
-		return rt.printGoalStatus("")
+		// Bare /goal: resume an incomplete goal, otherwise show a snapshot.
+		if goal, ok := rt.session.ActiveGoal(); ok && !goalStatusTerminal(goal.Status) {
+			if rt.writer != nil {
+				fmt.Fprintln(rt.writer, rt.ui.infoLine("Resuming goal: "+goal.ID))
+				rt.printGoalProgressSnapshot(goal, "resume")
+			}
+			return rt.runGoalBySelector(goal.ID, 0)
+		}
+		return rt.printGoalProgressSnapshotLatest("status")
 	}
 	action := strings.ToLower(strings.TrimSpace(fields[0]))
 	if isRemovedGoalCommandAction(action) {
 		return removedGoalCommandActionError(action)
 	}
-	if !isGoalCommandAction(action) {
-		return rt.handleGoalStart(fields)
-	}
-	switch action {
-	case "run":
-		selector := ""
-		if len(fields) > 1 {
-			selector = fields[1]
-		}
-		return rt.runGoalBySelector(selector, 0)
-	case "status":
-		selector := ""
-		if len(fields) > 1 {
-			selector = fields[1]
-		}
-		return rt.printGoalStatus(selector)
-	case "audit":
-		selector := ""
-		if len(fields) > 1 {
-			selector = fields[1]
-		}
-		return rt.auditGoalBySelector(selector)
-	case "complete":
-		selector := ""
-		if len(fields) > 1 {
-			selector = fields[1]
-		}
-		return rt.completeGoalBySelector(selector)
-	case "cancel":
-		selector := ""
-		if len(fields) > 1 {
-			selector = fields[1]
-		}
-		return rt.cancelGoalBySelector(selector)
-	default:
-		return fmt.Errorf("unsupported /goal action: %s", action)
-	}
+	// Public surface is a single command: design then run until complete.
+	return rt.handleGoalStart(fields)
 }
 
 func threadGoalRequiresPersistedSessionError() error {
@@ -282,18 +255,10 @@ func (rt *runtimeState) requirePersistedGoalState() error {
 	return nil
 }
 
-func isGoalCommandAction(action string) bool {
-	switch strings.TrimSpace(strings.ToLower(action)) {
-	case "run", "status", "audit", "complete", "cancel":
-		return true
-	default:
-		return false
-	}
-}
-
 func isRemovedGoalCommandAction(action string) bool {
 	switch strings.TrimSpace(strings.ToLower(action)) {
-	case "start", "create", "new", "resume", "continue", "show", "list", "done", "stop":
+	case "start", "create", "new", "resume", "continue", "show", "list", "done", "stop",
+		"run", "status", "audit", "complete", "cancel":
 		return true
 	default:
 		return false
@@ -302,20 +267,20 @@ func isRemovedGoalCommandAction(action string) bool {
 
 func removedGoalCommandActionError(action string) error {
 	action = strings.TrimSpace(strings.ToLower(action))
-	objectiveHint := fmt.Sprintf(" If %q is objective text, quote the objective: /goal %q", action, action+" ...")
+	objectiveHint := fmt.Sprintf(" If %q is objective text, quote it: /goal %q", action, action+" ...")
 	switch action {
-	case "start", "create", "new":
-		return fmt.Errorf("/goal %s was removed to keep goal commands unambiguous; use /goal <objective> to record, /goal --run <objective> to create and run, or /goal @GOAL.md to load a file.%s", action, objectiveHint)
+	case "start", "create", "new", "run":
+		return fmt.Errorf("/goal %s was removed; use /goal <objective> (designs a plan then runs until complete), /goal @GOAL.md, or bare /goal to resume.%s", action, objectiveHint)
 	case "resume", "continue":
-		return fmt.Errorf("/goal %s was removed to keep goal commands unambiguous; use /goal run [id|latest] to execute or resume a recorded goal.%s", action, objectiveHint)
-	case "show", "list":
-		return fmt.Errorf("/goal %s was removed to keep goal commands unambiguous; use /goal status [id|latest] to inspect recorded goals.%s", action, objectiveHint)
-	case "done":
-		return fmt.Errorf("/goal done was removed to keep goal commands unambiguous; use /goal complete [id|latest].%s", objectiveHint)
-	case "stop":
-		return fmt.Errorf("/goal stop was removed to keep goal commands unambiguous; use /goal cancel [id|latest].%s", objectiveHint)
+		return fmt.Errorf("/goal %s was removed; use bare /goal to resume the active incomplete goal.%s", action, objectiveHint)
+	case "show", "list", "status":
+		return fmt.Errorf("/goal %s was removed; progress prints during the loop, or use bare /goal when idle for a snapshot.%s", action, objectiveHint)
+	case "done", "complete", "audit":
+		return fmt.Errorf("/goal %s was removed; completion audit and semantic review run inside the autonomous loop.%s", action, objectiveHint)
+	case "stop", "cancel":
+		return fmt.Errorf("/goal %s was removed; press Esc to interrupt (goal stays active), or start a new /goal <objective> and confirm replacement.%s", action, objectiveHint)
 	default:
-		return fmt.Errorf("unsupported /goal action: %s", action)
+		return fmt.Errorf("unsupported /goal action: %s; use /goal <objective>", action)
 	}
 }
 
@@ -324,8 +289,27 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 	if err != nil {
 		return err
 	}
+	// Public /goal always designs then runs. Tests may force record-only via
+	// recordGoalWithoutLoop.
+	options.Run = true
+	return rt.startGoalWithOptions(options)
+}
+
+// recordGoalWithoutLoop creates durable goal artifacts (spec/plan/slices) without
+// starting the autonomous loop. Not user-facing; tests and internal tooling only.
+func (rt *runtimeState) recordGoalWithoutLoop(args string) error {
+	fields := splitGoalFields(args)
+	options, err := rt.parseGoalStartOptions(fields)
+	if err != nil {
+		return err
+	}
+	options.Run = false
+	return rt.startGoalWithOptions(options)
+}
+
+func (rt *runtimeState) startGoalWithOptions(options goalStartOptions) error {
 	if strings.TrimSpace(options.Objective) == "" {
-		return fmt.Errorf("usage: /goal [--file GOAL.md|@GOAL.md] [--run|--no-run] [--max-iterations N] <objective>")
+		return fmt.Errorf("usage: /goal [--file GOAL.md|@GOAL.md] [--max-iterations N] [--criteria ...] <objective>")
 	}
 	if existing, ok := rt.session.ActiveGoal(); ok && shouldConfirmBeforeReplacingGoal(existing) {
 		if err := rt.confirmGoalReplacement(existing); err != nil {
@@ -359,11 +343,10 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 		}
 	}
 	rt.primeGoalRuntimeState(&goal, "created")
-	if !options.Run {
-		rt.printGoalPlanningProgress()
-		err = rt.generateAndAttachGoalPlan(context.Background(), &goal)
-	}
-	if err != nil {
+	// Always draft Spec-backed plan/slices before the loop (or before returning
+	// in record-only mode).
+	rt.printGoalPlanningProgress()
+	if err := rt.generateAndAttachGoalPlan(context.Background(), &goal); err != nil {
 		if rt.writer != nil {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(err.Error()))
 		}
@@ -389,7 +372,7 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 			"status": goal.Status,
 		},
 	})
-	goal, err = rt.writeGoalArtifactsWithState(goal)
+	goal, err := rt.writeGoalArtifactsWithState(goal)
 	if err != nil {
 		return err
 	}
@@ -399,8 +382,12 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 		}
 	}
 	rt.printGoalCreatedSummary(goal, options.Run)
+	rt.printGoalProgressSnapshot(goal, "created")
 	if !options.Run {
 		return nil
+	}
+	if rt.writer != nil {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Starting autonomous loop (Esc interrupts; goal stays active for resume via bare /goal)."))
 	}
 	return rt.runGoalBySelector(goal.ID, options.MaxIterations)
 }
@@ -423,10 +410,6 @@ func (rt *runtimeState) printGoalCreatedSummary(goal GoalState, run bool) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("goal_markdown", refs[2]))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("goal_json", refs[3]))
 	}
-	if run {
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Starting autonomous loop now. Use /goal status to inspect progress."))
-		return
-	}
 	plan := displayGoalPlanItems(goal, goalPlanItemsForSession(rt.session, goal))
 	if len(plan) > 0 {
 		fmt.Fprintln(rt.writer, rt.ui.subsection("Plan Preview"))
@@ -438,8 +421,20 @@ func (rt *runtimeState) printGoalCreatedSummary(goal GoalState, run bool) {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV(fmt.Sprintf("plan_%02d", index+1), value))
 		}
 	}
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("next_command", "/goal run latest"))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Goal recorded without starting an autonomous loop. Edit ## Execution Plan in latest_markdown if needed, then start it with /goal run latest or create-and-run with /goal --run <objective>."))
+	if goal.SlicePlan != nil && len(goal.SlicePlan.Slices) > 0 {
+		fmt.Fprintln(rt.writer, rt.ui.subsection("Slice plan"))
+		for _, s := range goal.SlicePlan.Slices {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV(
+				firstNonBlankString(s.ID, "slice"),
+				fmt.Sprintf("[%s] %s", firstNonBlankString(s.Status, goalSliceStatusPending), firstNonBlankString(s.Name, s.ID)),
+			))
+		}
+	}
+	if run {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Design ready — continuing into the autonomous loop."))
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Goal recorded without starting the loop (internal/test path)."))
 }
 
 func (rt *runtimeState) printGoalPlanningProgress() {
@@ -504,8 +499,15 @@ func (rt *runtimeState) runGoalPlanningReply(ctx context.Context, prompt string)
 	if rt == nil {
 		return "", fmt.Errorf("no active runtime")
 	}
-	if rt.goalReply != nil {
-		return rt.goalReply(ctx, prompt)
+	// Optional dedicated planner double (tests that assert on plan generation).
+	if rt != nil && rt.goalPlanReply != nil {
+		return rt.goalPlanReply(ctx, prompt)
+	}
+	// Scripted loop tests set goalReply without an agent. Do not consume that
+	// double for planning — fall back to the deterministic plan/slices so the
+	// loop's implement/review/semantic sequence stays intact.
+	if rt.goalReply != nil && rt.agent == nil {
+		return "", fmt.Errorf("scripted goal agent present; using fallback plan")
 	}
 	if rt.agent == nil {
 		return "", fmt.Errorf("no active model planner")
@@ -619,7 +621,7 @@ func (rt *runtimeState) applyGoalPlanToSession(items []PlanItem, goal GoalState,
 
 func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions, error) {
 	options := goalStartOptions{
-		Run:           false,
+		Run:           true, // public default; recordGoalWithoutLoop forces false
 		MaxIterations: defaultGoalMaxIterations,
 	}
 	objectiveParts := []string{}
@@ -630,8 +632,9 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 		}
 		switch field {
 		case "--no-run":
-			options.Run = false
+			return options, fmt.Errorf("--no-run was removed; /goal always designs then runs until complete (Esc interrupts; bare /goal resumes)")
 		case "--run":
+			// Compatibility no-op: /goal already runs.
 			options.Run = true
 		case "--rollback-on-regression":
 			options.AutoRollback = true
@@ -660,6 +663,7 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 			}
 			options.UserCriteria = append(options.UserCriteria, splitGoalUserCriteria(content)...)
 		case "--until-complete":
+			// Compatibility no-op: same as default /goal loop.
 			options.Run = true
 			options.MaxIterations = 0
 		case "--file", "-f":
@@ -1218,7 +1222,7 @@ func buildGoalImplementationPromptForSlice(goal GoalState, iteration int, slice 
 	fmt.Fprintf(&b, "<objective>\n%s\n</objective>\n\n", escapeGoalObjectiveText(goal.Objective))
 	b.WriteString("Run this as a Codex-style goal loop without asking the user for intervention.\n")
 	b.WriteString("If this goal was loaded from a prompt file, the file contents are already the active objective to execute.\n")
-	b.WriteString("Do not satisfy an active /goal run by creating another goal-prompt document, TODO-only plan, or command suggestion such as /goal @file or /goal run latest unless the recorded objective explicitly asks only to draft a prompt.\n")
+	b.WriteString("Do not satisfy an active /goal by creating another goal-prompt document, TODO-only plan, or command suggestion such as /goal @file unless the recorded objective explicitly asks only to draft a prompt.\n")
 	b.WriteString("If the objective asks to implement behavior described by a goal prompt, implement that behavior directly.\n")
 	b.WriteString("Continuation behavior:\n")
 	b.WriteString("- The goal persists across turns and iterations; keep the full objective intact.\n")
@@ -1838,6 +1842,78 @@ func (rt *runtimeState) cancelGoalBySelector(selector string) error {
 	return nil
 }
 
+// printGoalProgressSnapshot prints a compact dashboard so the user can see
+// where the autonomous loop is without a separate status command.
+func (rt *runtimeState) printGoalProgressSnapshot(goal GoalState, headline string) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	goal.updateTimeUsedSeconds(time.Now())
+	title := "Goal progress"
+	if strings.TrimSpace(headline) != "" {
+		title = "Goal progress (" + strings.TrimSpace(headline) + ")"
+	}
+	lines := []string{rt.ui.section(title)}
+	lines = append(lines, rt.ui.statusKV("goal_id", goal.ID))
+	lines = append(lines, rt.ui.statusKV("status", goal.Status))
+	lines = append(lines, rt.ui.statusKV("iteration", fmt.Sprintf("%d / %s", goal.Iteration, goalMaxIterationsLabel(goal.MaxIterations))))
+	if summary := goalSlicePartialSummary(goal); summary != "" {
+		lines = append(lines, rt.ui.statusKV("slices", summary))
+	} else if goal.SlicePlan != nil {
+		for _, s := range goal.SlicePlan.Slices {
+			if s.Status == goalSliceStatusRunning || s.Status == goalSliceStatusReady {
+				lines = append(lines, rt.ui.statusKV("active_slice", firstNonBlankString(s.Name, s.ID)+" ["+s.Status+"]"))
+				break
+			}
+		}
+	}
+	if mode := goalResearchMode(goal); mode != "" && mode != goalResearchNone {
+		lines = append(lines, rt.ui.statusKV("research_mode", mode))
+	}
+	if cost := goalCostSummary(goal); cost != "" {
+		lines = append(lines, rt.ui.statusKV("cost", cost))
+	}
+	if goal.LastProgress != nil {
+		lines = append(lines, rt.ui.statusKV("progress_score", fmt.Sprintf("%d", goal.LastProgress.Score)))
+	}
+	if goal.LastAudit != nil {
+		lines = append(lines, rt.ui.statusKV("audit", fmt.Sprintf("%s ready=%t", valueOrUnset(goal.LastAudit.Status), goal.LastAudit.Ready)))
+	}
+	if goal.LastSemanticReview != nil {
+		lines = append(lines, rt.ui.statusKV("semantic", fmt.Sprintf("%s approved=%t", valueOrUnset(goal.LastSemanticReview.Verdict), goal.LastSemanticReview.Approved)))
+	}
+	if goal.LastError != "" {
+		lines = append(lines, rt.ui.statusKV("last_error", compactPromptSection(goal.LastError, 200)))
+	}
+	lines = append(lines, rt.ui.statusKV("objective", compactPromptSection(goal.Objective, 160)))
+	rt.printPersistentBlockWhileThinking(lines...)
+}
+
+func (rt *runtimeState) printGoalProgressSnapshotLatest(headline string) error {
+	if rt == nil || rt.session == nil {
+		return fmt.Errorf("no active session")
+	}
+	rt.session.normalizeGoals()
+	if len(rt.session.Goals) == 0 {
+		rt.printNoGoalsHint()
+		return nil
+	}
+	if len(rt.session.Goals) > 1 && strings.TrimSpace(headline) == "status" {
+		fmt.Fprintln(rt.writer, rt.ui.section("Goals"))
+		for _, goal := range rt.session.Goals {
+			fmt.Fprintf(rt.writer, "- %s [%s] iteration=%d objective=%s\n", goal.ID, goal.Status, goal.Iteration, compactPromptSection(goal.Objective, 100))
+		}
+	}
+	index, ok := rt.session.GoalIndex("latest")
+	if !ok {
+		rt.printNoGoalsHint()
+		return nil
+	}
+	rt.printGoalProgressSnapshot(rt.session.Goals[index], headline)
+	return nil
+}
+
+// printGoalStatus remains for internal/daemon callers; public UX uses snapshots.
 func (rt *runtimeState) printGoalStatus(selector string) error {
 	if rt == nil || rt.session == nil {
 		return fmt.Errorf("no active session")
@@ -1862,70 +1938,7 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 		}
 		return fmt.Errorf("goal not found: %s", valueOrDefault(selector, "latest"))
 	}
-	goal := rt.session.Goals[index]
-	goal.updateTimeUsedSeconds(time.Now())
-	fmt.Fprintln(rt.writer, rt.ui.section("Goal"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("id", goal.ID))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("status", goal.Status))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("iteration", fmt.Sprintf("%d", goal.Iteration)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("max_iterations", goalMaxIterationsLabel(goal.MaxIterations)))
-	if goal.TimeBudgetSeconds > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_budget", fmt.Sprintf("%ds", goal.TimeBudgetSeconds)))
-	}
-	if goal.TimeUsedSeconds > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_used_seconds", fmt.Sprintf("%d", goal.TimeUsedSeconds)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_used", formatGoalElapsedSeconds(goal.TimeUsedSeconds)))
-	}
-	if goal.TokenBudget > 0 || goal.TokenUsedEstimate > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("token_budget", goalTokenBudgetLabel(goal.TokenBudget)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("token_used_estimate", fmt.Sprintf("%d", goal.TokenUsedEstimate)))
-		if remaining, ok := goalTokenRemainingEstimate(goal); ok {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("token_remaining_estimate", fmt.Sprintf("%d", remaining)))
-		}
-	}
-	if goal.LastProgress != nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("progress_score", fmt.Sprintf("%d", goal.LastProgress.Score)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("no_progress", fmt.Sprintf("%d", goal.NoProgressCount)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("repeated_failure", fmt.Sprintf("%d", goal.RepeatedFailureCount)))
-	}
-	if goal.SourcePath != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("source", goal.SourcePath))
-	}
-	if goal.LastAudit != nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("audit", fmt.Sprintf("%s ready=%t", valueOrUnset(goal.LastAudit.Status), goal.LastAudit.Ready)))
-	}
-	if goal.LastSemanticReview != nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("semantic_review", fmt.Sprintf("%s approved=%t", valueOrUnset(goal.LastSemanticReview.Verdict), goal.LastSemanticReview.Approved)))
-	}
-	if summary := goalSlicePartialSummary(goal); summary != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("slices", summary))
-	}
-	if mode := goalResearchMode(goal); mode != "" && mode != goalResearchNone {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("research_mode", mode))
-	}
-	if strings.TrimSpace(goal.WorktreeRoot) != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree", goal.WorktreeRoot))
-		if strings.TrimSpace(goal.WorktreeBranch) != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_branch", goal.WorktreeBranch))
-		}
-	}
-	if cost := goalCostSummary(goal); cost != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("cost", cost))
-	}
-	if events := renderGoalEventsSection(goal.Events, 8); events != "" {
-		fmt.Fprintln(rt.writer, strings.TrimRight(events, "\n"))
-	}
-	if goal.LastError != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("last_error", goal.LastError))
-	}
-	if len(goal.CheckpointRefs) > 0 {
-		lastCheckpoint := goal.CheckpointRefs[len(goal.CheckpointRefs)-1]
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("last_checkpoint", lastCheckpoint.ID))
-	}
-	if len(goal.ArtifactRefs) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("artifacts", strings.Join(goal.ArtifactRefs, ", ")))
-	}
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("objective", compactPromptSection(goal.Objective, 260)))
+	rt.printGoalProgressSnapshot(rt.session.Goals[index], "status")
 	return nil
 }
 
@@ -1933,8 +1946,8 @@ func (rt *runtimeState) printNoGoalsHint() {
 	if rt == nil || rt.writer == nil {
 		return
 	}
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("No goals recorded. Record one with /goal <objective>, or load a file with /goal @GOAL.md."))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("To create and run immediately, use /goal --run <objective>."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("No goals recorded. Start one with /goal <objective> or /goal @GOAL.md (designs then runs until complete)."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Bare /goal resumes an incomplete goal or shows the latest snapshot. Esc interrupts a running loop."))
 }
 
 func goalMaxIterationsLabel(max int) string {
@@ -2287,10 +2300,10 @@ func renderGoalMarkdownWithPlan(goal GoalState, plan []PlanItem) string {
 		}
 	}
 	if goalShouldShowRunNextCommand(goal) {
-		fmt.Fprintf(&b, "\n## Plan Editing\n\nEdit the list under `## Execution Plan` before `/goal run latest` if the model plan needs adjustment. The run command reloads that section.\n")
+		fmt.Fprintf(&b, "\n## Plan Editing\n\nEdit `## Execution Plan` while the loop is interrupted if needed. Bare `/goal` resumes and reloads this section.\n")
 	}
 	if goalShouldShowRunNextCommand(goal) {
-		fmt.Fprintf(&b, "\n## Next Command\n\n`/goal run latest`\n")
+		fmt.Fprintf(&b, "\n## Next Command\n\n`/goal` (resume incomplete goal)\n")
 	}
 	if len(goal.CompletionCriteria) > 0 {
 		fmt.Fprintf(&b, "\n## Completion Criteria\n\n")

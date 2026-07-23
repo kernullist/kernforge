@@ -96,7 +96,7 @@ func TestGoalCreateWithResearchPersistsMode(t *testing.T) {
 			Root:     root,
 		},
 	}
-	if err := rt.handleGoalCommand("--no-run --research ship research note on latest TPM"); err != nil {
+	if err := rt.recordGoalWithoutLoop("--research ship research note on latest TPM"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	goal, ok := session.ActiveGoal()

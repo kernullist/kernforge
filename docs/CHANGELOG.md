@@ -2,6 +2,16 @@
 
 의미 있는 변경 이력. 날짜는 절대 형식(YYYY-MM-DD), 최신 항목이 위에 온다.
 
+## 2026-07-24
+
+### Goal 단일 명령 UX
+
+- 공개 서브커맨드 제거: `run|status|audit|complete|cancel` 및 `--no-run`.
+- `/goal <objective>` = Spec/Slice 설계 후 즉시 자율 루프 (끝까지 또는 block).
+- bare `/goal` = incomplete 재개, 없으면 최신 스냅샷.
+- 루프 중 `printGoalProgressSnapshot` (iteration/slice/verify/semantic/complete/block).
+- Esc 인터럽트 유지; 교체는 새 `/goal` + 확인.
+
 ## 2026-07-23
 
 ### Goal OS PR5: goal worktree isolation (opt-in)

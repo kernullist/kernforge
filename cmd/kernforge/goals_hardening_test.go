@@ -224,7 +224,7 @@ func TestGoalWallClockCeilingBlocksLoop(t *testing.T) {
 	}
 	useFastGoalRuntime(t, rt)
 
-	if err := rt.handleGoalCommand("--run finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	current, ok := session.ActiveGoal()
@@ -304,7 +304,7 @@ func TestGoalSemanticRejectBoundBlocksLoop(t *testing.T) {
 	}
 	useFastGoalRuntime(t, rt)
 
-	if err := rt.handleGoalCommand("--run finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	goal, ok := session.ActiveGoal()

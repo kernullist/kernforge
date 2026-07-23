@@ -3843,7 +3843,7 @@ Conversation And Sessions:
 /retry-verify          Retry focused verification after a harness block, then finish with recorded evidence
 /continue              Resume the primary next step after a pre-final coding harness block
 /review pr [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Review a PR target, optionally with explicit GitHub writes
-/goal [run|status|audit|complete|cancel] Record a persistent goal, then explicitly run the autonomous loop when ready
+/goal                  Design a plan then run until the goal is complete (progress prints live)
 /session tasks         Show the current task list
 
 Provider And Models:
@@ -4089,47 +4089,24 @@ func HelpDetail(topic string) (string, bool) {
 /goal <objective>
 /goal @GOAL.md
 /goal --file GOAL.md
-- Record a Codex-style goal from inline text or a markdown file and ask the active model to draft an editable execution plan.
-- Kernforge records the acceptance contract, task graph, completion criteria, progress ledger, and model-drafted plan so the goal can guide later turns.
-- This is the visible product flow. If you only want a goal prompt drafted, ask for prompt text or save it as markdown first; no autonomous loop starts until you pass --run, pass --until-complete, or use /goal run.
-- Kernforge writes .kernforge/goals/latest.md and .kernforge/goals/latest.json plus per-goal copies, prints those paths after creation, and shows /goal run latest as the next command.
-- Review or edit ## Execution Plan in latest.md first, then start the recorded goal with /goal run latest when you explicitly want automation.
-
-/goal --run <objective>
-- Create the goal and immediately start the autonomous loop.
-
-/goal --until-complete <objective>
-- Create the goal and keep running Kernforge's autonomous goal loop until completion or a concrete blocker.
-- Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without write, diff preview, shell, or git confirmation prompts.
-- Implicit model-backed review gates still follow review.model_review_consent and may ask Run model review now? [y=run once, a=session auto-review, n=skip, Esc=cancel]. On a single-model route (no independent reviewer) they are skipped automatically without asking.
-- Each loop iteration runs the agent, adaptive verification with scheduled full cadence, /session audit, final semantic review, and when needed /session recover execute-safe.
-- Generated/runtime/build artifacts are filtered out of goal patch scope; repeated failing verification without new patch-scope edits records a blocker instead of rerunning the same command.
-- Verification summaries show the first actionable compiler/linker/test error in the terminal and keep full raw output in artifacts.
+- Single command: compile acceptance criteria, draft a slice/execution plan, then run the autonomous loop until complete or blocked.
+- Progress snapshots print during the loop (iteration, slice, verify/audit/semantic, cost). Esc interrupts; the goal stays active.
+- Bare /goal resumes an incomplete goal, or shows a snapshot of the latest goal when idle.
+- Artifacts: .kernforge/goals/latest.md|json and per-goal copies (plus latest.slices.md when a SlicePlan exists).
 
 /goal --max-iterations N <objective>
 /goal --time-budget 10m <objective>
 /goal --token-budget N <objective>
+/goal --criteria "..." <objective>
+/goal --research [bounded|aggressive] <objective>
+/goal --worktree <objective>
+/goal --require-review <objective>
 /goal --rollback-on-regression <objective>
-- These options are persisted with the goal. Add --run, or use /goal run later, when you explicitly want the autonomous loop to execute.
-- /goal --until-complete is the explicit convenience form that creates the goal and runs until completion. The loop also stops on repeated no-progress or repeated failure signatures.
+- Options are persisted with the goal. The loop stops on completion, blockers, no-progress, repeated failure, absolute iteration ceiling, or wall-clock/token budgets.
 
-/goal --no-run <objective>
-- Persist the goal and write .kernforge/goals/latest.md/json without starting the autonomous loop.
-
-/goal run [id|latest]
-- Resume a pending or blocked goal and continue until completion audit and final semantic review are ready or an unrecoverable blocker is recorded.
-
-/goal status [id|latest]
-- Show the active goal, status, iteration count, latest audit state, and artifact paths.
-
-/goal audit [id|latest]
-- Re-run /session audit for the goal objective and attach the result to the goal state without marking it complete.
-
-/goal complete [id|latest]
-- Re-run completion audit, request the final semantic goal reviewer only with model-review consent, and mark the goal complete only when both gates approve.
-
-/goal cancel [id|latest]
-- Mark a goal canceled without deleting its artifact history.
+Loop phases each iteration: implement → review/repair → verify → completion audit → semantic review (slice-scoped when a DAG exists).
+- Implicit model-backed review gates still follow review.model_review_consent.
+- If you only want a goal prompt drafted (no automation), ask in chat or write markdown — do not use /goal for draft-only work.
 `), true
 	case "events", "event-stream":
 		return strings.TrimSpace(`

@@ -7,7 +7,7 @@ import (
 
 func TestParseGoalStartOptionsWorktreeFlag(t *testing.T) {
 	rt := &runtimeState{workspace: Workspace{Root: t.TempDir()}}
-	opts, err := rt.parseGoalStartOptions([]string{"--worktree", "--no-run", "ship feature"})
+	opts, err := rt.parseGoalStartOptions([]string{"--worktree", "ship feature"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

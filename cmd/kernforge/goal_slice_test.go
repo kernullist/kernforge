@@ -215,7 +215,7 @@ func TestGenerateAndAttachGoalPlanParsesSlices(t *testing.T) {
 			BaseRoot: root,
 			Root:     root,
 		},
-		goalReply: func(ctx context.Context, prompt string) (string, error) {
+		goalPlanReply: func(ctx context.Context, prompt string) (string, error) {
 			_ = ctx
 			_ = prompt
 			return `
@@ -253,7 +253,7 @@ Open questions
 `, nil
 		},
 	}
-	if err := rt.handleGoalCommand("--no-run ship session export"); err != nil {
+	if err := rt.recordGoalWithoutLoop("ship session export"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	goal, ok := session.ActiveGoal()

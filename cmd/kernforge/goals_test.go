@@ -175,7 +175,7 @@ func TestBuildGoalImplementationPromptExecutesLoadedObjective(t *testing.T) {
 	}, 1)
 	for _, want := range []string{
 		"If this goal was loaded from a prompt file, the file contents are already the active objective to execute.",
-		"Do not satisfy an active /goal run by creating another goal-prompt document",
+		"Do not satisfy an active /goal by creating another goal-prompt document",
 		"implement that behavior directly",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -372,7 +372,7 @@ func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
 	}
 	useFastGoalRuntime(t, rt)
 
-	if err := rt.handleGoalCommand("--run --max-iterations 1 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--max-iterations 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	if session.LastVerification == nil {
@@ -430,7 +430,7 @@ func TestGoalRecordFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("--no-run @GOAL.md"); err != nil {
+	if err := rt.recordGoalWithoutLoop("@GOAL.md"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -489,9 +489,7 @@ func TestGoalRecordFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 		"Plan Preview",
 		"plan_01",
 		"Inspect the objective",
-		"next_command",
-		"Goal recorded without starting an autonomous loop",
-		"/goal run latest",
+		"Goal recorded without starting the loop",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected goal creation output to contain %q, got %q", want, out)
@@ -504,7 +502,7 @@ func TestGoalRecordFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 		"## Execution Plan",
 		"- [pending] Inspect the objective",
 		"## Next Command",
-		"`/goal run latest`",
+		"`/goal`",
 	} {
 		if !strings.Contains(string(md), want) {
 			t.Fatalf("expected goal markdown to contain %q, got:\n%s", want, string(md))
@@ -525,7 +523,7 @@ func TestGoalRecordDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 			BaseRoot: root,
 			Root:     root,
 		},
-		goalReply: func(ctx context.Context, prompt string) (string, error) {
+		goalPlanReply: func(ctx context.Context, prompt string) (string, error) {
 			if !strings.Contains(prompt, "Generate a detailed execution plan") {
 				t.Fatalf("expected planning prompt during record-only goal creation, got %s", prompt)
 			}
@@ -541,8 +539,8 @@ func TestGoalRecordDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("finish sample objective"); err != nil {
-		t.Fatalf("handleGoalCommand: %v", err)
+	if err := rt.recordGoalWithoutLoop("finish sample objective"); err != nil {
+		t.Fatalf("recordGoalWithoutLoop: %v", err)
 	}
 
 	goal, ok := session.ActiveGoal()
@@ -557,13 +555,10 @@ func TestGoalRecordDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Drafting a plan to achieve this goal",
-		"Goal recorded without starting an autonomous loop",
+		"Goal recorded without starting the loop",
 		"Plan Preview",
 		"plan_01",
 		"Inspect the sample objective",
-		"next_command",
-		"/goal run latest",
-		"/goal --run <objective>",
 		"latest_markdown",
 	} {
 		if !strings.Contains(output.String(), want) {
@@ -613,7 +608,7 @@ func TestRenderGoalMarkdownDirectIncludesPlanForUnrunGoal(t *testing.T) {
 		"## Execution Plan",
 		"- [pending] Inspect the objective",
 		"## Next Command",
-		"`/goal run latest`",
+		"`/goal`",
 	} {
 		if !strings.Contains(md, want) {
 			t.Fatalf("expected direct goal markdown to contain %q, got:\n%s", want, md)
@@ -636,7 +631,7 @@ func TestGoalRunReloadsEditedExecutionPlanFromMarkdown(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	goal, ok := session.ActiveGoal()
@@ -655,7 +650,7 @@ func TestGoalRunReloadsEditedExecutionPlanFromMarkdown(t *testing.T) {
 		"",
 		"## Next Command",
 		"",
-		"`/goal run latest`",
+		"`/goal`",
 		"",
 	}, "\n")
 	if err := os.WriteFile(latestPath, []byte(editedMarkdown), 0o644); err != nil {
@@ -730,8 +725,8 @@ func TestRenderGoalMarkdownDoesNotSuggestRunForPausedUnrunGoal(t *testing.T) {
 		UpdatedAt: now,
 	}
 	md := renderGoalMarkdown(goal)
-	if strings.Contains(md, "## Next Command") || strings.Contains(md, "`/goal run latest`") {
-		t.Fatalf("paused unrun goal should not suggest autonomous run:\n%s", md)
+	if strings.Contains(md, "## Next Command") || strings.Contains(md, "`/goal` (resume") {
+		t.Fatalf("paused unrun goal should not suggest resume/run:\n%s", md)
 	}
 	if !strings.Contains(md, "## Execution Plan") {
 		t.Fatalf("paused unrun goal should still expose the recorded plan for inspection:\n%s", md)
@@ -743,15 +738,20 @@ func TestGoalRemovedSubcommandsDoNotCreateGoals(t *testing.T) {
 		action string
 		want   []string
 	}{
-		{action: "start", want: []string{"/goal start was removed", "/goal <objective>", "/goal --run <objective>"}},
-		{action: "create", want: []string{"/goal create was removed", "/goal <objective>", "/goal --run <objective>"}},
-		{action: "new", want: []string{"/goal new was removed", "/goal <objective>", "/goal --run <objective>"}},
-		{action: "resume", want: []string{"/goal resume was removed", "/goal run [id|latest]"}},
-		{action: "continue", want: []string{"/goal continue was removed", "/goal run [id|latest]"}},
-		{action: "show", want: []string{"/goal show was removed", "/goal status [id|latest]"}},
-		{action: "list", want: []string{"/goal list was removed", "/goal status [id|latest]"}},
-		{action: "done", want: []string{"/goal done was removed", "/goal complete [id|latest]"}},
-		{action: "stop", want: []string{"/goal stop was removed", "/goal cancel [id|latest]"}},
+		{action: "start", want: []string{"/goal start was removed", "/goal <objective>"}},
+		{action: "create", want: []string{"/goal create was removed", "/goal <objective>"}},
+		{action: "new", want: []string{"/goal new was removed", "/goal <objective>"}},
+		{action: "run", want: []string{"/goal run was removed", "/goal <objective>"}},
+		{action: "resume", want: []string{"/goal resume was removed", "bare /goal"}},
+		{action: "continue", want: []string{"/goal continue was removed", "bare /goal"}},
+		{action: "show", want: []string{"/goal show was removed"}},
+		{action: "list", want: []string{"/goal list was removed"}},
+		{action: "status", want: []string{"/goal status was removed"}},
+		{action: "done", want: []string{"/goal done was removed"}},
+		{action: "complete", want: []string{"/goal complete was removed"}},
+		{action: "audit", want: []string{"/goal audit was removed"}},
+		{action: "stop", want: []string{"/goal stop was removed", "Esc"}},
+		{action: "cancel", want: []string{"/goal cancel was removed", "Esc"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.action, func(t *testing.T) {
@@ -777,7 +777,7 @@ func TestGoalRemovedSubcommandsDoNotCreateGoals(t *testing.T) {
 					t.Fatalf("expected removed %s error to contain %q, got %q", tc.action, want, err.Error())
 				}
 			}
-			if !strings.Contains(err.Error(), "quote the objective") {
+			if !strings.Contains(err.Error(), "quote it") && !strings.Contains(err.Error(), "quote the objective") {
 				t.Fatalf("expected removed %s error to explain quoted objective fallback, got %q", tc.action, err.Error())
 			}
 			if _, ok := session.ActiveGoal(); ok {
@@ -808,23 +808,23 @@ func TestGoalRunFlagPrintsExplicitAutomationHint(t *testing.T) {
 	}
 	useFastGoalRuntime(t, rt)
 
-	if err := rt.handleGoalCommand("--run --max-iterations 1 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--max-iterations 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	out := output.String()
 	for _, want := range []string{
 		"Created goal",
 		"latest_markdown",
-		"Starting autonomous loop now",
-		"mode",
-		"autonomous",
+		"Starting autonomous loop",
+		"Design ready",
+		"Goal progress",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected run output to contain %q, got %q", want, out)
 		}
 	}
-	if strings.Contains(out, "Goal recorded without starting an autonomous loop") {
-		t.Fatalf("unexpected no-run hint, got %q", output.String())
+	if strings.Contains(out, "Goal recorded without starting the loop") {
+		t.Fatalf("unexpected record-only hint, got %q", output.String())
 	}
 }
 
@@ -906,7 +906,7 @@ func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
 	}
 	useFastGoalRuntime(t, rt)
 
-	if err := rt.handleGoalCommand("--run --max-iterations 2 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--max-iterations 2 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -1008,7 +1008,7 @@ func TestGoalDocumentArtifactGateSkipsReviewModels(t *testing.T) {
 	}
 	useFastGoalVerificationAndAudit(rt)
 
-	if err := rt.handleGoalCommand("--run --max-iterations 1 " + request); err != nil {
+	if err := rt.handleGoalCommand("--max-iterations 1 " + request); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -1092,7 +1092,7 @@ func TestGoalDocumentArtifactGateUsesCheckpointDiffOverPreexistingDirtyFiles(t *
 	}
 	useFastGoalVerificationAndAudit(rt)
 
-	if err := rt.handleGoalCommand("--run --max-iterations 1 " + request); err != nil {
+	if err := rt.handleGoalCommand("--max-iterations 1 " + request); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -1144,7 +1144,7 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 	}
 	useFastGoalRuntime(t, rt)
 
-	if err := rt.handleGoalCommand("--run --max-iterations 2 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--max-iterations 2 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -1366,7 +1366,7 @@ func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
 	useFastGoalVerificationAndAudit(rt)
 	enableGoalIterationAutoReview(rt)
 
-	if err := rt.handleGoalCommand("--run --max-iterations 1 create generated review artifact"); err != nil {
+	if err := rt.handleGoalCommand("--max-iterations 1 create generated review artifact"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	if len(prompts) != 3 {
@@ -1492,7 +1492,7 @@ func TestGoalTokenBudgetLimitsBeforeAgentPrompt(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("--run --token-budget 1 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--token-budget 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -1614,7 +1614,7 @@ func TestGoalProviderUsageLimitMarksGoalUsageLimited(t *testing.T) {
 		},
 	}
 
-	err := rt.handleGoalCommand("--run finish sample objective")
+	err := rt.handleGoalCommand("finish sample objective")
 	if err == nil || !strings.Contains(err.Error(), "Usage limit reached") {
 		t.Fatalf("expected usage limit error, got %v", err)
 	}
@@ -1661,7 +1661,7 @@ func TestGoalRunResetsBlockedAuditCounters(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("run " + goal.ID); err == nil || !strings.Contains(err.Error(), "provider offline") {
+	if err := rt.runGoalBySelector(goal.ID, 0); err == nil || !strings.Contains(err.Error(), "provider offline") {
 		t.Fatalf("expected provider error after run setup, got %v", err)
 	}
 	current, ok := session.ActiveGoal()
@@ -1692,7 +1692,7 @@ func TestGoalRunInterruptBeforeIterationKeepsGoalActive(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	rt.goalReply = func(ctx context.Context, prompt string) (string, error) {
@@ -1742,7 +1742,7 @@ func TestGoalRunInterruptDuringAgentPromptKeepsGoalActive(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	rt.goalReply = func(ctx context.Context, prompt string) (string, error) {
@@ -1796,7 +1796,7 @@ func TestGoalRunInterruptDuringVerificationKeepsGoalActive(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	enableGoalIterationAutoReview(rt)
@@ -1859,11 +1859,11 @@ func TestGoalCompleteRequiresSemanticApproval(t *testing.T) {
 	}
 	useFastGoalVerificationAndAudit(rt)
 
-	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	seedGoalPassingVerification(t, rt, nil)
-	err := rt.handleGoalCommand("complete latest")
+	err := rt.completeGoalBySelector("latest")
 	if err == nil || !strings.Contains(err.Error(), "cannot be marked complete") {
 		t.Fatalf("expected semantic complete gate error, got %v", err)
 	}
@@ -1905,7 +1905,7 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 	}
 	useFastGoalVerificationAndAudit(rt)
 
-	if err := rt.handleGoalCommand("--no-run --token-budget 1000000 finish sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("--token-budget 1000000 finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	createdGoal, ok := session.ActiveGoal()
@@ -1916,7 +1916,7 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 	createdGoal.UpdatedAt = createdGoal.CreatedAt
 	session.UpsertGoal(createdGoal)
 	seedGoalPassingVerification(t, rt, nil)
-	if err := rt.handleGoalCommand("complete latest"); err != nil {
+	if err := rt.completeGoalBySelector("latest"); err != nil {
 		t.Fatalf("complete goal: %v", err)
 	}
 
@@ -2004,7 +2004,7 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 	}
 	useFastGoalVerificationAndAudit(rt)
 
-	if err := rt.handleGoalCommand("--no-run " + request); err != nil {
+	if err := rt.recordGoalWithoutLoop("" + request); err != nil {
 		t.Fatalf("start goal: %v", err)
 	}
 	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
@@ -2054,7 +2054,7 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 	session.UpsertGoal(goal)
 
 	seedGoalPassingVerification(t, rt, []string{"SampleGame/BugReport.md"})
-	if err := rt.handleGoalCommand("complete latest"); err != nil {
+	if err := rt.completeGoalBySelector("latest"); err != nil {
 		t.Fatalf("complete goal: %v", err)
 	}
 
@@ -2096,14 +2096,14 @@ func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
 	}
 	useFastGoalVerificationAndAudit(rt)
 
-	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	seedGoalPassingVerification(t, rt, nil)
-	if err := rt.handleGoalCommand("complete latest"); err == nil {
+	if err := rt.completeGoalBySelector("latest"); err == nil {
 		t.Fatalf("expected complete to reject semantic review")
 	}
-	if err := rt.handleGoalCommand("audit latest"); err != nil {
+	if err := rt.auditGoalBySelector("latest"); err != nil {
 		t.Fatalf("audit goal: %v", err)
 	}
 
@@ -2135,14 +2135,14 @@ func TestGoalRecordRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.
 		},
 	}
 
-	if err := rt.handleGoalCommand("--no-run finish first objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish first objective"); err != nil {
 		t.Fatalf("create first goal: %v", err)
 	}
 	first, ok := session.ActiveGoal()
 	if !ok {
 		t.Fatalf("expected first goal")
 	}
-	err := rt.handleGoalCommand("--no-run finish second objective")
+	err := rt.recordGoalWithoutLoop("finish second objective")
 	if err == nil || !strings.Contains(err.Error(), "goal replacement canceled") {
 		t.Fatalf("expected replacement cancellation, got %v", err)
 	}
@@ -2152,7 +2152,7 @@ func TestGoalRecordRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.
 	}
 
 	rt.reader = bufio.NewReader(strings.NewReader("y\n"))
-	if err := rt.handleGoalCommand("--no-run finish second objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish second objective"); err != nil {
 		t.Fatalf("confirmed replacement should create second goal: %v", err)
 	}
 	second, ok := session.ActiveGoal()
@@ -2187,7 +2187,7 @@ func TestGoalRecordSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
 	}
 	useFastGoalVerificationAndAudit(rt)
 
-	if err := rt.handleGoalCommand("--no-run finish first objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish first objective"); err != nil {
 		t.Fatalf("create first goal: %v", err)
 	}
 	first, ok := session.ActiveGoal()
@@ -2195,7 +2195,7 @@ func TestGoalRecordSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
 		t.Fatalf("expected first goal")
 	}
 	seedGoalPassingVerification(t, rt, nil)
-	if err := rt.handleGoalCommand("complete latest"); err != nil {
+	if err := rt.completeGoalBySelector("latest"); err != nil {
 		t.Fatalf("complete first goal: %v", err)
 	}
 	completed, ok := session.ActiveGoal()
@@ -2203,7 +2203,7 @@ func TestGoalRecordSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
 		t.Fatalf("expected completed first goal, got ok=%t goal=%#v first=%s", ok, completed, first.ID)
 	}
 
-	if err := rt.handleGoalCommand("--no-run finish second objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish second objective"); err != nil {
 		t.Fatalf("completed goal replacement should not require prompt: %v", err)
 	}
 	second, ok := session.ActiveGoal()
@@ -2255,14 +2255,14 @@ func TestGoalCompleteSpecificIDActivatesSelectedGoal(t *testing.T) {
 	}
 	useFastGoalVerificationAndAudit(rt)
 
-	if err := rt.handleGoalCommand("--no-run finish first sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish first sample objective"); err != nil {
 		t.Fatalf("create first goal: %v", err)
 	}
 	first, ok := session.ActiveGoal()
 	if !ok {
 		t.Fatalf("expected first goal")
 	}
-	if err := rt.handleGoalCommand("--no-run finish second sample objective"); err != nil {
+	if err := rt.recordGoalWithoutLoop("finish second sample objective"); err != nil {
 		t.Fatalf("create second goal: %v", err)
 	}
 	second, ok := session.ActiveGoal()
@@ -2270,7 +2270,7 @@ func TestGoalCompleteSpecificIDActivatesSelectedGoal(t *testing.T) {
 		t.Fatalf("expected second active goal, got %#v first=%s", second, first.ID)
 	}
 	seedGoalPassingVerification(t, rt, nil)
-	if err := rt.handleGoalCommand("complete " + first.ID); err != nil {
+	if err := rt.completeGoalBySelector(first.ID); err != nil {
 		t.Fatalf("complete selected goal: %v", err)
 	}
 
@@ -2414,8 +2414,6 @@ func TestGoalToolsExposeCodexCompatibleSchemas(t *testing.T) {
 		"internal active thread goal",
 		"Do not call this tool when the user asks to draft, write, create, or prepare a goal prompt",
 		"/goal <objective>",
-		"/goal --run <objective>",
-		"/goal run latest",
 	} {
 		if !strings.Contains(createDef.Description, want) {
 			t.Fatalf("create_goal description missing %q:\n%s", want, createDef.Description)

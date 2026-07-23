@@ -572,6 +572,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	}
 	appendGoalIterationEvent(&goal, iteration, goalEventIterationStart, fmt.Sprintf("iteration %d", iteration.Index))
 	rt.printPersistentBlockWhileThinking(rt.ui.subsection(fmt.Sprintf("Goal iteration %d", iteration.Index)))
+	rt.printGoalProgressSnapshot(goal, fmt.Sprintf("iteration %d start", iteration.Index))
 	if activeSlice != nil {
 		rt.printGoalStep(iteration.Index, "slice", fmt.Sprintf("%s (%s)", firstNonBlankString(activeSlice.Name, activeSlice.ID), activeSlice.ID))
 	}
@@ -667,6 +668,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	if rt.session.LastVerification != nil {
 		iteration.Verification = rt.session.LastVerification.SummaryLine()
 	}
+	rt.printGoalProgressSnapshot(goal, fmt.Sprintf("iteration %d after verify", iteration.Index))
 
 	if err := ctx.Err(); err != nil {
 		return rt.finishGoalIterationError(goal, iteration, err)
@@ -730,6 +732,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 						} else {
 							rt.printPersistentBlockWhileThinking(rt.ui.successLine("Slice complete; continuing remaining slices"))
 						}
+						rt.printGoalProgressSnapshot(goal, "slice complete")
 						rt.session.SetPlanNodeLifecycle("plan-06", "in_progress", "Active slice approved; remaining slices still open.")
 					} else {
 						iteration.Status = goalStatusComplete
@@ -749,6 +752,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 						}
 						appendGoalIterationEvent(&goal, iteration, goalEventComplete, goalCostSummary(goal))
 						rt.session.SetPlanNodeLifecycle("plan-06", "completed", "Completion audit and semantic goal review are ready.")
+						rt.printGoalProgressSnapshot(goal, "complete")
 						if semanticReview.IndependentReviewSkipped {
 							rt.printPersistentBlockWhileThinking(rt.ui.warnLine(localizedText(rt.cfg,
 								"goal completed WITHOUT an independent semantic review (no cross-review route or consent); completion is process-gated on the deterministic audit and verification only. Configure /model cross-review or pass --require-review for stronger assurance.",
@@ -766,6 +770,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 					goal.Status = goalStatusBlocked
 					goal.LastError = blocker
 					appendGoalIterationEvent(&goal, iteration, goalEventSemanticReject, blocker)
+					rt.printGoalProgressSnapshot(goal, "semantic blocked")
 					rt.session.SetPlanNodeLifecycle("plan-06", "blocked", blocker)
 					if goal.AutoRollback {
 						iteration.RollbackStatus = rt.rollbackGoalIterationCheckpoint(goal, iteration)
@@ -773,6 +778,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 				} else {
 					goal.SemanticRejectCount++
 					appendGoalIterationEvent(&goal, iteration, goalEventSemanticReject, compactPromptSection(semanticReview.Feedback, 160))
+					rt.printGoalProgressSnapshot(goal, "semantic needs revision")
 					repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalSemanticRepairPrompt(goal, iteration, semanticReview))
 					iteration.RepairReply = compactPromptSection(strings.Join([]string{iteration.RepairReply, repairReply}, "\n\n"), 1200)
 					if isGoalCancellationError(repairErr) {
@@ -1001,15 +1007,16 @@ func (rt *runtimeState) recordGoalIteration(goal GoalState, iteration GoalIterat
 	}
 	if goal.Status == goalStatusComplete {
 		rt.printPersistentBlockWhileThinking(rt.ui.successLine("Goal complete: " + goal.ID))
-		if cost := goalCostSummary(goal); cost != "" {
-			rt.printPersistentBlockWhileThinking(rt.ui.statusKV("cost", cost))
-		}
+		rt.printGoalProgressSnapshot(goal, "complete")
 	} else if goal.Status == goalStatusBlocked {
 		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("Goal blocked: " + goal.LastError))
+		rt.printGoalProgressSnapshot(goal, "blocked")
 	} else if goal.Status == goalStatusUsageLimited {
 		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("Goal usage-limited: " + goal.LastError))
+		rt.printGoalProgressSnapshot(goal, "usage limited")
 	} else if goal.Status == goalStatusBudgetLimited {
 		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("Goal budget-limited: " + goal.LastError))
+		rt.printGoalProgressSnapshot(goal, "budget limited")
 	}
 	return goal
 }
