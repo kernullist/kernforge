@@ -1,9 +1,10 @@
 # 연구 노트: Kernforge 보안 전문 기능 검토 및 개선 제안
 
 - 작성일: 2026-07-24
-- 상태: 결론 도출
-- 구현 반영: 2026-07-24 P0 전 항목 코드 착수·테스트 완료 (Stage A–E)
-- 관련: [[ROADMAP_kor.md]], [[FEATURE_USAGE_GUIDE.md]], [[PLAYBOOK_driver_kor.md]], [[PLAYBOOK_telemetry_kor.md]], [[PLAYBOOK_memory_scan_kor.md]]
+- 상태: 결론 도출 + P0 구현 완료
+- 구현 반영: 2026-07-24 P0 Stage A–E 코드/테스트/문서 완료 (`fdb8f46`, 스켑틱 수정 `4689593`)
+- 문서 최신화: 2026-07-24 FEATURE 한/영, README 한/영, driver playbook, CHANGELOG, ROADMAP
+- 관련: [[ROADMAP_kor.md]], [[FEATURE_USAGE_GUIDE.md]], [[FEATURE_USAGE_GUIDE_kor.md]], [[PLAYBOOK_driver_kor.md]], [[PLAYBOOK_driver.md]], [[docs/CHANGELOG.md]]
 
 ## 질문
 
@@ -11,7 +12,7 @@ Kernforge의 소스 퍼징, 드라이버 템플릿, 보안 분석/검증 기능�
 
 ## 결론 (먼저 쓴다)
 
-Kernforge는 이미 **source-only triage → campaign/corpus → sanitizer·verifier evidence → verification gate** 루프와 Windows driver/Unreal/telemetry 도메인 지식을 제품 중심에 두고 있어, 범용 코딩 에이전트 대비 차별 축이 명확하다. 다음 단계의 병목은 “또 다른 명령 추가”가 아니라 (1) **IOCTL lifecycle·stateful 시퀀스 퍼징**, (2) **crash/finding 신뢰도(오탐 필터)와 최소 재현**, (3) **HVCI/VBS/서명 readiness 실측**, (4) **driver template → fuzz harness 자동 연결**, (5) **agentic harness 빌드 수리 루프**다. 외부 동향(KernelGPT/LifeFuzz/IOCTL-Hammer, OSS-Fuzz-gen crash validation, Mozilla-style agentic bug lifecycle, Vanguard/HVCI 요구 강화)과 정합된다.
+Kernforge는 **source-only triage → campaign/corpus → sanitizer·verifier evidence → verification gate** 루프와 Windows driver/Unreal/telemetry 도메인 지식을 제품 중심에 둔다. **P0 다섯 축은 2026-07-24 기준 구현 완료**: (1) IOCTL contract + multi-call sequence seeds, (2) crash feasibility(`spurious` 격리, source-scan lifecycle 포함), (3) platform-security posture collector, (4) driver POC → security handoff, (5) harness build-repair(분류 + 1–3회 + durable blockers). 다음 병목은 P1/P2(추가 template, ETW schema fuzz, lab VM orchestration, syzlang export 등)이다.
 
 ## 환경
 

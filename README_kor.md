@@ -226,15 +226,17 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 기본 동작은 네이티브 실행보다 AI source-only fuzzing이며, 공격자 입력 상태, 구체 입력 예시, 비교식, 최소 반례, 분기 차이, 후속 호출 체인까지 소스에서 추론
 - 기본적으로 `/fuzz-func`는 매칭되는 `/source-scan` 후보를 재사용하고, 없으면 target과 reachable file만 focused source-scan으로 훑은 뒤 plan에 연결한다. candidate에는 function-window evidence span, 파일/심볼 fingerprint, confidence breakdown, dataflow/control-flow fact, stale-source 상태가 함께 저장된다.
 - 먼저 `/source-scan run`으로 source candidate를 저장한 뒤, 특정 후보를 명시적으로 이어가고 싶으면 `/fuzz-func --from-candidate <candidate-id>`를 사용한다. built-in matcher에는 Windows kernel double-fetch, IOCTL output infoleak, WDF buffer size drift, integer allocation overflow, pool/refcount lifetime 신호가 포함된다.
-- `/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout]`으로 x64 전용 C++20 MSVC/WDK POC 드라이버 솔루션을 생성한다. `--type`을 생략하면 기존 SCM 설치/시작, device open, IOCTL ping, unload/delete 기본 POC를 생성한다. typed template은 object manager 프로세스/쓰레드 핸들 access stripping, filesystem minifilter open/rename/delete 유저 모드 판단 경로, registry create/open/set/delete/rename callback 차단, WFP outbound callout 차단 계약을 생성한다.
+- `/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout]`으로 x64 전용 C++20 MSVC/WDK POC 드라이버 솔루션을 생성한다. `--type`을 생략하면 기존 SCM 설치/시작, device open, IOCTL ping, unload/delete 기본 POC를 생성한다. typed template은 object manager 프로세스/쓰레드 핸들 access stripping, filesystem minifilter open/rename/delete 유저 모드 판단 경로, registry create/open/set/delete/rename callback 차단, WFP outbound callout 차단 계약을 생성한다. 완료 시 security workflow handoff와 `.kernforge/security/workflow_seed.json`을 남긴다.
 - 고위험 finding은 위험도 점수표, 먼저 볼 소스 위치, 시작 파일에서 거기까지의 파일 확장 경로, 대표 루트에서 이어지는 호출 경로를 함께 보여준다.
-- `compile_commands.json`이나 build context가 있으면 후속 네이티브 fuzzing 품질이 올라가고, 없으면 왜 막히는지 먼저 설명한 뒤 진행 여부를 묻는다.
-- 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래의 `report.md`, `harness.cpp`, `plan.json` 등에 저장된다.
+- `compile_commands.json`이나 build context가 있으면 후속 네이티브 fuzzing 품질이 올라가고, 없으면 왜 막히는지 먼저 설명한 뒤 진행 여부를 묻는다. build-only 실패는 실패 클래스 분류와 1–3회 harness self-repair, durable blocker 기록을 거친다.
+- 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래의 `report.md`, `harness.cpp`, `plan.json` 등에 저장된다. IOCTL surface면 `ioctl_contract.json`과 multi-call sequence seed도 함께 남긴다.
+- native crash는 feasibility gate(`target_plausible` / `spurious`)를 거친다. harness-only stack은 validated finding으로 승격하지 않는다.
 - `/fuzz-func status|show|list|continue|language`로 최근 분석 결과, 보류된 실행, 출력 언어를 관리할 수 있다.
 - `/fuzz-func`가 source-only scenario를 만들면 Kernforge가 campaign handoff를 출력해서 사용자가 campaign 단계를 외우지 않고 `/fuzz-campaign run` 하나를 다음 명령으로 볼 수 있다.
 - `/fuzz-campaign new <name>`으로 `.kernforge/fuzz/<campaign-id>/` 아래 campaign manifest와 `corpus`, `crashes`, `coverage`, `reports`, `logs` 디렉터리를 만든다.
 - analysis docs가 있으면 campaign은 최신 생성 `FUZZ_TARGETS.md` catalog에서 초기 target 목록을 seed로 가져온다.
-- `/fuzz-campaign`으로 Kernforge가 추천하는 다음 단계를 보고, `/fuzz-campaign run`으로 campaign 생성, attach, source-only seed artifact 승격, dedup된 finding lifecycle과 coverage gap 갱신, run output 또는 campaign coverage directory의 libFuzzer log, llvm-cov text, LCOV, JSON coverage summary 수집, sanitizer report, Windows crash dump, Application Verifier, Driver Verifier artifact, native run report/evidence 기록, 다음 `FUZZ_TARGETS.md` ranking refresh, `/verify`와 tracked feature gate 연결을 자동 처리한다.
+- `/fuzz-campaign`으로 Kernforge가 추천하는 다음 단계를 보고, `/fuzz-campaign run`으로 campaign 생성, attach, source-only·IOCTL sequence seed 승격, dedup된 finding lifecycle과 coverage gap 갱신, run output 또는 campaign coverage directory의 libFuzzer log, llvm-cov text, LCOV, JSON coverage summary 수집, sanitizer report, Windows crash dump, Application Verifier, Driver Verifier artifact, native run report/evidence 기록, 다음 `FUZZ_TARGETS.md` ranking refresh, `/verify`와 tracked feature gate 연결을 자동 처리한다.
+- `/investigate start platform-security`로 Secure Boot, VBS, HVCI, test-signing, DSE, TPM readiness posture snapshot을 남긴다.
 - 자동완성은 `/fuzz-func ` 단계에서는 함수명/파일 사용 힌트를 보여주고, `@`를 입력하기 시작하면 실제 workspace 파일 후보로 전환된다.
 
 ### 편집 워크플로우
@@ -534,7 +536,7 @@ Driver 변경을 안전하게 밀어붙이는 가장 기본 흐름:
 7. `/verify`
 8. `/evidence dashboard category:driver`
 
-여기서 `driver-visibility` preset은 드라이버 로드 root cause를 깊게 파고드는 분석기가 아니라, 현재 시점의 드라이버 가시성, verifier 상태, 관련 artifact 존재 여부를 빠르게 남기는 lightweight triage snapshot이다.
+여기서 `driver-visibility` preset은 드라이버 로드 root cause를 깊게 파고드는 분석기가 아니라, 현재 시점의 드라이버 가시성, verifier 상태, 관련 artifact 존재 여부를 빠르게 남기는 lightweight triage snapshot이다. platform/HVCI readiness가 필요하면 `/investigate start platform-security`를 함께 쓴다.
 
 이 흐름 전체 설명은 [한국어 상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)에 있습니다.
 
@@ -1717,11 +1719,12 @@ goal은 선택값입니다. 생략하면 Kernforge가 선택된 mode와 path에�
 - `analyze-project`가 없어도 snapshot과 semantic index를 on-demand로 복원한다.
 - 저장된 source candidate가 target과 맞으면 재사용하고, 없으면 target/file scope/reachable file만 focused source-scan으로 스캔해 `/fuzz-func` plan에 연결한다.
 - function fuzz run에는 `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, `source_scan_summary`가 남고, candidate evidence는 source-only scenario에 주입되어 `/fuzz-campaign run`이 더 구체적인 seed를 승격할 수 있다.
-- `/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout]`은 x64 전용 C++20 MSVC/WDK driver POC 템플릿을 생성한다. `--type` 생략 시 기존 WDM ping POC를 유지하고, typed template은 objectfilter, minifilter, registryfilter, wfpcallout용 shared IOCTL 계약과 드라이버/테스터 코드를 생성한다.
+- `/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout]`은 x64 전용 C++20 MSVC/WDK driver POC 템플릿을 생성한다. `--type` 생략 시 기존 WDM ping POC를 유지하고, typed template은 objectfilter, minifilter, registryfilter, wfpcallout용 shared IOCTL 계약과 드라이버/테스터 코드를 생성한다. 완료 시 security handoff와 `.kernforge/security/workflow_seed.json`을 남긴다.
 - source candidate는 function-window evidence span, confidence breakdown, dataflow/control-flow fact, 파일/심볼 fingerprint, stale-source 상태, native feedback calibration을 보존한다.
 - 위험도가 높은 경로에 대해 공격자 입력 상태, 구체 입력 예시, 소스에서 뽑은 비교식, 최소 반례, 분기별 대표 결과, 후속 호출 체인을 합성한다.
 - 고위험 시나리오는 위험도 점수표와 함께 먼저 볼 소스 줄, 시작 파일에서 그 파일까지 이어진 경로, 대표 루트에서 이어진 호출 경로를 보여준다.
-- build context가 충분하면 후속 네이티브 harness/run까지 연결하고, 부족하면 왜 막히는지 설명한 뒤 확인을 받는다.
+- build context가 충분하면 후속 네이티브 harness/run까지 연결하고, 부족하면 왜 막히는지 설명한 뒤 확인을 받는다. build-only 실패는 클래스 분류와 1–3회 self-repair, durable blocker를 남긴다.
+- IOCTL surface면 `ioctl_contract.json`과 multi-call open/ioctl/close sequence seed를 남기고 `/fuzz-campaign`이 승격한다.
 - 유용한 `/fuzz-func` 결과가 나오면 Kernforge가 campaign handoff를 출력하고 다음 자동 단계로 `/fuzz-campaign run`을 제안한다.
 - `/fuzz-campaign`은 다음 권장 campaign action을 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 `/fuzz-func` attach, deterministic JSON corpus seed 승격, dedup된 finding lifecycle 갱신, libFuzzer/llvm-cov/LCOV/JSON coverage report 수집, sanitizer/verifier/crash-dump artifact 수집, coverage gap feedback, artifact graph 갱신, native result report 생성, crash fingerprint, minimization command, evidence 기록, `/verify` planner 재사용, tracked feature gate 안내를 가능한 범위에서 자동 수행한다.
 - native crash finding은 crash fingerprint, source anchor, suspected invariant 기준으로 병합된다. manifest에는 duplicate count, 병합된 native result id, evidence id가 남아 반복 실행이 noisy issue 복제가 아니라 하나의 issue를 강화하는 방식으로 기록된다.

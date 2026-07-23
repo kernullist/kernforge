@@ -4,6 +4,16 @@
 
 ## 2026-07-24
 
+### P0 보안 워크벤치 (fuzz / driver / posture)
+
+- 연구: [[docs/research/2026-07-24-security-capability-review.md]], 로드맵: [[ROADMAP_kor.md]] P0 Fuzzing Workbench 보강.
+- **Harness build-repair**: 빌드 실패를 `missing-include|unresolved-symbol|wdk-macro|abi-or-link|unknown`으로 분류하고 최대 1–3회 self-repair 후 durable `BuildBlockers`/build log 기록.
+- **Crash feasibility**: native crash를 `target_plausible|spurious|unknown`으로 게이트. harness-only stack은 finding `spurious` 격리, verification/`block_close` 비요구, source-scan draft·`native-confirmed` 승격 차단. finding merge 시 Feasibility 보존.
+- **IOCTL contract + sequence seeds**: fuzz artifact `ioctl_contract.json` (codes/METHOD_*/buffer length/dispatch anchors), multi-call open/ioctl/close sequence seed, `/fuzz-campaign` promote (`ioctl_sequence`).
+- **`/investigate start platform-security`**: Secure Boot, VBS, HVCI/Memory Integrity, test-signing, driver signature enforcement, TPM readiness를 snapshot attributes·`platform_security` finding으로 수집 (불가 시 `unavailable`). multi-collector merge는 구체 값(`enforced` 등)을 약한 `observed`가 덮지 않음.
+- **`/create-driver-poc` security handoff**: 완료 시 source-scan/fuzz-func/campaign/verify/platform-security/signing/Driver Verifier 안내 + `.kernforge/security/workflow_seed.json`.
+- 테스트: `cmd/kernforge/p0_security_workbench_test.go`. 문서: FEATURE 가이드(한/영), README, driver playbook, ROADMAP 동기화.
+
 ### Goal 단일 명령 UX
 
 - 공개 서브커맨드 제거: `run|status|audit|complete|cancel` 및 `--no-run`.

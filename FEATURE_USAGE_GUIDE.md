@@ -3,7 +3,7 @@
 This document explains how to use the currently implemented Kernforge features in real engineering workflows, with concrete examples and recommended command sequences.
 
 Reference point:
-- Codebase snapshot: 2026-06-10
+- Codebase snapshot: 2026-07-24
 
 Intended readers:
 - Windows security engineers
@@ -744,18 +744,21 @@ Current presets:
 1. `driver-visibility`
 2. `process-visibility`
 3. `provider-visibility`
+4. `platform-security` (aliases: `platform`, `vbs-hvci`, `security-posture`)
 
 Best used when:
 1. Static code review is not enough.
 2. You need to capture live verifier, module, driver, service, or provider state before editing.
 3. You want a reusable record of the real runtime state that informed later decisions.
 4. You want a lightweight visibility triage snapshot before deeper debugging.
+5. You need a release/AC posture snapshot of Secure Boot, VBS, HVCI, test-signing, and TPM readiness (`platform-security`).
 
 Important scope limit:
 1. `driver-visibility` is not a deep root-cause analyzer for driver load failures.
 2. Its current implementation is intentionally narrow and focuses on user-mode-visible driver, service, filter, verifier, and artifact state.
 3. `process-visibility` is a process-listing triage snapshot, not a process attach or protection analyzer.
 4. `provider-visibility` is a provider-listing triage snapshot, not a deep ETW or provider root-cause analyzer.
+5. `platform-security` is best-effort user-mode posture collection; unavailable probes are recorded as `unavailable`. It does not change HVCI/VBS policy.
 
 ### 2.6 Adversarial Simulation Profiles
 
