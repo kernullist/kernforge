@@ -692,6 +692,12 @@ func mergeFuzzCampaignFinding(existing FuzzCampaignFinding, incoming FuzzCampaig
 	out.CrashFingerprint = firstNonBlankString(existing.CrashFingerprint, incoming.CrashFingerprint)
 	out.CrashClass = firstNonBlankString(existing.CrashClass, incoming.CrashClass)
 	out.Exploitability = fuzzCampaignMergedExploitability(existing.Exploitability, incoming.Exploitability)
+	out.Feasibility = fuzzCampaignMergedFeasibility(existing.Feasibility, incoming.Feasibility)
+	out.FeasibilityReason = firstNonBlankString(existing.FeasibilityReason, incoming.FeasibilityReason)
+	// Keep reason aligned with the winning feasibility band when only one side has it.
+	if strings.EqualFold(out.Feasibility, incoming.Feasibility) && strings.TrimSpace(incoming.FeasibilityReason) != "" {
+		out.FeasibilityReason = firstNonBlankString(incoming.FeasibilityReason, existing.FeasibilityReason)
+	}
 	out.SuspectedInvariant = firstNonBlankString(existing.SuspectedInvariant, incoming.SuspectedInvariant)
 	out.ReportPath = firstNonBlankString(incoming.ReportPath, existing.ReportPath)
 	out.MergedFindingIDs = uniqueStrings(append(append(existing.MergedFindingIDs, incoming.MergedFindingIDs...), incoming.ID))
@@ -708,7 +714,37 @@ func mergeFuzzCampaignFinding(existing FuzzCampaignFinding, incoming FuzzCampaig
 	if out.UpdatedAt.IsZero() {
 		out.UpdatedAt = time.Now()
 	}
+	// After status merge, re-assert quarantine invariants when the survivor is
+	// still only spurious (no target_plausible promotion).
+	if strings.EqualFold(out.Feasibility, "spurious") && strings.EqualFold(out.Status, "spurious") {
+		out.VerificationGate = "optional"
+		out.TrackedFeatureGate = "monitor"
+		if out.Severity == "" || out.Severity == "high" || out.Severity == "critical" {
+			out.Severity = "low"
+		}
+	}
 	return out
+}
+
+// fuzzCampaignNativeResultIsSpurious reports harness-misuse / feasibility-gated
+// crashes that must not promote as validated target bugs or native-confirmed
+// source-scan feedback.
+func fuzzCampaignNativeResultIsSpurious(result FuzzCampaignNativeResult) bool {
+	return strings.EqualFold(strings.TrimSpace(result.Feasibility), "spurious") ||
+		strings.EqualFold(strings.TrimSpace(result.Outcome), "spurious")
+}
+
+// fuzzCampaignMergedFeasibility prefers target_plausible over unknown over
+// spurious so a real target hit is never lost when merging with a harness-only
+// duplicate, while pure-spurious merges keep the quarantine label.
+func fuzzCampaignMergedFeasibility(left string, right string) string {
+	order := map[string]int{"target_plausible": 3, "unknown": 2, "spurious": 1}
+	left = strings.ToLower(strings.TrimSpace(left))
+	right = strings.ToLower(strings.TrimSpace(right))
+	if order[right] > order[left] {
+		return right
+	}
+	return firstNonBlankString(left, right)
 }
 
 // fuzzCampaignMergedExploitability keeps the most severe band when merging
@@ -732,7 +768,11 @@ func fuzzCampaignFindingMergedSeverity(left string, right string) string {
 }
 
 func fuzzCampaignFindingMergedStatus(left string, right string) string {
-	return fuzzCampaignFindingMergedGate(left, right, []string{"open", "seeded", "monitoring", "closed"})
+	// Real validated/open lifecycle outranks quarantine. Spurious is listed so
+	// two spurious findings merge to spurious instead of dropping to ""/unknown
+	// and so closed does not silently erase a still-recorded spurious label
+	// when neither side is open (closed ranks above spurious).
+	return fuzzCampaignFindingMergedGate(left, right, []string{"open", "seeded", "monitoring", "closed", "spurious"})
 }
 
 func fuzzCampaignFindingMergedGate(left string, right string, priority []string) string {

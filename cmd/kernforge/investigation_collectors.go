@@ -105,7 +105,10 @@ func collectPlatformSecurityPosture(commands []InvestigationCommandResult) Platf
 			if strings.TrimSpace(value) == "" {
 				continue
 			}
-			fields[key] = value
+			// Never let a weaker later collector (e.g. driver-signature-policy
+			// "observed") clobber a stronger earlier value (device-guard
+			// CodeIntegrityPolicyEnforcementStatus -> "enforced").
+			fields[key] = mergePlatformSecurityField(fields[key], value)
 		}
 	}
 	parts := []string{}
@@ -335,6 +338,42 @@ func mergeStringMaps(dst map[string]string, src map[string]string) map[string]st
 		dst[k] = v
 	}
 	return dst
+}
+
+// platformSecurityFieldSpecificity ranks posture values so multi-collector
+// merge prefers concrete states over weak "observed" / "unavailable" labels.
+// Higher is better (more decisive).
+func platformSecurityFieldSpecificity(value string) int {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "enforced", "enabled", "running", "ready", "disabled", "absent", "present":
+		return 3
+	case "observed":
+		return 2
+	case "unavailable", "":
+		return 1
+	default:
+		return 2
+	}
+}
+
+// mergePlatformSecurityField keeps the more specific posture value. When
+// specificity ties, the existing (earlier collector) value wins so ordered
+// multi-collector runs stay stable.
+func mergePlatformSecurityField(existing, incoming string) string {
+	incoming = strings.TrimSpace(incoming)
+	if incoming == "" {
+		return existing
+	}
+	existing = strings.TrimSpace(existing)
+	if existing == "" {
+		return incoming
+	}
+	inSpec := platformSecurityFieldSpecificity(incoming)
+	exSpec := platformSecurityFieldSpecificity(existing)
+	if inSpec > exSpec {
+		return incoming
+	}
+	return existing
 }
 
 func investigationPresetCommands(preset, target string) []investigationCommandSpec {

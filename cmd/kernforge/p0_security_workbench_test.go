@@ -264,31 +264,45 @@ func TestFunctionFuzzIOCTLContractArtifactAndSequenceSeeds(t *testing.T) {
 		},
 	}
 	// Force IOCTL target detection via overlay/signature markers used by helpers.
+	// Contract + sequences must come only from the shipped infer path (no hardcoded
+	// IOCTLSpec fallback that would hide extraction regressions).
 	run.TargetSignature = "NTSTATUS DeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)"
 	run.OverlayDomains = []string{"security_ioctl", "windows_driver"}
+	if !functionFuzzTargetIsIOCTL(run) {
+		t.Fatalf("fixture must be detected as IOCTL target by functionFuzzTargetIsIOCTL")
+	}
 
 	spec := functionFuzzInferIOCTLSpec(run)
 	if spec == nil || !spec.Detected {
-		// Infer may require functionFuzzTargetIsIOCTL; set IOCTLSpec manually if needed.
-		run.IOCTLSpec = &FunctionFuzzIOCTLSpec{
-			Detected: true,
-			Codes: []FunctionFuzzIOCTLCode{
-				{Code: "0x222000", Value: 0x222000, HasValue: true},
-				{Code: "0x222004", Value: 0x222004, HasValue: true},
-			},
-			Methods:            []string{"METHOD_BUFFERED"},
-			BufferLengthFields: []string{"InputBufferLength", "OutputBufferLength"},
-			DispatchAnchors:    []string{"driver/ioctl.c:120 (DeviceControl)"},
-		}
-	} else {
-		run.IOCTLSpec = spec
-		if len(run.IOCTLSpec.Methods) == 0 {
-			run.IOCTLSpec.Methods = functionFuzzInferIOCTLMethods(run)
-		}
-		if len(run.IOCTLSpec.BufferLengthFields) == 0 {
-			run.IOCTLSpec.BufferLengthFields = functionFuzzInferIOCTLBufferLengthFields(run)
+		t.Fatalf("functionFuzzInferIOCTLSpec must detect the fixture IOCTL surface (no hardcoded fallback)")
+	}
+	if len(spec.Codes) == 0 {
+		t.Fatalf("infer must recover at least one IOCTL code from fixture observations, got %#v", spec)
+	}
+	// Methods and buffer length fields must be recovered from the same shipped helpers
+	// used by production (wired through InferIOCTLSpec).
+	if len(spec.Methods) == 0 {
+		t.Fatalf("infer must recover METHOD_* from fixture, got methods=%v", spec.Methods)
+	}
+	if !containsString(spec.Methods, "METHOD_BUFFERED") {
+		t.Fatalf("expected METHOD_BUFFERED in methods %v", spec.Methods)
+	}
+	if len(spec.BufferLengthFields) == 0 {
+		t.Fatalf("infer must recover buffer length fields, got %v", spec.BufferLengthFields)
+	}
+	hasInputLen := false
+	for _, f := range spec.BufferLengthFields {
+		if strings.EqualFold(f, "InputBufferLength") || strings.Contains(strings.ToLower(f), "inputbufferlength") {
+			hasInputLen = true
 		}
 	}
+	if !hasInputLen {
+		t.Fatalf("expected InputBufferLength among buffer length fields %v", spec.BufferLengthFields)
+	}
+	if len(spec.DispatchAnchors) == 0 {
+		t.Fatalf("infer must record dispatch anchors")
+	}
+	run.IOCTLSpec = spec
 	run.IOCTLSequences = functionFuzzBuildIOCTLSequences(run)
 	if len(run.IOCTLSequences) == 0 {
 		t.Fatalf("expected multi-call sequence plans")
@@ -458,6 +472,12 @@ func TestPlatformSecurityPresetRegisteredAndPostureParsed(t *testing.T) {
 	if posture.Fields["tpm_ready"] != "ready" {
 		t.Fatalf("expected tpm_ready=ready, got %q", posture.Fields["tpm_ready"])
 	}
+	// Full multi-collector order: device-guard sets CodeIntegrityPolicyEnforcementStatus
+	// : 2 -> enforced, then driver-signature-policy emits weaker "observed". The merge
+	// must keep enforced (regression for clobber-on-overwrite).
+	if posture.Fields["driver_signature_enforcement"] != "enforced" {
+		t.Fatalf("driver_signature_enforcement must stay enforced after later observed policy probe, got %q (fields=%#v)", posture.Fields["driver_signature_enforcement"], posture.Fields)
+	}
 
 	findings := platformSecurityPostureFindings(posture)
 	if len(findings) < 6 {
@@ -587,5 +607,97 @@ func TestCreateDriverPOCSecurityHandoffLinesContent(t *testing.T) {
 		if !strings.Contains(joined, needle) {
 			t.Fatalf("handoff lines missing %q:\n%s", needle, joined)
 		}
+	}
+}
+
+// --- Skeptic follow-ups: merge feasibility + source-scan lifecycle gate -----
+
+func TestMergeFuzzCampaignFindingPreservesSpuriousFeasibility(t *testing.T) {
+	left := FuzzCampaignFinding{
+		ID:                "f1",
+		Status:            "spurious",
+		Severity:          "low",
+		Feasibility:       "spurious",
+		FeasibilityReason: "harness-only frames",
+		VerificationGate:  "optional",
+		CrashFingerprint:  "fc-shared",
+	}
+	right := FuzzCampaignFinding{
+		ID:                "f2",
+		Status:            "spurious",
+		Severity:          "low",
+		Feasibility:       "spurious",
+		FeasibilityReason: "harness-only frames again",
+		VerificationGate:  "optional",
+		CrashFingerprint:  "fc-shared",
+	}
+	merged := mergeFuzzCampaignFinding(left, right)
+	if merged.Status != "spurious" {
+		t.Fatalf("merged status want spurious, got %q", merged.Status)
+	}
+	if merged.Feasibility != "spurious" {
+		t.Fatalf("merged feasibility must be preserved, got %q", merged.Feasibility)
+	}
+	if strings.TrimSpace(merged.FeasibilityReason) == "" {
+		t.Fatalf("merged feasibility reason must not be dropped")
+	}
+	if merged.VerificationGate == "required" {
+		t.Fatalf("spurious merge must not require verification")
+	}
+
+	// Target-plausible wins over spurious when both share a dedup merge.
+	plausible := right
+	plausible.Status = "open"
+	plausible.Feasibility = "target_plausible"
+	plausible.FeasibilityReason = "HandleIoctl frame"
+	plausible.VerificationGate = "required"
+	promoted := mergeFuzzCampaignFinding(left, plausible)
+	if promoted.Feasibility != "target_plausible" {
+		t.Fatalf("target_plausible must win over spurious, got %q", promoted.Feasibility)
+	}
+	if promoted.Status != "open" {
+		t.Fatalf("open must outrank spurious, got %q", promoted.Status)
+	}
+}
+
+func TestSourceScanNativeResultSpuriousDoesNotConfirmOrDraft(t *testing.T) {
+	spurious := FuzzCampaignNativeResult{
+		RunID:             "run-sp",
+		CrashCount:        3,
+		Outcome:           "spurious",
+		Feasibility:       "spurious",
+		FeasibilityReason: "all frames harness",
+		SuspectedInvariant: "would look like a bug if not gated",
+	}
+	if sourceScanNativeResultWarrantsDraft(spurious) {
+		t.Fatalf("spurious native result must not warrant feedback drafts")
+	}
+	if v := sourceCandidateVerdictFromNativeOutcome(spurious); v != "" {
+		t.Fatalf("spurious must not yield native-confirmed (or any) verdict, got %q", v)
+	}
+
+	plausible := FuzzCampaignNativeResult{
+		RunID:       "run-ok",
+		CrashCount:  1,
+		Outcome:     "failed",
+		Feasibility: "target_plausible",
+	}
+	if !sourceScanNativeResultWarrantsDraft(plausible) {
+		t.Fatalf("target_plausible crash must warrant draft")
+	}
+	if sourceCandidateVerdictFromNativeOutcome(plausible) != "native-confirmed" {
+		t.Fatalf("target_plausible crash must be native-confirmed")
+	}
+}
+
+func TestMergePlatformSecurityFieldDoesNotClobberEnforced(t *testing.T) {
+	if got := mergePlatformSecurityField("enforced", "observed"); got != "enforced" {
+		t.Fatalf("enforced must beat observed, got %q", got)
+	}
+	if got := mergePlatformSecurityField("unavailable", "enforced"); got != "enforced" {
+		t.Fatalf("enforced must replace unavailable, got %q", got)
+	}
+	if got := mergePlatformSecurityField("disabled", "observed"); got != "disabled" {
+		t.Fatalf("disabled must beat observed, got %q", got)
 	}
 }

@@ -2741,6 +2741,12 @@ func sourceScanNativeResultWarrantsDraft(result FuzzCampaignNativeResult) bool {
 		return false
 	}
 	result = normalized[0]
+	// Spurious harness-only crashes must not generate matcher/pattern drafts or
+	// native-confirmed feedback; the feasibility gate applies to the whole
+	// validation lifecycle, not only FuzzCampaignFinding status.
+	if fuzzCampaignNativeResultIsSpurious(result) {
+		return false
+	}
 	if result.CrashCount > 0 {
 		return true
 	}
@@ -2860,6 +2866,10 @@ func linkSourceCandidateToNativeOutcome(candidate SourceCandidateRecord, campaig
 }
 
 func sourceCandidateVerdictFromNativeOutcome(result FuzzCampaignNativeResult) string {
+	// Harness-misuse crashes are not target confirmation evidence.
+	if fuzzCampaignNativeResultIsSpurious(result) {
+		return ""
+	}
 	if result.CrashCount > 0 || strings.EqualFold(result.Outcome, "failed") {
 		return "native-confirmed"
 	}
