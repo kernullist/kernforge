@@ -1,7 +1,7 @@
 # 작업 계획서: Goal OS (자율 목표 완성 시스템)
 
 - 작성일: 2026-07-23
-- 상태: 승인됨 (PR1–PR3 커밋, PR4 리뷰·커밋 직전)
+- 상태: 승인됨 (PR1–PR5 구현 완료)
 - 관련: [[docs/research/2026-07-23-autonomous-goal-systems.md]]
 
 ## 1. 목표
@@ -24,10 +24,10 @@ Skills: goal-to-slice default plan; goal-loop only research_mode; humanize on do
 1. Spec Compiler + criteria-primary semantic gate (**완료**)
 2. Slice DAG model + artifacts + slice planner parse (**완료**)
 3. Runner v2 slice OPAVR + partial (**완료**)
-4. research_mode + cost/events (**리뷰 직전**)
-5. worktree + optional parallel (**보류 가능 — 기존 Session worktree 인프라 재사용 여부 검토**)
+4. research_mode + cost/events (**완료**)
+5. worktree opt-in (**완료**); 병렬 multi-worktree 실행은 **의도적 보류** (specialist worktree 경로와 중복·위험)
 
-Flag: `goal_runner_v2` — PR3에서 SlicePlan 상시 사용. research는 `--research` opt-in + Spec 분류.
+Flag: `goal_runner_v2` — PR3에서 SlicePlan 상시 사용. research/worktree는 opt-in 플래그.
 
 ## 5. 검증
 
@@ -44,5 +44,6 @@ criteria 없이 process-only complete 불가; multi-slice partial; reject×3 blo
   - ArtifactRefs marshal 순서 수정; slices.md; fallback single-slice.
 - 2026-07-24: PR3 커밋 `feat(goal): run slice-scoped OPAVR with partial delivery`
   - running slice resume 수정 (NEEDS_REVISION 후 ready 재선택).
-- 2026-07-24: PR4 구현 — GoalEvent, cost 요약, `--research`, implement research section, status 출력.
+- 2026-07-24: PR4 커밋 `feat(goal): add research_mode hooks and cost/event observability`
+- 2026-07-24: PR5 — `--worktree` opt-in, 세션 worktree 재사용/생성, GoalState worktree refs. 병렬 slice worktree는 보류.
 

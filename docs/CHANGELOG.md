@@ -4,6 +4,11 @@
 
 ## 2026-07-23
 
+### Goal OS PR5: goal worktree isolation (opt-in)
+
+- `/goal --worktree|--isolated`: 기존 세션 worktree 재사용 또는 `WorktreeManager`로 생성·attach.
+- GoalState에 `worktree_id/root/branch` 기록, status 출력. 병렬 multi-worktree 실행은 보류.
+
 ### Goal OS PR4: research_mode + cost/events
 
 - 계획: [[docs/plan/2026-07-23-autonomous-goal-system.md]]

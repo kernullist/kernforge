@@ -324,6 +324,9 @@ func (rt *runtimeState) attachWorktree(worktree SessionWorktree) error {
 	if err := rt.reloadSessionContext(); err != nil {
 		return err
 	}
+	if rt.store == nil {
+		return nil
+	}
 	return rt.store.Save(rt.session)
 }
 
@@ -335,6 +338,9 @@ func (rt *runtimeState) detachWorktreeRecord() error {
 	rt.session.WorkingDir = sessionBaseWorkingDir(rt.session)
 	if err := rt.reloadSessionContext(); err != nil {
 		return err
+	}
+	if rt.store == nil {
+		return nil
 	}
 	return rt.store.Save(rt.session)
 }

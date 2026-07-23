@@ -102,7 +102,11 @@ type GoalState struct {
 	// Runner v2 executes ready slices each iteration.
 	SlicePlan      *GoalSlicePlan      `json:"slice_plan,omitempty"`
 	// Events is a bounded observability log (iteration/slice/cost milestones).
-	Events         []GoalEvent         `json:"events,omitempty"`
+	Events []GoalEvent `json:"events,omitempty"`
+	// Worktree* records optional isolation created/reused for this goal (PR5).
+	WorktreeID     string              `json:"worktree_id,omitempty"`
+	WorktreeRoot   string              `json:"worktree_root,omitempty"`
+	WorktreeBranch string              `json:"worktree_branch,omitempty"`
 	CheckpointRefs []GoalCheckpointRef `json:"checkpoint_refs,omitempty"`
 	CommandHistory []GoalCommandRecord `json:"command_history,omitempty"`
 	Iterations     []GoalIteration     `json:"iterations,omitempty"`
@@ -206,6 +210,8 @@ type goalStartOptions struct {
 	// ResearchMode forces AcceptanceSpec.ResearchMode (bounded|aggressive).
 	// Empty keeps the compiler classification from the objective text.
 	ResearchMode string
+	// UseWorktree creates or reuses session worktree isolation for the goal.
+	UseWorktree bool
 }
 
 func (rt *runtimeState) handleGoalCommand(args string) error {
@@ -347,6 +353,11 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 		forceGoalResearchMode(&goal, options.ResearchMode)
 	}
 	goal.Normalize()
+	if options.UseWorktree {
+		if wtErr := rt.ensureGoalWorktreeIsolation(&goal); wtErr != nil {
+			return wtErr
+		}
+	}
 	rt.primeGoalRuntimeState(&goal, "created")
 	if !options.Run {
 		rt.printGoalPlanningProgress()
@@ -708,6 +719,8 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 				return options, fmt.Errorf("invalid research mode %q (want none|bounded|aggressive)", fields[i])
 			}
 			options.ResearchMode = mode
+		case "--worktree", "--isolated":
+			options.UseWorktree = true
 		default:
 			if strings.HasPrefix(field, "@") && options.SourcePath == "" {
 				candidate := strings.TrimPrefix(field, "@")
@@ -1889,6 +1902,12 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 	}
 	if mode := goalResearchMode(goal); mode != "" && mode != goalResearchNone {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("research_mode", mode))
+	}
+	if strings.TrimSpace(goal.WorktreeRoot) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree", goal.WorktreeRoot))
+		if strings.TrimSpace(goal.WorktreeBranch) != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_branch", goal.WorktreeBranch))
+		}
 	}
 	if cost := goalCostSummary(goal); cost != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("cost", cost))
