@@ -3052,11 +3052,15 @@ func functionFuzzDriveBuildRepairLoop(run *FunctionFuzzRun, timeoutSec int, comp
 			run.Execution.ExitCode = &lastExit
 			run.Execution.Status = "build_timed_out"
 			run.Execution.Reason = fmt.Sprintf("Build-only compile timed out after %d seconds. The fuzz executable was not run.", timeoutSec)
+			run.Execution.BuildFailureClass = "unknown"
+			run.Execution.BuildBlockers = functionFuzzBuildBlockersRecord("unknown", lastLog, repairsApplied, "compile timed out")
 			break
 		}
 		if outcome.ok {
 			run.Execution.ExitCode = &lastExit
 			run.Execution.Status = "build_succeeded"
+			run.Execution.BuildFailureClass = ""
+			run.Execution.BuildBlockers = nil
 			if repairsApplied > 0 {
 				run.Execution.Reason = fmt.Sprintf("Build-only compile succeeded after %d heuristic self-repair fix(es). The fuzz executable was not run.", repairsApplied)
 			} else {
@@ -3071,12 +3075,18 @@ func functionFuzzDriveBuildRepairLoop(run *FunctionFuzzRun, timeoutSec int, comp
 			run.Execution.ExitCode = &lastExit
 			run.Execution.Status = "build_failed"
 			run.Execution.Reason = fmt.Sprintf("Build-only compile failed after %d heuristic self-repair attempt(s); the remaining diagnostics are not mechanically fixable. The fuzz executable was not run.", repairsApplied)
+			class := functionFuzzClassifyCompileFailure(lastLog)
+			run.Execution.BuildFailureClass = class
+			run.Execution.BuildBlockers = functionFuzzBuildBlockersRecord(class, lastLog, repairsApplied, "repair attempt cap reached")
 			break
 		}
 		nextRepair, found := functionFuzzPlanCompileRepair(outcome.logText, *run, repair)
 		if !found {
 			run.Execution.ExitCode = &lastExit
 			run.Execution.Status = "build_failed"
+			class := functionFuzzClassifyCompileFailure(outcome.logText)
+			run.Execution.BuildFailureClass = class
+			run.Execution.BuildBlockers = functionFuzzBuildBlockersRecord(class, outcome.logText, repairsApplied, "no further mechanical fix")
 			if repairsApplied > 0 {
 				run.Execution.Reason = fmt.Sprintf("Build-only compile failed after %d heuristic self-repair attempt(s); no further mechanical fix was found. The fuzz executable was not run.", repairsApplied)
 			} else {
@@ -3091,12 +3101,15 @@ func functionFuzzDriveBuildRepairLoop(run *FunctionFuzzRun, timeoutSec int, comp
 		if len(repair.Steps) > 0 {
 			fix = repair.Steps[len(repair.Steps)-1]
 		}
-		auditLines = append(auditLines, fmt.Sprintf("self-repair attempt %d: %s", repairsApplied, fix))
+		class := functionFuzzClassifyCompileFailure(outcome.logText)
+		auditLines = append(auditLines, fmt.Sprintf("self-repair attempt %d [%s]: %s", repairsApplied, class, fix))
 		run.attachRepairOverlay(repair)
 		if rerender != nil {
 			rerender(run)
 		}
 	}
+
+	run.Execution.BuildRepairAttempts = repairsApplied
 
 	// Assemble the auditable build log: the final compiler output plus the
 	// chronological self-repair trail (empty on a first-try success).
@@ -3108,6 +3121,13 @@ func functionFuzzDriveBuildRepairLoop(run *FunctionFuzzRun, timeoutSec int, comp
 		finalLog += "\n-- KernForge self-repair log --\n"
 		finalLog += strings.Join(auditLines, "\n") + "\n"
 	}
+	if len(run.Execution.BuildBlockers) > 0 {
+		if strings.TrimSpace(finalLog) != "" && !strings.HasSuffix(finalLog, "\n") {
+			finalLog += "\n"
+		}
+		finalLog += "\n-- KernForge build blockers --\n"
+		finalLog += strings.Join(run.Execution.BuildBlockers, "\n") + "\n"
+	}
 	if strings.TrimSpace(run.Execution.BuildLogPath) != "" {
 		_ = os.WriteFile(run.Execution.BuildLogPath, []byte(finalLog), 0o644)
 	}
@@ -3118,7 +3138,117 @@ func functionFuzzDriveBuildRepairLoop(run *FunctionFuzzRun, timeoutSec int, comp
 		}
 		run.Execution.RecoveryNotes = uniqueStrings(notes)
 	}
+	if len(run.Execution.BuildBlockers) > 0 {
+		notes := append([]string(nil), run.Execution.RecoveryNotes...)
+		for _, blocker := range run.Execution.BuildBlockers {
+			notes = append(notes, "Build blocker: "+blocker)
+		}
+		run.Execution.RecoveryNotes = uniqueStrings(notes)
+	}
 	run.Execution.LastOutput = compactPersistentMemoryText(finalLog, 260)
+}
+
+// functionFuzzClassifyCompileFailure maps compiler/linker diagnostics into a
+// coarse failure class used by repair audits and durable build blockers.
+// Classes: missing-include, unresolved-symbol, wdk-macro, abi-or-link, unknown.
+func functionFuzzClassifyCompileFailure(diagnostics string) string {
+	text := strings.TrimSpace(diagnostics)
+	if text == "" {
+		return "unknown"
+	}
+	lower := strings.ToLower(text)
+	// Link / ABI failures (check before generic unresolved; LNK messages are explicit).
+	if strings.Contains(lower, "lnk2019") ||
+		strings.Contains(lower, "lnk2001") ||
+		strings.Contains(lower, "lnk1120") ||
+		strings.Contains(lower, "unresolved external symbol") ||
+		strings.Contains(lower, "undefined reference to") ||
+		strings.Contains(lower, "cannot open input file") ||
+		strings.Contains(lower, "ld: cannot find") ||
+		strings.Contains(lower, "duplicate symbol") ||
+		strings.Contains(lower, "mismatched calling convention") ||
+		strings.Contains(lower, "unresolved external") {
+		return "abi-or-link"
+	}
+	// Missing includes.
+	if _, ok := functionFuzzDiagnosticMissingInclude(text); ok {
+		return "missing-include"
+	}
+	if strings.Contains(lower, "file not found") && (strings.Contains(lower, ".h") || strings.Contains(lower, "include")) {
+		return "missing-include"
+	}
+	// WDK / kernel macro and type surface before generic unresolved type.
+	wdkTokens := []string{
+		"ntddk.h", "wdm.h", "ntifs.h", "wdf.h", "ntstatus", "pdevice_object",
+		"pirp", "driver_object", "keacquirespinlock", "exallocatepool",
+		"mmgetsystemaddressformdl", "iotoplevel", "irp_mj_", "kdprint",
+		"nt_success", "status_success", "pool_flag", "lookaside",
+		"fltregisterfilter", "fwpscallout", "obregistercallbacks",
+	}
+	for _, token := range wdkTokens {
+		if strings.Contains(lower, token) {
+			// Prefer wdk-macro when the diagnostic is about an undeclared WDK symbol
+			// rather than a missing project header (already classified above).
+			if strings.Contains(lower, "undeclared") ||
+				strings.Contains(lower, "unknown type") ||
+				strings.Contains(lower, "incomplete type") ||
+				strings.Contains(lower, "identifier") ||
+				strings.Contains(lower, "was not declared") {
+				return "wdk-macro"
+			}
+		}
+	}
+	// Unresolved type / identifier (compile-time symbol).
+	if _, ok := functionFuzzDiagnosticUnresolvedType(text); ok {
+		return "unresolved-symbol"
+	}
+	if _, ok := functionFuzzDiagnosticUndeclaredIdentifier(text); ok {
+		return "unresolved-symbol"
+	}
+	if strings.Contains(lower, "unknown type name") ||
+		strings.Contains(lower, "use of undeclared identifier") ||
+		strings.Contains(lower, "undeclared identifier") ||
+		strings.Contains(lower, "does not name a type") {
+		return "unresolved-symbol"
+	}
+	return "unknown"
+}
+
+// functionFuzzBuildBlockersRecord builds a durable list of remaining build
+// blockers after the repair loop stops without success.
+func functionFuzzBuildBlockersRecord(class, diagnostics string, repairsApplied int, reason string) []string {
+	class = strings.TrimSpace(class)
+	if class == "" {
+		class = "unknown"
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "build failed"
+	}
+	firstLine := ""
+	for _, line := range strings.Split(diagnostics, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "error") || strings.Contains(lower, "fatal") || strings.Contains(lower, "lnk") || strings.Contains(lower, "undefined") {
+			firstLine = compactPersistentMemoryText(line, 180)
+			break
+		}
+		if firstLine == "" {
+			firstLine = compactPersistentMemoryText(line, 180)
+		}
+	}
+	out := []string{
+		fmt.Sprintf("class=%s", class),
+		fmt.Sprintf("repairs_applied=%d", repairsApplied),
+		fmt.Sprintf("reason=%s", reason),
+	}
+	if firstLine != "" {
+		out = append(out, "diagnostic="+firstLine)
+	}
+	return out
 }
 
 func mcpExitCodeFromError(err error) int {

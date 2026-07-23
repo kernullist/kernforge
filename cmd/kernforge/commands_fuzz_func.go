@@ -243,6 +243,16 @@ type FunctionFuzzExecution struct {
 	ContinueCommand  string   `json:"continue_command,omitempty"`
 	BuildArgv        []string `json:"build_argv,omitempty"`
 	RunArgv          []string `json:"run_argv,omitempty"`
+	// BuildFailureClass is the coarse classifier for the latest terminal build
+	// failure: missing-include, unresolved-symbol, wdk-macro, abi-or-link, or
+	// unknown. Empty on a successful build.
+	BuildFailureClass string `json:"build_failure_class,omitempty"`
+	// BuildBlockers lists durable remaining blockers after the repair loop stops
+	// (class label, truncated diagnostic line, attempt count). Empty on success.
+	BuildBlockers []string `json:"build_blockers,omitempty"`
+	// BuildRepairAttempts is how many heuristic self-repair fixes were applied
+	// during the last build-only loop (0 when no repair ran or first-try success).
+	BuildRepairAttempts int `json:"build_repair_attempts,omitempty"`
 }
 
 // FunctionFuzzIOCTLField is a best-effort hint about one field the dispatch
@@ -279,7 +289,39 @@ type FunctionFuzzIOCTLSpec struct {
 	Detected    bool                     `json:"detected,omitempty"`
 	Codes       []FunctionFuzzIOCTLCode  `json:"codes,omitempty"`
 	InputFields []FunctionFuzzIOCTLField `json:"input_fields,omitempty"`
-	Notes       []string                 `json:"notes,omitempty"`
+	// Methods lists METHOD_* transfer types observed near the dispatch surface
+	// (METHOD_BUFFERED, METHOD_IN_DIRECT, METHOD_OUT_DIRECT, METHOD_NEITHER).
+	Methods []string `json:"methods,omitempty"`
+	// BufferLengthFields names input/output length symbols observed with the
+	// dispatch (InputBufferLength, OutputBufferLength, Parameters.DeviceIoControl.*).
+	BufferLengthFields []string `json:"buffer_length_fields,omitempty"`
+	// DispatchAnchors are file:line (or symbol) anchors for the IOCTL dispatch.
+	DispatchAnchors []string `json:"dispatch_anchors,omitempty"`
+	// ContractPath is the durable ioctl_contract.json path when written.
+	ContractPath string   `json:"contract_path,omitempty"`
+	Notes        []string `json:"notes,omitempty"`
+}
+
+// FunctionFuzzIOCTLSequenceStep is one step in a multi-call IOCTL campaign seed
+// (open device, DeviceIoControl, close). Campaign attach/promote records these
+// as sequence seed artifacts, not only single-shot virtual scenarios.
+type FunctionFuzzIOCTLSequenceStep struct {
+	Action      string `json:"action"`
+	IOCTLCode   string `json:"ioctl_code,omitempty"`
+	IOCTLValue  uint64 `json:"ioctl_value,omitempty"`
+	HasValue    bool   `json:"has_value,omitempty"`
+	InputHint   string `json:"input_hint,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+// FunctionFuzzIOCTLSequence is a multi-call open/ioctl*/close seed plan derived
+// from a recovered IOCTL contract.
+type FunctionFuzzIOCTLSequence struct {
+	Name        string                         `json:"name"`
+	Kind        string                         `json:"kind"`
+	Steps       []FunctionFuzzIOCTLSequenceStep `json:"steps"`
+	Source      string                         `json:"source,omitempty"`
+	Description string                         `json:"description,omitempty"`
 }
 
 type FunctionFuzzRun struct {
@@ -330,6 +372,12 @@ type FunctionFuzzRun struct {
 	CodeObservations     []FunctionFuzzCodeObservation `json:"code_observations,omitempty"`
 	VirtualScenarios     []FunctionFuzzVirtualScenario `json:"virtual_scenarios,omitempty"`
 	IOCTLSpec            *FunctionFuzzIOCTLSpec        `json:"ioctl_spec,omitempty"`
+	// IOCTLContractPath is the durable ioctl_contract.json under ArtifactDir when
+	// an IOCTL surface was detected for this run.
+	IOCTLContractPath string `json:"ioctl_contract_path,omitempty"`
+	// IOCTLSequences are multi-call open/ioctl/close seed plans for campaign
+	// promotion (sequence seeds, not only single-shot virtual scenarios).
+	IOCTLSequences []FunctionFuzzIOCTLSequence `json:"ioctl_sequences,omitempty"`
 	PrimaryEngine        string                        `json:"primary_engine,omitempty"`
 	SecondaryEngines     []string                      `json:"secondary_engines,omitempty"`
 	ArtifactDir          string                        `json:"artifact_dir,omitempty"`
@@ -601,6 +649,8 @@ func normalizeFunctionFuzzRun(run FunctionFuzzRun) FunctionFuzzRun {
 	run.CodeObservations = normalizeFunctionFuzzCodeObservations(run.CodeObservations)
 	run.VirtualScenarios = normalizeFunctionFuzzVirtualScenarios(run.VirtualScenarios)
 	run.IOCTLSpec = normalizeFunctionFuzzIOCTLSpec(run.IOCTLSpec)
+	run.IOCTLContractPath = functionFuzzNormalizeOptionalPath(run.IOCTLContractPath)
+	run.IOCTLSequences = normalizeFunctionFuzzIOCTLSequences(run.IOCTLSequences)
 	functionFuzzRecomputeScenarioScores(&run)
 	return run
 }
@@ -630,6 +680,16 @@ func normalizeFunctionFuzzExecution(execState FunctionFuzzExecution) FunctionFuz
 	case "", "smoke", "extended", "repro", "minimize":
 	default:
 		execState.Profile = "smoke"
+	}
+	execState.BuildFailureClass = strings.ToLower(strings.TrimSpace(execState.BuildFailureClass))
+	switch execState.BuildFailureClass {
+	case "", "missing-include", "unresolved-symbol", "wdk-macro", "abi-or-link", "unknown":
+	default:
+		execState.BuildFailureClass = "unknown"
+	}
+	execState.BuildBlockers = uniqueStrings(execState.BuildBlockers)
+	if execState.BuildRepairAttempts < 0 {
+		execState.BuildRepairAttempts = 0
 	}
 	execState.SanitizerProfile = strings.ToLower(strings.TrimSpace(execState.SanitizerProfile))
 	switch execState.SanitizerProfile {
@@ -2449,6 +2509,9 @@ func buildFunctionFuzzRunFromArtifacts(cfg Config, root string, query string, ar
 		TargetEndLine:       target.EndLine,
 	}
 	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
+	if run.IOCTLSpec != nil && run.IOCTLSpec.Detected {
+		run.IOCTLSequences = functionFuzzBuildIOCTLSequences(run)
+	}
 	if functionFuzzDocsCatalogBoost(target, artifacts.DocsManifest) > 0 {
 		run.Notes = append(run.Notes, functionFuzzLocalizedText(cfg, "Generated FUZZ_TARGETS.md catalog contributed to target ranking for this run.", "생성된 FUZZ_TARGETS.md catalog가 이번 실행의 타깃 순위 결정에 반영되었습니다."))
 	}
@@ -10260,6 +10323,10 @@ func writeFunctionFuzzArtifacts(run *FunctionFuzzRun, closure functionFuzzClosur
 	if err := prepareFunctionFuzzArtifacts(run); err != nil {
 		return err
 	}
+	// Ensure multi-call sequence plans exist whenever an IOCTL surface was inferred.
+	if run.IOCTLSpec != nil && run.IOCTLSpec.Detected && len(run.IOCTLSequences) == 0 {
+		run.IOCTLSequences = functionFuzzBuildIOCTLSequences(*run)
+	}
 	if err := writeFunctionFuzzPlanJSON(run); err != nil {
 		return err
 	}
@@ -10273,6 +10340,16 @@ func writeFunctionFuzzArtifacts(run *FunctionFuzzRun, closure functionFuzzClosur
 		if err := os.WriteFile(run.HarnessSynthesisPath, []byte(functionFuzzBuildHarnessSynthesisPrompt(*run)), 0o644); err != nil {
 			return err
 		}
+	}
+	if _, err := writeFunctionFuzzIOCTLContractArtifact(run); err != nil {
+		return err
+	}
+	if _, err := writeFunctionFuzzIOCTLSequenceSeeds(run); err != nil {
+		return err
+	}
+	// Rewrite plan.json once contract/sequence paths are populated.
+	if err := writeFunctionFuzzPlanJSON(run); err != nil {
+		return err
 	}
 	return nil
 }
@@ -13158,11 +13235,17 @@ func functionFuzzInferIOCTLSpec(run FunctionFuzzRun) *FunctionFuzzIOCTLSpec {
 	}
 	functionFuzzAttachIOCTLCodeFields(run, order, byKey, fileByKey)
 	fields := functionFuzzInferIOCTLInputFields(run)
+	methods := functionFuzzInferIOCTLMethods(run)
+	lengthFields := functionFuzzInferIOCTLBufferLengthFields(run)
+	anchors := functionFuzzInferIOCTLDispatchAnchors(run)
 	if len(order) == 0 {
 		return &FunctionFuzzIOCTLSpec{
-			Detected:    true,
-			InputFields: fields,
-			Notes:       []string{"IOCTL dispatch surface detected; no explicit control-code constants were recovered from source."},
+			Detected:           true,
+			InputFields:        fields,
+			Methods:            methods,
+			BufferLengthFields: lengthFields,
+			DispatchAnchors:    anchors,
+			Notes:              []string{"IOCTL dispatch surface detected; no explicit control-code constants were recovered from source."},
 		}
 	}
 	codes := make([]FunctionFuzzIOCTLCode, 0, len(order))
@@ -13172,7 +13255,300 @@ func functionFuzzInferIOCTLSpec(run FunctionFuzzRun) *FunctionFuzzIOCTLSpec {
 			break
 		}
 	}
-	return &FunctionFuzzIOCTLSpec{Detected: true, Codes: codes, InputFields: fields}
+	return &FunctionFuzzIOCTLSpec{
+		Detected:           true,
+		Codes:              codes,
+		InputFields:        fields,
+		Methods:            methods,
+		BufferLengthFields: lengthFields,
+		DispatchAnchors:    anchors,
+	}
+}
+
+// functionFuzzInferIOCTLMethods recovers METHOD_* transfer types from source
+// observations and CTL_CODE-style evidence near the dispatch surface.
+func functionFuzzInferIOCTLMethods(run FunctionFuzzRun) []string {
+	needles := []string{
+		"METHOD_BUFFERED",
+		"METHOD_IN_DIRECT",
+		"METHOD_OUT_DIRECT",
+		"METHOD_NEITHER",
+	}
+	seen := map[string]struct{}{}
+	out := []string{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		key := strings.ToUpper(name)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	scan := func(text string) {
+		upper := strings.ToUpper(text)
+		for _, needle := range needles {
+			if strings.Contains(upper, needle) {
+				add(needle)
+			}
+		}
+	}
+	for _, obs := range run.CodeObservations {
+		scan(obs.Evidence)
+		for _, fact := range obs.ComparisonFacts {
+			scan(fact)
+		}
+	}
+	if run.TargetSignature != "" {
+		scan(run.TargetSignature)
+	}
+	return out
+}
+
+// functionFuzzInferIOCTLBufferLengthFields recovers length-related symbols used
+// with IOCTL buffer contracts (InputBufferLength, OutputBufferLength, etc.).
+func functionFuzzInferIOCTLBufferLengthFields(run FunctionFuzzRun) []string {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(InputBufferLength)\b`),
+		regexp.MustCompile(`(?i)\b(OutputBufferLength)\b`),
+		regexp.MustCompile(`(?i)\b(Parameters\.DeviceIoControl\.(?:InputBufferLength|OutputBufferLength))\b`),
+		regexp.MustCompile(`(?i)\b(IoStatus\.Information)\b`),
+		regexp.MustCompile(`(?i)\b(WdfRequestRetrieve(?:Input|Output)Buffer)\b`),
+	}
+	seen := map[string]struct{}{}
+	out := []string{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[strings.ToLower(name)]; ok {
+			return
+		}
+		seen[strings.ToLower(name)] = struct{}{}
+		out = append(out, name)
+	}
+	scan := func(text string) {
+		for _, re := range patterns {
+			for _, m := range re.FindAllStringSubmatch(text, -1) {
+				if len(m) >= 2 {
+					add(m[1])
+				}
+			}
+		}
+	}
+	for _, obs := range run.CodeObservations {
+		scan(obs.Evidence)
+		for _, fact := range obs.ComparisonFacts {
+			scan(fact)
+		}
+	}
+	for _, field := range functionFuzzInferIOCTLInputFields(run) {
+		if strings.Contains(strings.ToLower(field.Role), "length") || strings.Contains(strings.ToLower(field.Access), "length") {
+			add(field.Access)
+		}
+	}
+	return out
+}
+
+// functionFuzzInferIOCTLDispatchAnchors returns file:line or symbol anchors for
+// dispatch_guard observations used as durable contract evidence.
+func functionFuzzInferIOCTLDispatchAnchors(run FunctionFuzzRun) []string {
+	out := []string{}
+	for _, obs := range run.CodeObservations {
+		if strings.TrimSpace(obs.Kind) != "dispatch_guard" && !strings.Contains(strings.ToLower(obs.Kind), "dispatch") {
+			continue
+		}
+		anchor := strings.TrimSpace(obs.Symbol)
+		file := filepath.ToSlash(strings.TrimSpace(obs.File))
+		if file != "" {
+			if obs.Line > 0 {
+				file = fmt.Sprintf("%s:%d", file, obs.Line)
+			}
+			anchor = file
+			if strings.TrimSpace(obs.Symbol) != "" {
+				anchor = file + " (" + strings.TrimSpace(obs.Symbol) + ")"
+			}
+		}
+		if strings.TrimSpace(anchor) != "" {
+			out = append(out, anchor)
+		}
+	}
+	return uniqueStrings(out)
+}
+
+// functionFuzzBuildIOCTLSequences builds multi-call open/ioctl/close sequence
+// seed plans from a recovered IOCTL contract.
+func functionFuzzBuildIOCTLSequences(run FunctionFuzzRun) []FunctionFuzzIOCTLSequence {
+	spec := run.IOCTLSpec
+	if spec == nil || !spec.Detected {
+		return nil
+	}
+	codes := []FunctionFuzzIOCTLCode{}
+	for _, c := range spec.Codes {
+		if strings.TrimSpace(c.Code) != "" {
+			codes = append(codes, c)
+		}
+		if len(codes) >= 3 {
+			break
+		}
+	}
+	if len(codes) == 0 {
+		// Still emit an open/close skeleton so campaign path has a multi-call seed.
+		return []FunctionFuzzIOCTLSequence{{
+			Name: "seq-open-close",
+			Kind: "ioctl_multi_call",
+			Steps: []FunctionFuzzIOCTLSequenceStep{
+				{Action: "open", Description: "Open the device object / handle under test."},
+				{Action: "close", Description: "Close the device handle."},
+			},
+			Source:      "ioctl_contract",
+			Description: "Open/close skeleton when no control codes were recovered.",
+		}}
+	}
+	steps := []FunctionFuzzIOCTLSequenceStep{
+		{Action: "open", Description: "Open the device object / handle under test."},
+	}
+	for i, c := range codes {
+		hint := "empty_input"
+		if i%2 == 0 {
+			hint = "short_input"
+		}
+		step := FunctionFuzzIOCTLSequenceStep{
+			Action:      "ioctl",
+			IOCTLCode:   c.Code,
+			HasValue:    c.HasValue,
+			IOCTLValue:  c.Value,
+			InputHint:   hint,
+			Description: fmt.Sprintf("DeviceIoControl for recovered code %s", c.Code),
+		}
+		steps = append(steps, step)
+	}
+	steps = append(steps, FunctionFuzzIOCTLSequenceStep{Action: "close", Description: "Close the device handle."})
+	return []FunctionFuzzIOCTLSequence{{
+		Name:        "seq-open-ioctl-close",
+		Kind:        "ioctl_multi_call",
+		Steps:       steps,
+		Source:      "ioctl_contract",
+		Description: "Multi-call open/ioctl/close sequence derived from recovered IOCTL codes.",
+	}}
+}
+
+func normalizeFunctionFuzzIOCTLSequences(items []FunctionFuzzIOCTLSequence) []FunctionFuzzIOCTLSequence {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]FunctionFuzzIOCTLSequence, 0, len(items))
+	for _, item := range items {
+		item.Name = strings.TrimSpace(item.Name)
+		item.Kind = strings.TrimSpace(item.Kind)
+		item.Source = strings.TrimSpace(item.Source)
+		item.Description = compactPersistentMemoryText(item.Description, 220)
+		steps := make([]FunctionFuzzIOCTLSequenceStep, 0, len(item.Steps))
+		for _, step := range item.Steps {
+			step.Action = strings.ToLower(strings.TrimSpace(step.Action))
+			step.IOCTLCode = strings.TrimSpace(step.IOCTLCode)
+			step.InputHint = strings.TrimSpace(step.InputHint)
+			step.Description = compactPersistentMemoryText(step.Description, 160)
+			if step.Action == "" {
+				continue
+			}
+			steps = append(steps, step)
+		}
+		item.Steps = steps
+		if item.Name == "" || len(item.Steps) == 0 {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// writeFunctionFuzzIOCTLContractArtifact writes ioctl_contract.json and returns
+// its path. No-op when no IOCTL surface is present.
+func writeFunctionFuzzIOCTLContractArtifact(run *FunctionFuzzRun) (string, error) {
+	if run == nil || run.IOCTLSpec == nil || !run.IOCTLSpec.Detected {
+		return "", nil
+	}
+	dir := strings.TrimSpace(run.ArtifactDir)
+	if dir == "" {
+		if err := prepareFunctionFuzzArtifacts(run); err != nil {
+			return "", err
+		}
+		dir = run.ArtifactDir
+	}
+	path := filepath.Join(dir, "ioctl_contract.json")
+	payload := map[string]any{
+		"schema":               "kernforge.ioctl_contract.v1",
+		"run_id":               run.ID,
+		"target":               firstNonBlankString(run.TargetSymbolName, run.TargetQuery),
+		"target_file":          filepath.ToSlash(strings.TrimSpace(run.TargetFile)),
+		"detected":             true,
+		"codes":                run.IOCTLSpec.Codes,
+		"methods":              run.IOCTLSpec.Methods,
+		"buffer_length_fields": run.IOCTLSpec.BufferLengthFields,
+		"input_fields":         run.IOCTLSpec.InputFields,
+		"dispatch_anchors":     run.IOCTLSpec.DispatchAnchors,
+		"sequences":            run.IOCTLSequences,
+		"notes":                run.IOCTLSpec.Notes,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	run.IOCTLContractPath = path
+	run.IOCTLSpec.ContractPath = path
+	return path, nil
+}
+
+// writeFunctionFuzzIOCTLSequenceSeeds writes multi-call sequence seed JSON files
+// under the run artifact corpus directory (and returns their paths).
+func writeFunctionFuzzIOCTLSequenceSeeds(run *FunctionFuzzRun) ([]string, error) {
+	if run == nil || len(run.IOCTLSequences) == 0 {
+		return nil, nil
+	}
+	dir := strings.TrimSpace(run.ArtifactDir)
+	if dir == "" {
+		if err := prepareFunctionFuzzArtifacts(run); err != nil {
+			return nil, err
+		}
+		dir = run.ArtifactDir
+	}
+	seqDir := filepath.Join(dir, "corpus", "sequences")
+	if err := os.MkdirAll(seqDir, 0o755); err != nil {
+		return nil, err
+	}
+	paths := []string{}
+	for _, seq := range run.IOCTLSequences {
+		name := fuzzCampaignSafePathPart(firstNonBlankString(seq.Name, "sequence")) + ".json"
+		path := filepath.Join(seqDir, name)
+		payload := map[string]any{
+			"schema":      "kernforge.fuzz_campaign.sequence_seed.v1",
+			"run_id":      run.ID,
+			"name":        seq.Name,
+			"kind":        seq.Kind,
+			"source":      seq.Source,
+			"description": seq.Description,
+			"steps":       seq.Steps,
+			"target":      firstNonBlankString(run.TargetSymbolName, run.TargetQuery),
+			"target_file": filepath.ToSlash(strings.TrimSpace(run.TargetFile)),
+		}
+		data, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return paths, err
+		}
+		if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+			return paths, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
 }
 
 // functionFuzzIOCTLSpecNumericCodes returns the resolved numeric control codes
@@ -13200,6 +13576,10 @@ func normalizeFunctionFuzzIOCTLSpec(spec *FunctionFuzzIOCTLSpec) *FunctionFuzzIO
 	if spec == nil {
 		return nil
 	}
+	spec.Methods = uniqueStrings(spec.Methods)
+	spec.BufferLengthFields = uniqueStrings(spec.BufferLengthFields)
+	spec.DispatchAnchors = uniqueStrings(spec.DispatchAnchors)
+	spec.ContractPath = functionFuzzNormalizeOptionalPath(spec.ContractPath)
 	codes := make([]FunctionFuzzIOCTLCode, 0, len(spec.Codes))
 	for _, c := range spec.Codes {
 		c.Code = strings.TrimSpace(c.Code)

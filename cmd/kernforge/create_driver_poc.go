@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha1"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -69,6 +70,13 @@ func (rt *runtimeState) handleCreateDriverPOCCommand(args string) error {
 		}
 	}
 
+	// Write type-aware security workflow seed / next-command material so the
+	// fuzz and verify paths can pick up the POC without re-deriving next steps.
+	seedPath, seedErr := writeCreateDriverPOCSecuritySeed(targetRoot, spec)
+	if seedErr != nil {
+		return fmt.Errorf("write security seed: %w", seedErr)
+	}
+
 	writer := rt.writer
 	if writer == nil {
 		writer = io.Discard
@@ -82,10 +90,108 @@ func (rt *runtimeState) handleCreateDriverPOCCommand(args string) error {
 	fmt.Fprintln(writer, ui.statusKV("tester_project", filepath.Join(targetRoot, spec.DriverName+"-tester", spec.DriverName+"-tester.vcxproj")))
 	fmt.Fprintln(writer, ui.statusKV("tester_binary", spec.DriverName+"-tester.exe"))
 	fmt.Fprintln(writer, ui.statusKV("platforms", "Debug|x64, Release|x64"))
+	if strings.TrimSpace(seedPath) != "" {
+		fmt.Fprintln(writer, ui.statusKV("security_seed", seedPath))
+	}
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, ui.hintLine("Build: msbuild \""+filepath.Join(targetRoot, spec.DriverName+".sln")+"\" /p:Configuration=Debug /p:Platform=x64"))
 	fmt.Fprintln(writer, ui.hintLine("Run the tester from the output directory as Administrator. Driver builds use WDK TestSign; loading test-signed x64 drivers still requires OS test-signing or an equivalent lab policy."))
+	fmt.Fprintln(writer)
+	fmt.Fprintln(writer, ui.section("Security workflow handoff"))
+	for _, line := range createDriverPOCSecurityHandoffLines(spec) {
+		fmt.Fprintln(writer, ui.hintLine(line))
+	}
 	return nil
+}
+
+// createDriverPOCSecurityHandoffLines returns the explicit next security commands
+// printed after /create-driver-poc completes.
+func createDriverPOCSecurityHandoffLines(spec createDriverPOCSpec) []string {
+	driverRel := spec.DriverName
+	typeLabel := strings.TrimSpace(spec.POCType)
+	if typeLabel == "" {
+		typeLabel = "default"
+	}
+	lines := []string{
+		fmt.Sprintf("1) Source scan: /source-scan run --files %s", filepath.ToSlash(filepath.Join(driverRel, spec.DriverName))),
+		fmt.Sprintf("2) Function fuzz: /fuzz-func @%s", filepath.ToSlash(filepath.Join(driverRel, spec.DriverName))),
+		"3) Campaign: /fuzz-campaign run (promotes sequence seeds and native results when ready)",
+		"4) Verify: /verify (driver category + Driver Verifier smoke checklist)",
+		"5) Platform posture: /investigate start platform-security",
+		"6) Signing notes: enable OS test-signing (or lab policy) before loading WDK TestSign .sys; keep .inf/.cat with the package; run signtool verify after release signing",
+		"7) Driver Verifier: verifier /standard /driver " + spec.DriverName + ".sys  (lab VM recommended)",
+	}
+	switch typeLabel {
+	case "objectfilter":
+		lines = append(lines, "Type focus: ObCallback process/thread access-mask paths - fuzz DesiredAccess mutations and duplicate-handle races")
+	case "minifilter":
+		lines = append(lines, "Type focus: minifilter pre/post create/rename/delete - sequence open/rename/close seeds and context cleanup")
+	case "registryfilter":
+		lines = append(lines, "Type focus: RegNt* callbacks - fuzz create/set/delete/rename key sequences")
+	case "wfpcallout":
+		lines = append(lines, "Type focus: outbound classify callout - fuzz remote address/port classify inputs")
+	default:
+		lines = append(lines, "Type focus: WDM IOCTL dispatch - recover CTL_CODE/METHOD_* then multi-call open/ioctl/close seeds")
+	}
+	return lines
+}
+
+// writeCreateDriverPOCSecuritySeed writes a durable JSON seed under the POC tree
+// that lists next commands and type-aware fuzz targets for the security path.
+func writeCreateDriverPOCSecuritySeed(targetRoot string, spec createDriverPOCSpec) (string, error) {
+	dir := filepath.Join(targetRoot, ".kernforge", "security")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "workflow_seed.json")
+	typeLabel := strings.TrimSpace(spec.POCType)
+	if typeLabel == "" {
+		typeLabel = "default"
+	}
+	driverSrc := filepath.ToSlash(filepath.Join(spec.DriverName, spec.DriverName))
+	payload := map[string]any{
+		"schema":      "kernforge.create_driver_poc.security_seed.v1",
+		"driver_name": spec.DriverName,
+		"poc_type":    typeLabel,
+		"next_commands": []string{
+			"/source-scan run --files " + driverSrc,
+			"/fuzz-func @" + driverSrc,
+			"/fuzz-campaign run",
+			"/verify",
+			"/investigate start platform-security",
+		},
+		"driver_verifier": "verifier /standard /driver " + spec.DriverName + ".sys",
+		"signing_notes": []string{
+			"WDK TestSign requires OS test-signing or equivalent lab policy to load x64 drivers",
+			"Keep .inf/.cat with the package for production signing",
+			"Run signtool verify after release signing",
+		},
+		"suggested_fuzz_focus": createDriverPOCSuggestedFuzzFocus(typeLabel),
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	data = append(data, '\n')
+	if err := atomicWriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func createDriverPOCSuggestedFuzzFocus(pocType string) []string {
+	switch strings.ToLower(strings.TrimSpace(pocType)) {
+	case "objectfilter":
+		return []string{"ObPreOperationCallback", "DesiredAccess", "handle duplicate"}
+	case "minifilter":
+		return []string{"PreCreate", "PreSetInformation", "stream context cleanup"}
+	case "registryfilter":
+		return []string{"RegNtPreCreateKeyEx", "RegNtPreSetValueKey", "RegNtPreDeleteKey"}
+	case "wfpcallout":
+		return []string{"classifyFn", "remote address", "remote port"}
+	default:
+		return []string{"IRP_MJ_DEVICE_CONTROL", "CTL_CODE", "METHOD_BUFFERED", "InputBufferLength"}
+	}
 }
 
 func parseCreateDriverPOCSpec(args string) (createDriverPOCSpec, error) {

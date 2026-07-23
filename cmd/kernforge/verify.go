@@ -449,6 +449,11 @@ func loadWorkspaceFuzzCampaignManifests(root string, limit int) []FuzzCampaign {
 }
 
 func fuzzCampaignNativeResultNeedsVerification(result FuzzCampaignNativeResult) bool {
+	// Spurious harness-only crashes are recorded but do not require target verification.
+	if strings.EqualFold(strings.TrimSpace(result.Feasibility), "spurious") ||
+		strings.EqualFold(strings.TrimSpace(result.Outcome), "spurious") {
+		return false
+	}
 	outcome := strings.ToLower(strings.TrimSpace(result.Outcome))
 	status := strings.ToLower(strings.TrimSpace(result.Status))
 	return result.CrashCount > 0 || len(result.ArtifactIDs) > 0 || outcome == "failed" || status == "failed" || status == "blocked"

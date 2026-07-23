@@ -4601,7 +4601,7 @@ Investigation commands capture live Windows state and store the result as invest
 
 /investigate start <preset> [target]
 - Start a new investigation session.
-- MVP presets: driver-visibility, process-visibility, provider-visibility
+- MVP presets: driver-visibility, process-visibility, provider-visibility, platform-security
 
 /investigate snapshot [target]
 - Capture a live snapshot for the active investigation.

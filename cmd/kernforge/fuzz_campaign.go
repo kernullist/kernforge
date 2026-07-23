@@ -45,6 +45,11 @@ type FuzzCampaignNativeResult struct {
 	CrashAccess        string    `json:"crash_access,omitempty"`
 	CrashAddress       string    `json:"crash_address,omitempty"`
 	Exploitability     string    `json:"exploitability,omitempty"`
+	// Feasibility is the crash validation gate outcome:
+	// target_plausible | spurious | unknown. Spurious crashes (harness-only
+	// stacks / harness misuse) must not promote as validated target findings.
+	Feasibility        string    `json:"feasibility,omitempty"`
+	FeasibilityReason  string    `json:"feasibility_reason,omitempty"`
 	SuspectedInvariant string    `json:"suspected_invariant,omitempty"`
 	MinimizeCommand    string    `json:"minimize_command,omitempty"`
 	ReportPath         string    `json:"report_path,omitempty"`
@@ -77,6 +82,9 @@ type FuzzCampaignFinding struct {
 	CrashFingerprint   string    `json:"crash_fingerprint,omitempty"`
 	CrashClass         string    `json:"crash_class,omitempty"`
 	Exploitability     string    `json:"exploitability,omitempty"`
+	// Feasibility mirrors the native crash validation gate (spurious vs target_plausible).
+	Feasibility        string    `json:"feasibility,omitempty"`
+	FeasibilityReason  string    `json:"feasibility_reason,omitempty"`
 	SuspectedInvariant string    `json:"suspected_invariant,omitempty"`
 	ReportPath         string    `json:"report_path,omitempty"`
 	DuplicateCount     int       `json:"duplicate_count,omitempty"`
@@ -452,6 +460,13 @@ func normalizeFuzzCampaignNativeResults(items []FuzzCampaignNativeResult) []Fuzz
 		item.CrashAccess = strings.ToUpper(strings.TrimSpace(item.CrashAccess))
 		item.CrashAddress = strings.ToLower(strings.TrimSpace(item.CrashAddress))
 		item.Exploitability = strings.ToUpper(strings.TrimSpace(item.Exploitability))
+		item.Feasibility = strings.ToLower(strings.TrimSpace(item.Feasibility))
+		switch item.Feasibility {
+		case "", "target_plausible", "spurious", "unknown":
+		default:
+			item.Feasibility = "unknown"
+		}
+		item.FeasibilityReason = compactPersistentMemoryText(item.FeasibilityReason, 220)
 		item.SuspectedInvariant = compactPersistentMemoryText(item.SuspectedInvariant, 220)
 		item.MinimizeCommand = compactPersistentMemoryText(item.MinimizeCommand, 220)
 		item.ReportPath = functionFuzzNormalizeOptionalPath(item.ReportPath)
@@ -565,6 +580,22 @@ func normalizeFuzzCampaignFindings(items []FuzzCampaignFinding) []FuzzCampaignFi
 		item.CrashFingerprint = strings.TrimSpace(item.CrashFingerprint)
 		item.CrashClass = strings.ToLower(strings.TrimSpace(item.CrashClass))
 		item.Exploitability = strings.ToUpper(strings.TrimSpace(item.Exploitability))
+		item.Feasibility = strings.ToLower(strings.TrimSpace(item.Feasibility))
+		switch item.Feasibility {
+		case "", "target_plausible", "spurious", "unknown":
+		default:
+			item.Feasibility = "unknown"
+		}
+		item.FeasibilityReason = compactPersistentMemoryText(item.FeasibilityReason, 220)
+		if item.Feasibility == "spurious" && item.Status != "spurious" {
+			// Durable quarantine: never leave a spurious crash as open/required.
+			item.Status = "spurious"
+			item.VerificationGate = "optional"
+			item.TrackedFeatureGate = "monitor"
+			if item.Severity == "" || item.Severity == "high" || item.Severity == "critical" {
+				item.Severity = "low"
+			}
+		}
 		item.SuspectedInvariant = compactPersistentMemoryText(item.SuspectedInvariant, 220)
 		item.ReportPath = functionFuzzNormalizeOptionalPath(item.ReportPath)
 		item.MergedFindingIDs = uniqueStrings(item.MergedFindingIDs)
@@ -1334,16 +1365,34 @@ func promoteFunctionFuzzRunSeeds(campaign FuzzCampaign, runs []FunctionFuzzRun, 
 	var promoted []FuzzCampaignSeedArtifact
 	for _, run := range runs {
 		run = normalizeFunctionFuzzRun(run)
-		if strings.TrimSpace(run.ID) == "" || len(run.VirtualScenarios) == 0 {
+		if strings.TrimSpace(run.ID) == "" {
+			continue
+		}
+		runDir := filepath.Join(campaign.CorpusDir, fuzzCampaignSafePathPart(run.ID))
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			return FuzzCampaign{}, nil, err
+		}
+		// Multi-call IOCTL sequence seeds first so campaign attach always
+		// records open/ioctl/close-style material when a contract exists.
+		if len(run.IOCTLSequences) > 0 {
+			seqArtifacts, err := writeFuzzCampaignSequenceSeeds(runDir, run)
+			if err != nil {
+				return FuzzCampaign{}, nil, err
+			}
+			for _, artifact := range seqArtifacts {
+				promoted = append(promoted, artifact)
+				campaign.Findings = upsertFuzzCampaignFinding(campaign.Findings, buildFuzzCampaignSeedFinding(campaign, run, artifact))
+			}
+		}
+		if len(run.VirtualScenarios) == 0 {
+			if len(run.IOCTLSequences) > 0 {
+				campaign = attachFunctionFuzzRunToCampaign(campaign, run)
+			}
 			continue
 		}
 		scenarios := functionFuzzSortedVirtualScenarios(run.VirtualScenarios)
 		if len(scenarios) > limitPerRun {
 			scenarios = scenarios[:limitPerRun]
-		}
-		runDir := filepath.Join(campaign.CorpusDir, fuzzCampaignSafePathPart(run.ID))
-		if err := os.MkdirAll(runDir, 0o755); err != nil {
-			return FuzzCampaign{}, nil, err
 		}
 		for index, scenario := range scenarios {
 			artifact, err := writeFuzzCampaignScenarioSeed(runDir, run, scenario, index+1)
@@ -1365,6 +1414,55 @@ func promoteFunctionFuzzRunSeeds(campaign FuzzCampaign, runs []FunctionFuzzRun, 
 		return FuzzCampaign{}, nil, err
 	}
 	return normalizeFuzzCampaign(campaign), promoted, nil
+}
+
+// writeFuzzCampaignSequenceSeeds writes multi-call open/ioctl/close sequence
+// seed JSON into the campaign corpus and returns seed artifacts for the manifest.
+func writeFuzzCampaignSequenceSeeds(runDir string, run FunctionFuzzRun) ([]FuzzCampaignSeedArtifact, error) {
+	seqDir := filepath.Join(runDir, "sequences")
+	if err := os.MkdirAll(seqDir, 0o755); err != nil {
+		return nil, err
+	}
+	out := []FuzzCampaignSeedArtifact{}
+	for _, seq := range run.IOCTLSequences {
+		name := fuzzCampaignSafePathPart(firstNonBlankString(seq.Name, "sequence")) + ".json"
+		path := filepath.Join(seqDir, name)
+		inputs := []string{}
+		for _, step := range seq.Steps {
+			if step.Action == "ioctl" && strings.TrimSpace(step.IOCTLCode) != "" {
+				inputs = append(inputs, step.IOCTLCode)
+			}
+		}
+		payload := map[string]any{
+			"schema":           "kernforge.fuzz_campaign.sequence_seed.v1",
+			"run_id":           run.ID,
+			"target":           firstNonBlankString(run.TargetSymbolName, run.TargetQuery),
+			"target_symbol_id": run.TargetSymbolID,
+			"target_file":      filepath.ToSlash(strings.TrimSpace(run.TargetFile)),
+			"name":             seq.Name,
+			"kind":             seq.Kind,
+			"source":           firstNonBlankString(seq.Source, "ioctl_contract"),
+			"description":      seq.Description,
+			"steps":            seq.Steps,
+			"inputs":           uniqueStrings(inputs),
+		}
+		data, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return out, err
+		}
+		if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+			return out, err
+		}
+		out = append(out, FuzzCampaignSeedArtifact{
+			RunID:      run.ID,
+			Scenario:   firstNonBlankString(seq.Name, "ioctl_multi_call"),
+			Path:       path,
+			Source:     "ioctl_sequence",
+			Inputs:     uniqueStrings(inputs),
+			SourceHint: fuzzCampaignSourceAnchorForRun(run),
+		})
+	}
+	return out, nil
 }
 
 func (rt *runtimeState) captureFuzzCampaignNativeResults(campaign FuzzCampaign, runs []FunctionFuzzRun) (FuzzCampaign, []FuzzCampaignNativeResult, error) {
@@ -1520,11 +1618,148 @@ func buildFuzzCampaignNativeResult(campaign FuzzCampaign, run FunctionFuzzRun) (
 		result.CrashAddress = crashReport.Address
 		result.Exploitability = fuzzCampaignExploitabilityBand(crashReport)
 	}
+	// Feasibility gate: harness-only / harness-misuse crashes are marked
+	// spurious and must not promote as validated target findings.
+	feasibility, reason := fuzzCampaignValidateCrashFeasibility(run, crashReport, result.CrashCount)
+	result.Feasibility = feasibility
+	result.FeasibilityReason = reason
+	if feasibility == "spurious" && result.CrashCount > 0 {
+		// Keep outcome visible as failed runtime, but mark the result so finding
+		// promotion can quarantine it as non-validated.
+		result.Outcome = "spurious"
+	}
 	normalized := normalizeFuzzCampaignNativeResults([]FuzzCampaignNativeResult{result})
 	if len(normalized) == 0 {
 		return FuzzCampaignNativeResult{}, false
 	}
 	return normalized[0], true
+}
+
+// fuzzCampaignValidateCrashFeasibility classifies a native crash as
+// target_plausible, spurious, or unknown. Spurious means the stack/report is
+// explained by harness misuse (frames only in harness/fuzzer runtime) rather
+// than the operator's target under test.
+func fuzzCampaignValidateCrashFeasibility(run FunctionFuzzRun, report FuzzCampaignCrashReport, crashCount int) (string, string) {
+	if crashCount <= 0 && !report.Parsed {
+		return "unknown", "no crash artifacts or parsed sanitizer report"
+	}
+	if crashCount <= 0 {
+		return "unknown", "no crash artifacts"
+	}
+	if !report.Parsed || len(report.Frames) == 0 {
+		// Crash artifacts exist but we cannot prove harness-only; treat as
+		// target_plausible so we do not drop real bugs without evidence.
+		return "target_plausible", "crash present without enough stack detail to prove harness-only"
+	}
+
+	targetHints := fuzzCampaignTargetFrameHints(run)
+	harnessOnly := 0
+	targetHits := 0
+	fuzzerRuntimeHits := 0
+	for _, frame := range report.Frames {
+		lower := strings.ToLower(strings.TrimSpace(frame))
+		if lower == "" {
+			continue
+		}
+		if fuzzCampaignFrameLooksHarnessOnly(lower) {
+			harnessOnly++
+		}
+		if fuzzCampaignFrameLooksFuzzerRuntime(lower) {
+			fuzzerRuntimeHits++
+		}
+		for _, hint := range targetHints {
+			if hint != "" && strings.Contains(lower, hint) {
+				targetHits++
+				break
+			}
+		}
+	}
+
+	// Explicit harness-misuse signals in the report header/class.
+	header := strings.ToLower(report.HeaderLine + " " + report.Class + " " + report.UBSanKind)
+	if strings.Contains(header, "harness") && (strings.Contains(header, "misuse") || strings.Contains(header, "assertion") || strings.Contains(header, "abort")) {
+		return "spurious", "sanitizer report indicates harness misuse rather than target code"
+	}
+
+	// All recovered frames are harness/fuzzer runtime and none match the target.
+	if targetHits == 0 && harnessOnly+fuzzerRuntimeHits >= len(report.Frames) && len(report.Frames) > 0 {
+		return "spurious", "all recovered stack frames are harness or fuzzer runtime; no target symbol/file hit"
+	}
+	if targetHits == 0 && harnessOnly > 0 && harnessOnly >= len(report.Frames)-1 && fuzzerRuntimeHits > 0 {
+		return "spurious", "stack is dominated by harness/fuzzer frames without a target hit"
+	}
+	if targetHits > 0 {
+		return "target_plausible", "stack includes frames matching the fuzz target"
+	}
+	// Crash with frames that are not clearly harness-only: keep as plausible.
+	return "target_plausible", "crash frames are not exclusively harness/fuzzer runtime"
+}
+
+func fuzzCampaignTargetFrameHints(run FunctionFuzzRun) []string {
+	hints := []string{}
+	add := func(value string) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return
+		}
+		// Prefer leaf identifiers for substring match.
+		if idx := strings.LastIndexAny(value, "/\\"); idx >= 0 {
+			value = value[idx+1:]
+		}
+		if idx := strings.LastIndex(value, "::"); idx >= 0 {
+			value = value[idx+2:]
+		}
+		value = strings.TrimSuffix(value, filepath.Ext(value))
+		if len(value) < 3 {
+			return
+		}
+		hints = append(hints, value)
+	}
+	add(run.TargetSymbolName)
+	add(run.TargetQuery)
+	add(run.TargetFile)
+	if id := strings.TrimSpace(run.TargetSymbolID); id != "" {
+		add(id)
+	}
+	return uniqueStrings(hints)
+}
+
+func fuzzCampaignFrameLooksHarnessOnly(lowerFrame string) bool {
+	needles := []string{
+		"llvmfuzzertestoneinput",
+		"harness.cpp",
+		"fuzz_target",
+		"kernforge_harness",
+		"readbytevector",
+		"function_fuzz_harness",
+		"self-repair",
+	}
+	for _, needle := range needles {
+		if strings.Contains(lowerFrame, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func fuzzCampaignFrameLooksFuzzerRuntime(lowerFrame string) bool {
+	needles := []string{
+		"libfuzzer",
+		"fuzzer::",
+		"__asan_",
+		"__asan::",
+		"asan_rtl",
+		"compiler-rt",
+		"llvm-symbolizer",
+		"sancov.",
+		"fuzzeddataprovider",
+	}
+	for _, needle := range needles {
+		if strings.Contains(lowerFrame, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func collectFuzzCampaignCoverageReports(campaign FuzzCampaign, run FunctionFuzzRun, result FuzzCampaignNativeResult) []FuzzCampaignCoverageReport {
@@ -2277,6 +2512,15 @@ func buildFuzzCampaignNativeFinding(campaign FuzzCampaign, run FunctionFuzzRun, 
 	if strings.TrimSpace(result.Exploitability) != "" {
 		severity = fuzzCampaignFindingMergedSeverity(severity, fuzzCampaignExploitabilitySeverity(result.Exploitability))
 	}
+	// Spurious (harness-only) crashes do not promote as validated target bugs:
+	// quarantine status, optional verification, and no feature close-block.
+	feasibility := strings.ToLower(strings.TrimSpace(result.Feasibility))
+	if feasibility == "spurious" || strings.EqualFold(result.Outcome, "spurious") {
+		status = "spurious"
+		severity = "low"
+		verificationGate = "optional"
+		featureGate = "monitor"
+	}
 	now := time.Now()
 	nativeKey := fuzzCampaignNativeResultKey(result)
 	sourceAnchor := fuzzCampaignSourceAnchorForRun(run)
@@ -2299,6 +2543,8 @@ func buildFuzzCampaignNativeFinding(campaign FuzzCampaign, run FunctionFuzzRun, 
 		CrashFingerprint:   result.CrashFingerprint,
 		CrashClass:         result.CrashClass,
 		Exploitability:     result.Exploitability,
+		Feasibility:        result.Feasibility,
+		FeasibilityReason:  result.FeasibilityReason,
 		SuspectedInvariant: result.SuspectedInvariant,
 		ReportPath:         result.ReportPath,
 		CreatedAt:          now,

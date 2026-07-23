@@ -1222,7 +1222,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 			return firstLevel[commandName], 0, true
 		}
 		if len(fields) == 2 && strings.EqualFold(fields[0], "start") {
-			return []string{"driver-visibility", "process-visibility", "provider-visibility"}, 1, true
+			return []string{"driver-visibility", "process-visibility", "provider-visibility", "platform-security"}, 1, true
 		}
 		if len(fields) == 2 && strings.EqualFold(fields[0], "show") {
 			return rt.recentInvestigationIDs(), 1, true

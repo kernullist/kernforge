@@ -49,7 +49,10 @@ type InvestigationSnapshot struct {
 	Commands   []InvestigationCommandResult `json:"commands,omitempty"`
 	Artifacts  []string                     `json:"artifacts,omitempty"`
 	Findings   []InvestigationFinding       `json:"findings,omitempty"`
-	RawSummary string                       `json:"raw_summary,omitempty"`
+	// Attributes holds structured key/value posture or collector fields (for
+	// example platform-security Secure Boot / VBS / HVCI / TPM readiness).
+	Attributes map[string]string `json:"attributes,omitempty"`
+	RawSummary string            `json:"raw_summary,omitempty"`
 }
 
 type InvestigationRecord struct {
@@ -328,6 +331,17 @@ func normalizeInvestigationSnapshot(snapshot InvestigationSnapshot) Investigatio
 	snapshot.Target = strings.TrimSpace(snapshot.Target)
 	snapshot.RawSummary = compactPersistentMemoryText(snapshot.RawSummary, 400)
 	snapshot.Artifacts = uniqueStrings(snapshot.Artifacts)
+	if len(snapshot.Attributes) > 0 {
+		clean := map[string]string{}
+		for k, v := range snapshot.Attributes {
+			k = strings.TrimSpace(k)
+			if k == "" {
+				continue
+			}
+			clean[k] = strings.TrimSpace(v)
+		}
+		snapshot.Attributes = clean
+	}
 	for i := range snapshot.Findings {
 		snapshot.Findings[i] = normalizeInvestigationFinding(snapshot.Findings[i])
 	}

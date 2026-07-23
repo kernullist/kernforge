@@ -450,20 +450,19 @@ Kernforge가 차별화해야 할 방향:
 - IOCTL dispatch, parser, deserializer, packet handler, Unreal RPC, config loader, telemetry decoder를 우선순위화한다.
 
 2. harness quality
-- libFuzzer/AFL++/WinAFL 스타일을 구분한다.
-- target signature adapter, fixture init, fake kernel/user boundary shim, deterministic allocator mode를 분리한다.
-- generated harness에 unresolved dependency와 required mock을 명시한다.
+- 완료(2026-07-24): compile failure classify (`missing-include|unresolved-symbol|wdk-macro|abi-or-link`) + bounded 1–3 self-repair loop + durable `BuildBlockers`.
+- 남음: libFuzzer/AFL++/WinAFL 스타일 분리, fixture init / fake kernel shim / deterministic allocator mode.
 
 3. corpus lifecycle
-- seed corpus 생성, import, dedup, minimize, promote를 지원한다.
-- source-derived counterexample을 seed로 저장한다.
-- crash 재현 corpus와 exploratory corpus를 분리한다.
+- 완료(2026-07-24): IOCTL multi-call open/ioctl/close sequence seeds + campaign promote (`ioctl_sequence`) + durable `ioctl_contract.json`.
+- 남음: import/dedup/minimize UX 확장, crash 재현 corpus와 exploratory corpus 분리.
 
 4. coverage and sanitizer integration
 - 완료: clang coverage 계열 report와 함께 sanitizer report, Windows crash dump, Application Verifier/Driver Verifier 결과를 campaign run artifact로 연결한다.
 - coverage gap을 다음 fuzz target 추천에 반영한다.
 
 5. crash triage
+- 완료(2026-07-24): feasibility gate (`target_plausible|spurious|unknown`); harness-only stacks are `spurious` and do not promote as validated findings.
 - crash hash, stack fingerprint, minimized input, target symbol, suspected invariant, source excerpt를 하나의 finding으로 묶는다.
 - 중복 crash를 evidence graph와 persistent memory에서 합친다.
 
@@ -473,11 +472,8 @@ Kernforge가 차별화해야 할 방향:
 - 장시간 실행은 checkpoint, log tail, crash count, coverage delta를 주기적으로 남긴다.
 
 7. Windows/anti-cheat specialization
-- user/kernel boundary fuzz profile
-- IOCTL buffer contract fuzz profile
-- ETW/event schema fuzz profile
-- Unreal RPC/replication fuzz profile
-- anti-cheat telemetry parser fuzz profile
+- 완료(2026-07-24): IOCTL contract profile + sequence seeds; `/investigate start platform-security` posture (Secure Boot/VBS/HVCI/test-signing/DSE/TPM); `/create-driver-poc` security handoff + workflow_seed.json.
+- 남음: ETW/event schema fuzz profile, Unreal RPC/replication fuzz profile depth, anti-cheat telemetry parser fuzz profile.
 
 구현 우선순위:
 1. 완료: 상위 `FuzzCampaign` 모델과 `FuzzCampaignStore` 추가
