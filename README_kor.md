@@ -1726,8 +1726,9 @@ goal은 선택값입니다. 생략하면 Kernforge가 선택된 mode와 path에�
 - build context가 충분하면 후속 네이티브 harness/run까지 연결하고, 부족하면 왜 막히는지 설명한 뒤 확인을 받는다. build-only 실패는 클래스 분류와 1–3회 self-repair, durable blocker를 남긴다.
 - IOCTL surface면 `ioctl_contract.json`과 multi-call open/ioctl/close sequence seed를 남기고 `/fuzz-campaign`이 승격한다.
 - 유용한 `/fuzz-func` 결과가 나오면 Kernforge가 campaign handoff를 출력하고 다음 자동 단계로 `/fuzz-campaign run`을 제안한다.
-- `/fuzz-campaign`은 다음 권장 campaign action을 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 `/fuzz-func` attach, deterministic JSON corpus seed 승격, dedup된 finding lifecycle 갱신, libFuzzer/llvm-cov/LCOV/JSON coverage report 수집, sanitizer/verifier/crash-dump artifact 수집, coverage gap feedback, artifact graph 갱신, native result report 생성, crash fingerprint, minimization command, evidence 기록, `/verify` planner 재사용, tracked feature gate 안내를 가능한 범위에서 자동 수행한다.
-- native crash finding은 crash fingerprint, source anchor, suspected invariant 기준으로 병합된다. manifest에는 duplicate count, 병합된 native result id, evidence id가 남아 반복 실행이 noisy issue 복제가 아니라 하나의 issue를 강화하는 방식으로 기록된다.
+- `/fuzz-campaign`은 다음 권장 campaign action을 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 `/fuzz-func` attach, deterministic JSON·IOCTL sequence seed 승격, dedup된 finding lifecycle 갱신, libFuzzer/llvm-cov/LCOV/JSON coverage report 수집, sanitizer/verifier/crash-dump artifact 수집, coverage gap feedback, artifact graph 갱신, native result report 생성, crash fingerprint, minimization command, evidence 기록, `/verify` planner 재사용, tracked feature gate 안내를 가능한 범위에서 자동 수행한다.
+- native crash는 feasibility gate(`target_plausible`/`spurious`)를 거친 뒤 fingerprint·source anchor·suspected invariant 기준으로 병합된다. harness-only crash는 validated finding/source-scan `native-confirmed`로 승격하지 않는다.
+- `/investigate start platform-security`로 Secure Boot/VBS/HVCI/test-signing/DSE/TPM posture를 남긴다.
 - campaign coverage gap은 manifest에 기록되고 다음 `analyze-project` docs refresh에서 재사용되어 아직 충분히 실행되지 않은 target이 `FUZZ_TARGETS.md` ranking feedback을 받는다.
 - `/fuzz-func ` 자동완성은 함수명과 파일 지정 예시를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
 
