@@ -568,10 +568,15 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		iteration.SliceID = activeSlice.ID
 		iteration.SliceName = activeSlice.Name
 		markGoalSliceStatus(&goal, activeSlice.ID, goalSliceStatusRunning)
+		appendGoalIterationEvent(&goal, iteration, goalEventSliceSelected, firstNonBlankString(activeSlice.Name, activeSlice.ID))
 	}
+	appendGoalIterationEvent(&goal, iteration, goalEventIterationStart, fmt.Sprintf("iteration %d", iteration.Index))
 	rt.printPersistentBlockWhileThinking(rt.ui.subsection(fmt.Sprintf("Goal iteration %d", iteration.Index)))
 	if activeSlice != nil {
 		rt.printGoalStep(iteration.Index, "slice", fmt.Sprintf("%s (%s)", firstNonBlankString(activeSlice.Name, activeSlice.ID), activeSlice.ID))
+	}
+	if goalResearchModeActive(goal) {
+		rt.printGoalStep(iteration.Index, "research", "research_mode="+goalResearchMode(goal))
 	}
 	rt.primeGoalRuntimeState(&goal, fmt.Sprintf("iteration-%d", iteration.Index))
 	rt.session.SetPlanNodeLifecycle("plan-01", "in_progress", "Inspecting goal state for autonomous iteration.")
@@ -719,6 +724,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 						goal.Status = goalStatusPending
 						goal.LastError = ""
 						goal.SemanticRejectCount = 0
+						appendGoalIterationEvent(&goal, iteration, goalEventSliceComplete, goalSlicePartialSummary(goal))
 						if summary := goalSlicePartialSummary(goal); summary != "" {
 							rt.printPersistentBlockWhileThinking(rt.ui.successLine("Slice complete; continuing goal — " + summary))
 						} else {
@@ -741,6 +747,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 								}
 							}
 						}
+						appendGoalIterationEvent(&goal, iteration, goalEventComplete, goalCostSummary(goal))
 						rt.session.SetPlanNodeLifecycle("plan-06", "completed", "Completion audit and semantic goal review are ready.")
 						if semanticReview.IndependentReviewSkipped {
 							rt.printPersistentBlockWhileThinking(rt.ui.warnLine(localizedText(rt.cfg,
@@ -758,12 +765,14 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 					iteration.Status = goalStatusBlocked
 					goal.Status = goalStatusBlocked
 					goal.LastError = blocker
+					appendGoalIterationEvent(&goal, iteration, goalEventSemanticReject, blocker)
 					rt.session.SetPlanNodeLifecycle("plan-06", "blocked", blocker)
 					if goal.AutoRollback {
 						iteration.RollbackStatus = rt.rollbackGoalIterationCheckpoint(goal, iteration)
 					}
 				} else {
 					goal.SemanticRejectCount++
+					appendGoalIterationEvent(&goal, iteration, goalEventSemanticReject, compactPromptSection(semanticReview.Feedback, 160))
 					repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalSemanticRepairPrompt(goal, iteration, semanticReview))
 					iteration.RepairReply = compactPromptSection(strings.Join([]string{iteration.RepairReply, repairReply}, "\n\n"), 1200)
 					if isGoalCancellationError(repairErr) {
@@ -992,6 +1001,9 @@ func (rt *runtimeState) recordGoalIteration(goal GoalState, iteration GoalIterat
 	}
 	if goal.Status == goalStatusComplete {
 		rt.printPersistentBlockWhileThinking(rt.ui.successLine("Goal complete: " + goal.ID))
+		if cost := goalCostSummary(goal); cost != "" {
+			rt.printPersistentBlockWhileThinking(rt.ui.statusKV("cost", cost))
+		}
 	} else if goal.Status == goalStatusBlocked {
 		rt.printPersistentBlockWhileThinking(rt.ui.warnLine("Goal blocked: " + goal.LastError))
 	} else if goal.Status == goalStatusUsageLimited {

@@ -99,8 +99,10 @@ type GoalState struct {
 	Plan             []PlanItem          `json:"plan,omitempty"`
 	// SlicePlan is the optional DAG of independently reviewable work units
 	// (goal-to-slice style). When present, Plan is a projection for legacy UI.
-	// Runner v2 (PR3) executes ready slices; until then the flat loop still runs.
+	// Runner v2 executes ready slices each iteration.
 	SlicePlan      *GoalSlicePlan      `json:"slice_plan,omitempty"`
+	// Events is a bounded observability log (iteration/slice/cost milestones).
+	Events         []GoalEvent         `json:"events,omitempty"`
 	CheckpointRefs []GoalCheckpointRef `json:"checkpoint_refs,omitempty"`
 	CommandHistory []GoalCommandRecord `json:"command_history,omitempty"`
 	Iterations     []GoalIteration     `json:"iterations,omitempty"`
@@ -201,6 +203,9 @@ type goalStartOptions struct {
 	UserCriteria             []string
 	RequireIndependentReview bool
 	GatedPermissions         bool
+	// ResearchMode forces AcceptanceSpec.ResearchMode (bounded|aggressive).
+	// Empty keeps the compiler classification from the objective text.
+	ResearchMode string
 }
 
 func (rt *runtimeState) handleGoalCommand(args string) error {
@@ -338,6 +343,9 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 		UpdatedAt:                now,
 	}
 	ensureGoalAcceptanceSpec(&goal)
+	if options.ResearchMode != "" {
+		forceGoalResearchMode(&goal, options.ResearchMode)
+	}
 	goal.Normalize()
 	rt.primeGoalRuntimeState(&goal, "created")
 	if !options.Run {
@@ -354,6 +362,10 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 	if goal.SlicePlan == nil || len(goal.SlicePlan.Slices) == 0 {
 		fb := fallbackGoalSlicePlan(goal)
 		goal.SlicePlan = &fb
+	}
+	appendGoalEvent(&goal, goalEventCreated, compactPromptSection(goal.Objective, 120))
+	if goalResearchModeActive(goal) {
+		appendGoalEvent(&goal, "research_mode", "enabled="+goalResearchMode(goal))
 	}
 	goal.updateUsageTelemetry(rt.session)
 	rt.session.UpsertGoal(goal)
@@ -675,6 +687,27 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 				return options, fmt.Errorf("invalid token budget: %s", fields[i])
 			}
 			options.TokenBudget = value
+		case "--research":
+			// Bare --research enables bounded mode; --research aggressive is also accepted.
+			mode := goalResearchBounded
+			if i+1 < len(fields) {
+				next := strings.ToLower(strings.TrimSpace(fields[i+1]))
+				if next == goalResearchBounded || next == goalResearchAggressive || next == goalResearchNone {
+					i++
+					mode = next
+				}
+			}
+			options.ResearchMode = mode
+		case "--research-mode":
+			if i+1 >= len(fields) {
+				return options, fmt.Errorf("%s requires none|bounded|aggressive", field)
+			}
+			i++
+			mode := strings.ToLower(strings.TrimSpace(fields[i]))
+			if mode != goalResearchNone && mode != goalResearchBounded && mode != goalResearchAggressive {
+				return options, fmt.Errorf("invalid research mode %q (want none|bounded|aggressive)", fields[i])
+			}
+			options.ResearchMode = mode
 		default:
 			if strings.HasPrefix(field, "@") && options.SourcePath == "" {
 				candidate := strings.TrimPrefix(field, "@")
@@ -843,6 +876,7 @@ func (rt *runtimeState) blockGoalWithReason(goal GoalState, reason string) {
 	}
 	goal.Status = goalStatusBlocked
 	goal.LastError = reason
+	appendGoalEvent(&goal, goalEventBlocked, reason)
 	goal.Touch()
 	rt.session.UpsertGoal(goal)
 	_ = rt.writeGoalArtifacts(goal)
@@ -851,6 +885,9 @@ func (rt *runtimeState) blockGoalWithReason(goal GoalState, reason string) {
 	}
 	if rt.writer != nil {
 		fmt.Fprintln(rt.writer, rt.ui.warnLine(reason))
+		if cost := goalCostSummary(goal); cost != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("cost", cost))
+		}
 	}
 }
 
@@ -1180,6 +1217,9 @@ func buildGoalImplementationPromptForSlice(goal GoalState, iteration int, slice 
 		if summary := goalSlicePartialSummary(goal); summary != "" {
 			fmt.Fprintf(&b, "Slice plan progress: %s\n\n", summary)
 		}
+	}
+	if section := renderGoalResearchModeSection(goal); section != "" {
+		b.WriteString(section)
 	}
 	if plan := normalizeGoalPlanItems(goal.Plan); len(plan) > 0 {
 		b.WriteString("User-reviewed execution plan:\n")
@@ -1847,6 +1887,15 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 	if summary := goalSlicePartialSummary(goal); summary != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("slices", summary))
 	}
+	if mode := goalResearchMode(goal); mode != "" && mode != goalResearchNone {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("research_mode", mode))
+	}
+	if cost := goalCostSummary(goal); cost != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("cost", cost))
+	}
+	if events := renderGoalEventsSection(goal.Events, 8); events != "" {
+		fmt.Fprintln(rt.writer, strings.TrimRight(events, "\n"))
+	}
 	if goal.LastError != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("last_error", goal.LastError))
 	}
@@ -1930,6 +1979,9 @@ func (rt *runtimeState) printGoalCompletionUsage(goal GoalState) {
 		return
 	}
 	goal.updateTimeUsedSeconds(time.Now())
+	if cost := goalCostSummary(goal); cost != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("cost", cost))
+	}
 	report := goalCompletionBudgetReport(goal)
 	if report == "" {
 		return
@@ -2582,6 +2634,9 @@ func (g *GoalState) Normalize() {
 		if len(g.SlicePlan.Slices) == 0 {
 			g.SlicePlan = nil
 		}
+	}
+	if len(g.Events) > maxGoalEvents {
+		g.Events = append([]GoalEvent(nil), g.Events[len(g.Events)-maxGoalEvents:]...)
 	}
 	for i := range g.CheckpointRefs {
 		g.CheckpointRefs[i].Normalize()

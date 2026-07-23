@@ -4,6 +4,13 @@
 
 ## 2026-07-23
 
+### Goal OS PR4: research_mode + cost/events
+
+- 계획: [[docs/plan/2026-07-23-autonomous-goal-system.md]]
+- `--research` / `--research-mode none|bounded|aggressive`로 AcceptanceSpec.ResearchMode 강제.
+- research_mode 활성 시 implement 프롬프트에 `$goal-loop` 조사 지침 주입 (로컬 버그픽스는 기본 none).
+- `GoalEvent` 링버퍼 + cost 요약(tokens/time/iterations/slices/research); status·complete·block 출력.
+
 ### Goal OS PR3: Runner v2 slice OPAVR + partial
 
 - 계획: [[docs/plan/2026-07-23-autonomous-goal-system.md]]
