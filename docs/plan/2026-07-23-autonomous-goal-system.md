@@ -1,7 +1,7 @@
 # 작업 계획서: Goal OS (자율 목표 완성 시스템)
 
 - 작성일: 2026-07-23
-- 상태: 승인됨 (PR1 리뷰·수정·커밋 대기 → PR2)
+- 상태: 승인됨 (PR1 커밋 완료, PR2 리뷰·커밋 직전)
 - 관련: [[docs/research/2026-07-23-autonomous-goal-systems.md]]
 
 ## 1. 목표
@@ -21,8 +21,8 @@ Skills: goal-to-slice default plan; goal-loop only research_mode; humanize on do
 
 ## 4. PR 스택
 
-1. Spec Compiler + criteria-primary semantic gate (**리뷰 완료, 커밋 직전**)
-2. Slice DAG model + artifacts + slice planner parse
+1. Spec Compiler + criteria-primary semantic gate (**완료**)
+2. Slice DAG model + artifacts + slice planner parse (**리뷰 직전**)
 3. Runner v2 slice OPAVR + partial
 4. research_mode + cost/events
 5. worktree + optional parallel
@@ -37,8 +37,8 @@ criteria 없이 process-only complete 불가; multi-slice partial; reject×3 blo
 
 - 2026-07-23: 설계 승인. 연구/계획 문서 작성. PR1 착수.
 - 2026-07-23: PR1 구현 — goal_spec.go, AcceptanceSpec, semantic/implement 체크리스트, progress fingerprint 보강, 단위 테스트.
-- 2026-07-24: PR1 리뷰 수정
-  - 기존 실패 테스트 원인: `review.auto_after_goal_iteration` 기본 false로 리뷰 model 스킵 → `enableGoalIterationAutoReview` 헬퍼로 full-loop 픽스처 정렬.
-  - research_mode: 단순 "조사" 코드 인스펙트 false positive 차단.
-  - progress score 하한 0 클램프; criteria 비교 UTF-8 rune 안전.
-  - 목표 변경 시 Spec 재컴파일(ObjectiveRestated 불일치).
+- 2026-07-24: PR1 리뷰 수정 후 커밋 `feat(goal): compile AcceptanceSpec...`
+  - 기존 실패 테스트: `review.auto_after_goal_iteration` 기본 false → full-loop 픽스처 정렬.
+  - research_mode false positive, progress score 클램프, UTF-8, 목표 변경 시 Spec 재컴파일.
+- 2026-07-24: PR2 구현 — goal_slice.go, parse/topo/ReadySlices, planner dual-parse, slices.md 아티팩트, fallback single-slice.
+  - 리뷰 수정: ArtifactRefs를 JSON marshal 전에 slice 경로 포함 (디스크 refs 누락 방지).

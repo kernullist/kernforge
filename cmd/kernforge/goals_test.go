@@ -464,8 +464,15 @@ func TestGoalRecordFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 	if len(persisted.CompletionCriteria) == 0 {
 		t.Fatalf("expected persisted goal completion criteria")
 	}
-	if len(persisted.ArtifactRefs) != 4 {
-		t.Fatalf("expected persisted per-goal and latest artifact refs, got %#v", persisted.ArtifactRefs)
+	// Core latest/per-id md+json (4) plus slice plan artifacts when SlicePlan exists (2).
+	if len(persisted.ArtifactRefs) < 4 {
+		t.Fatalf("expected at least core per-goal and latest artifact refs, got %#v", persisted.ArtifactRefs)
+	}
+	if persisted.SlicePlan == nil || len(persisted.SlicePlan.Slices) == 0 {
+		t.Fatalf("expected persisted SlicePlan fallback or planner DAG, got %#v", persisted.SlicePlan)
+	}
+	if len(persisted.ArtifactRefs) < 6 {
+		t.Fatalf("expected slice plan artifact refs alongside core refs, got %#v", persisted.ArtifactRefs)
 	}
 	md, err := os.ReadFile(filepath.Join(root, ".kernforge", "goals", "latest.md"))
 	if err != nil {

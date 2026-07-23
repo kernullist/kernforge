@@ -4,6 +4,15 @@
 
 ## 2026-07-23
 
+### Goal OS PR2: Slice DAG 모델 + planner parse
+
+- 계획: [[docs/plan/2026-07-23-autonomous-goal-system.md]]
+- `GoalSlice` / `GoalSlicePlan`: outcome/scope/acceptance/risk/depends_on, topo order, ReadySlices.
+- `parseGoalSlicePlanFromText`: goal-to-slice-planner 형식 파싱; flat numbered list는 레거시 Plan 유지.
+- `/goal --no-run` 플래너 프롬프트가 slice 형식 우선; 실패·`--run` 시 single-slice fallback.
+- 아티팩트: `latest.slices.md` + `<id>.slices.md`, goal markdown에 `## Slice DAG`.
+- 후속: Runner v2 slice OPAVR (PR3).
+
 ### Goal OS PR1: AcceptanceSpec 컴파일러
 
 - 계획: [[docs/plan/2026-07-23-autonomous-goal-system.md]], 연구: [[docs/research/2026-07-23-autonomous-goal-systems.md]]

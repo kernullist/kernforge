@@ -97,10 +97,14 @@ type GoalState struct {
 	// of the default full-auto ModeBypass that auto-approves every action.
 	GatedPermissions bool                `json:"gated_permissions,omitempty"`
 	Plan             []PlanItem          `json:"plan,omitempty"`
-	CheckpointRefs   []GoalCheckpointRef `json:"checkpoint_refs,omitempty"`
-	CommandHistory   []GoalCommandRecord `json:"command_history,omitempty"`
-	Iterations       []GoalIteration     `json:"iterations,omitempty"`
-	ArtifactRefs     []string            `json:"artifact_refs,omitempty"`
+	// SlicePlan is the optional DAG of independently reviewable work units
+	// (goal-to-slice style). When present, Plan is a projection for legacy UI.
+	// Runner v2 (PR3) executes ready slices; until then the flat loop still runs.
+	SlicePlan      *GoalSlicePlan      `json:"slice_plan,omitempty"`
+	CheckpointRefs []GoalCheckpointRef `json:"checkpoint_refs,omitempty"`
+	CommandHistory []GoalCommandRecord `json:"command_history,omitempty"`
+	Iterations     []GoalIteration     `json:"iterations,omitempty"`
+	ArtifactRefs   []string            `json:"artifact_refs,omitempty"`
 }
 
 type GoalAuditState struct {
@@ -342,6 +346,12 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(err.Error()))
 		}
 	}
+	// Every goal carries a SlicePlan (structured or single-slice fallback) so
+	// Runner v2 can always find a DAG without a separate migration step.
+	if goal.SlicePlan == nil || len(goal.SlicePlan.Slices) == 0 {
+		fb := fallbackGoalSlicePlan(goal)
+		goal.SlicePlan = &fb
+	}
 	goal.updateUsageTelemetry(rt.session)
 	rt.session.UpsertGoal(goal)
 	rt.session.AppendConversationEvent(ConversationEvent{
@@ -417,29 +427,51 @@ func (rt *runtimeState) generateAndAttachGoalPlan(ctx context.Context, goal *Goa
 	if rt == nil || rt.session == nil || goal == nil {
 		return nil
 	}
-	items, err := rt.generateGoalPlan(ctx, *goal)
+	items, slicePlan, err := rt.generateGoalPlan(ctx, *goal)
 	if err != nil {
 		fallback := normalizeGoalPlanItems(goalPlanItems())
 		goal.Plan = fallback
+		// Still attach a single-slice fallback so PR3 can find a DAG later.
+		fb := fallbackGoalSlicePlan(*goal)
+		goal.SlicePlan = &fb
 		rt.applyGoalPlanToSession(fallback, *goal, false)
 		return fmt.Errorf("goal plan generation failed; using fallback plan: %w", err)
 	}
 	goal.Plan = normalizeGoalPlanItems(items)
+	if slicePlan != nil && len(slicePlan.Slices) > 0 {
+		slicePlan.Normalize()
+		goal.SlicePlan = slicePlan
+		// Prefer the slice projection when structured slices were produced.
+		if projected := normalizeGoalPlanItems(PlanItemsFromSlices(*slicePlan)); len(projected) > 0 {
+			goal.Plan = projected
+		}
+	} else if goal.SlicePlan == nil || len(goal.SlicePlan.Slices) == 0 {
+		fb := fallbackGoalSlicePlan(*goal)
+		goal.SlicePlan = &fb
+	}
 	rt.applyGoalPlanToSession(goal.Plan, *goal, true)
 	return nil
 }
 
-func (rt *runtimeState) generateGoalPlan(ctx context.Context, goal GoalState) ([]PlanItem, error) {
+func (rt *runtimeState) generateGoalPlan(ctx context.Context, goal GoalState) ([]PlanItem, *GoalSlicePlan, error) {
 	prompt := buildGoalPlanningPrompt(goal)
 	reply, err := rt.runGoalPlanningReply(ctx, prompt)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	var slicePtr *GoalSlicePlan
+	if parsed, ok := parseGoalSlicePlanFromText(reply); ok {
+		parsed.Normalize()
+		slicePtr = &parsed
 	}
 	items := normalizeGoalPlanItems(parsePlanItemsFromText(reply))
-	if len(items) == 0 {
-		return nil, fmt.Errorf("goal planner returned no usable plan items")
+	if len(items) == 0 && slicePtr != nil {
+		items = normalizeGoalPlanItems(PlanItemsFromSlices(*slicePtr))
 	}
-	return items, nil
+	if len(items) == 0 {
+		return nil, slicePtr, fmt.Errorf("goal planner returned no usable plan items")
+	}
+	return items, slicePtr, nil
 }
 
 func (rt *runtimeState) runGoalPlanningReply(ctx context.Context, prompt string) (string, error) {
@@ -493,7 +525,9 @@ func goalPlanningSystemPrompt() string {
 		"You are a planning assistant for the Kernforge /goal command.",
 		"Create a concrete execution plan for a coding agent before autonomous execution starts.",
 		"Do not modify files, propose diffs, run tools, or claim implementation progress.",
-		"Return only a numbered list of actionable plan steps.",
+		"Prefer the structured Slices format (goal-to-slice style) with 3-7 vertical slices.",
+		"Each slice must include Outcome, Scope, Likely files, Acceptance, Validation, Docs, and Risk.",
+		"If you cannot produce structured slices, fall back to a plain numbered list of actionable steps only.",
 	}, "\n")
 }
 
@@ -505,18 +539,36 @@ func buildGoalPlanningPrompt(goal GoalState) string {
 	if strings.TrimSpace(goal.SourcePath) != "" {
 		fmt.Fprintf(&b, "Objective source file: %s\n\n", strings.TrimSpace(goal.SourcePath))
 	}
+	if section := renderGoalAcceptanceCriteriaSection(goal); section != "" {
+		b.WriteString(section)
+	}
 	if len(goal.CompletionCriteria) > 0 {
-		b.WriteString("Completion criteria:\n")
+		b.WriteString("Process / loop criteria (secondary):\n")
 		for _, item := range goal.CompletionCriteria {
 			fmt.Fprintf(&b, "- %s\n", item)
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("Preferred output format (use these section headings exactly):\n")
+	b.WriteString("Objective\n- <one sentence>\n\n")
+	b.WriteString("Non-goals\n- <items>\n\n")
+	b.WriteString("Slices\n")
+	b.WriteString("1. <name>\n")
+	b.WriteString("   Outcome: ...\n")
+	b.WriteString("   Scope: ...\n")
+	b.WriteString("   Likely files: ...\n")
+	b.WriteString("   Acceptance: ...\n")
+	b.WriteString("   Validation: ...\n")
+	b.WriteString("   Docs: ...\n")
+	b.WriteString("   Risk: low|medium|high\n")
+	b.WriteString("   Depends on: <slice-id or leave empty for sequential>\n\n")
+	b.WriteString("Recommended first slice\n- <name and why>\n\n")
+	b.WriteString("Open questions\n- None\n\n")
 	b.WriteString("Plan requirements:\n")
-	b.WriteString("1. Make the steps specific to the objective, repository surface, and expected verification work.\n")
-	b.WriteString("2. Include inspection, implementation, review/fix, verification, documentation or artifact updates when relevant, and completion audit readiness.\n")
-	b.WriteString("3. Keep the plan editable by the user; each line should be an independent action item.\n")
-	b.WriteString("4. Use 4 to 10 numbered steps. Do not include markdown headings, prose before the list, or code blocks.\n")
+	b.WriteString("1. Make slices specific to the objective, repository surface, and verification work.\n")
+	b.WriteString("2. Prefer 3 to 7 independently reviewable vertical slices; one risky assumption per slice.\n")
+	b.WriteString("3. Include inspection, implementation, review/fix, verification, and docs where relevant.\n")
+	b.WriteString("4. If structured slices are not possible, return only 4 to 10 numbered plain steps (no headings).\n")
 	return b.String()
 }
 
@@ -1899,7 +1951,10 @@ func writeGoalArtifactsForRoot(session *Session, root string, goal GoalState) (G
 		return goal, err
 	}
 	refs := goalArtifactRefs(root, goal.ID)
-	goal.ArtifactRefs = refs
+	if goal.SlicePlan != nil && len(goal.SlicePlan.Slices) > 0 {
+		refs = append(refs, goalSliceArtifactRefs(root, goal.ID)...)
+	}
+	goal.ArtifactRefs = uniqueStrings(refs)
 	plan := goalPlanItemsForSession(session, goal)
 	if len(goal.Plan) == 0 && len(plan) > 0 {
 		goal.Plan = normalizeGoalPlanItems(plan)
@@ -1908,18 +1963,28 @@ func writeGoalArtifactsForRoot(session *Session, root string, goal GoalState) (G
 	if err != nil {
 		return goal, err
 	}
-	if err := os.WriteFile(refs[1], data, 0o644); err != nil {
+	// Core goal artifacts: latest + per-id markdown/json (first four refs).
+	core := goalArtifactRefs(root, goal.ID)
+	if err := os.WriteFile(core[1], data, 0o644); err != nil {
 		return goal, err
 	}
-	if err := os.WriteFile(refs[3], data, 0o644); err != nil {
+	if err := os.WriteFile(core[3], data, 0o644); err != nil {
 		return goal, err
 	}
 	markdown := []byte(renderGoalMarkdownWithPlan(goal, plan))
-	if err := os.WriteFile(refs[0], markdown, 0o644); err != nil {
+	if err := os.WriteFile(core[0], markdown, 0o644); err != nil {
 		return goal, err
 	}
-	if err := os.WriteFile(refs[2], markdown, 0o644); err != nil {
+	if err := os.WriteFile(core[2], markdown, 0o644); err != nil {
 		return goal, err
+	}
+	if goal.SlicePlan != nil && len(goal.SlicePlan.Slices) > 0 {
+		slicesBody := []byte(renderGoalSlicePlanMarkdown(goal, *goal.SlicePlan))
+		for _, path := range goalSliceArtifactRefs(root, goal.ID) {
+			if err := os.WriteFile(path, slicesBody, 0o644); err != nil {
+				return goal, err
+			}
+		}
 	}
 	if session != nil {
 		session.UpsertGoal(goal)
@@ -1934,6 +1999,14 @@ func goalArtifactRefs(root string, goalID string) []string {
 		filepath.Join(outDir, "latest.json"),
 		filepath.Join(outDir, goalID+".md"),
 		filepath.Join(outDir, goalID+".json"),
+	}
+}
+
+func goalSliceArtifactRefs(root string, goalID string) []string {
+	outDir := filepath.Join(root, userConfigDirName, "goals")
+	return []string{
+		filepath.Join(outDir, "latest.slices.md"),
+		filepath.Join(outDir, goalID+".slices.md"),
 	}
 }
 
@@ -2085,6 +2158,33 @@ func renderGoalMarkdownWithPlan(goal GoalState, plan []PlanItem) string {
 				status = "pending"
 			}
 			fmt.Fprintf(&b, "- [%s] %s\n", status, strings.TrimSpace(item.Step))
+		}
+	}
+	if goal.SlicePlan != nil && len(goal.SlicePlan.Slices) > 0 {
+		fmt.Fprintf(&b, "\n## Slice DAG\n\n")
+		for _, s := range goal.SlicePlan.Slices {
+			deps := "none"
+			if len(s.DependsOn) > 0 {
+				deps = strings.Join(s.DependsOn, ", ")
+			}
+			fmt.Fprintf(&b, "- [%s] %s (id=%s, risk=%s, depends=%s)\n",
+				firstNonBlankString(s.Status, goalSliceStatusPending),
+				firstNonBlankString(s.Name, s.ID),
+				s.ID,
+				firstNonBlankString(s.Risk, goalSliceRiskMedium),
+				deps,
+			)
+			if outcome := strings.TrimSpace(s.Outcome); outcome != "" {
+				fmt.Fprintf(&b, "  - Outcome: %s\n", outcome)
+			}
+		}
+		if ready := goal.SlicePlan.ReadySlices(); len(ready) > 0 {
+			fmt.Fprintf(&b, "\nReady now: ")
+			names := make([]string, 0, len(ready))
+			for _, s := range ready {
+				names = append(names, firstNonBlankString(s.Name, s.ID))
+			}
+			fmt.Fprintf(&b, "%s\n", strings.Join(names, ", "))
 		}
 	}
 	if goalShouldShowRunNextCommand(goal) {
@@ -2449,6 +2549,12 @@ func (g *GoalState) Normalize() {
 		ensureGoalAcceptanceSpec(g)
 	}
 	g.Plan = normalizeGoalPlanItems(g.Plan)
+	if g.SlicePlan != nil {
+		g.SlicePlan.Normalize()
+		if len(g.SlicePlan.Slices) == 0 {
+			g.SlicePlan = nil
+		}
+	}
 	for i := range g.CheckpointRefs {
 		g.CheckpointRefs[i].Normalize()
 	}
