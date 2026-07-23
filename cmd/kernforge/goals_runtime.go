@@ -551,7 +551,28 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		Status:    goalStatusRunning,
 		StartedAt: time.Now(),
 	}
+	activeSlice, sliceErr := selectActiveGoalSlice(&goal)
+	if sliceErr != nil {
+		goal.Status = goalStatusBlocked
+		goal.LastError = sliceErr.Error()
+		goal.Touch()
+		rt.session.UpsertGoal(goal)
+		_ = rt.writeGoalArtifacts(goal)
+		if rt.store != nil {
+			_ = rt.store.Save(rt.session)
+		}
+		rt.printPersistentBlockWhileThinking(rt.ui.warnLine(goal.LastError))
+		return goal, true, nil
+	}
+	if activeSlice != nil {
+		iteration.SliceID = activeSlice.ID
+		iteration.SliceName = activeSlice.Name
+		markGoalSliceStatus(&goal, activeSlice.ID, goalSliceStatusRunning)
+	}
 	rt.printPersistentBlockWhileThinking(rt.ui.subsection(fmt.Sprintf("Goal iteration %d", iteration.Index)))
+	if activeSlice != nil {
+		rt.printGoalStep(iteration.Index, "slice", fmt.Sprintf("%s (%s)", firstNonBlankString(activeSlice.Name, activeSlice.ID), activeSlice.ID))
+	}
 	rt.primeGoalRuntimeState(&goal, fmt.Sprintf("iteration-%d", iteration.Index))
 	rt.session.SetPlanNodeLifecycle("plan-01", "in_progress", "Inspecting goal state for autonomous iteration.")
 	rt.printGoalStep(iteration.Index, "implementation", localizedText(rt.cfg,
@@ -573,7 +594,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 			FinishedAt: time.Now(),
 		})
 	}
-	implementReply, err := rt.runGoalAgentReply(ctx, buildGoalImplementationPrompt(goal, iteration.Index))
+	implementReply, err := rt.runGoalAgentReply(ctx, buildGoalImplementationPromptForSlice(goal, iteration.Index, activeSlice))
 	iteration.ImplementReply = compactPromptSection(implementReply, 900)
 	if err != nil {
 		return rt.finishGoalIterationError(goal, iteration, err)
@@ -691,16 +712,41 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 				iteration.SemanticReview = &semanticReview
 				goal.LastSemanticReview = &semanticReview
 				if semanticReview.Approved {
-					iteration.Status = goalStatusComplete
-					goal.Status = goalStatusComplete
-					goal.CompletedAt = time.Now()
-					goal.LastError = ""
-					goal.SemanticRejectCount = 0
-					rt.session.SetPlanNodeLifecycle("plan-06", "completed", "Completion audit and semantic goal review are ready.")
-					if semanticReview.IndependentReviewSkipped {
-						rt.printPersistentBlockWhileThinking(rt.ui.warnLine(localizedText(rt.cfg,
-							"goal completed WITHOUT an independent semantic review (no cross-review route or consent); completion is process-gated on the deterministic audit and verification only. Configure /model cross-review or pass --require-review for stronger assurance.",
-							"독립 semantic review 없이 goal이 완료되었습니다(cross-review 라우트/동의 없음). 완료는 결정적 audit과 검증만으로 게이트된 상태입니다. 더 강한 보증이 필요하면 /model cross-review를 설정하거나 --require-review를 사용하세요.")))
+					remainingSlices := applySliceCompletionAfterSemanticApproval(&goal, iteration.SliceID)
+					if remainingSlices {
+						// Slice OPAVR succeeded; keep the goal active for the next ready slice.
+						iteration.Status = goalStatusPending
+						goal.Status = goalStatusPending
+						goal.LastError = ""
+						goal.SemanticRejectCount = 0
+						if summary := goalSlicePartialSummary(goal); summary != "" {
+							rt.printPersistentBlockWhileThinking(rt.ui.successLine("Slice complete; continuing goal — " + summary))
+						} else {
+							rt.printPersistentBlockWhileThinking(rt.ui.successLine("Slice complete; continuing remaining slices"))
+						}
+						rt.session.SetPlanNodeLifecycle("plan-06", "in_progress", "Active slice approved; remaining slices still open.")
+					} else {
+						iteration.Status = goalStatusComplete
+						goal.Status = goalStatusComplete
+						goal.CompletedAt = time.Now()
+						goal.LastError = ""
+						goal.SemanticRejectCount = 0
+						// Ensure a single-slice (or final) approval marks the DAG done.
+						if iteration.SliceID != "" {
+							markGoalSliceStatus(&goal, iteration.SliceID, goalSliceStatusComplete)
+						} else if goal.SlicePlan != nil {
+							for i := range goal.SlicePlan.Slices {
+								if goal.SlicePlan.Slices[i].Status != goalSliceStatusSkipped {
+									goal.SlicePlan.Slices[i].Status = goalSliceStatusComplete
+								}
+							}
+						}
+						rt.session.SetPlanNodeLifecycle("plan-06", "completed", "Completion audit and semantic goal review are ready.")
+						if semanticReview.IndependentReviewSkipped {
+							rt.printPersistentBlockWhileThinking(rt.ui.warnLine(localizedText(rt.cfg,
+								"goal completed WITHOUT an independent semantic review (no cross-review route or consent); completion is process-gated on the deterministic audit and verification only. Configure /model cross-review or pass --require-review for stronger assurance.",
+								"독립 semantic review 없이 goal이 완료되었습니다(cross-review 라우트/동의 없음). 완료는 결정적 audit과 검증만으로 게이트된 상태입니다. 더 강한 보증이 필요하면 /model cross-review를 설정하거나 --require-review를 사용하세요.")))
+						}
 					}
 				} else if goal.SemanticRejectCount+1 >= goalSemanticRejectBlockThreshold {
 					// The completion audit is ready but the final semantic reviewer
@@ -1175,6 +1221,16 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 	b.WriteString("Start with NEEDS_REVISION if any meaningful implementation, test, documentation, artifact, or evidence gap remains.\n")
 	b.WriteString("There is no deterministic, objective-specific completion check for arbitrary repositories, so you are the authority on whether the objective's substance is actually implemented. Do not APPROVE on the basis of a green build, passing pre-existing tests, a zero-blocker audit, or process-meta criteria alone when the requested behavior is not demonstrably present in the workspace.\n")
 	b.WriteString("Process-meta items (\"audit ready\", \"loop ran\", \"plan updated\") are never sufficient by themselves.\n\n")
+	if slice := findGoalSlice(goal, iteration.SliceID); slice != nil {
+		b.WriteString("This review is for the active slice. APPROVED means the active slice acceptance is met")
+		if goal.SlicePlan != nil && len(goal.SlicePlan.Slices) > 1 && !goalSlicePlanAllComplete(*goal.SlicePlan) {
+			b.WriteString("; remaining slices may still be incomplete (that is OK — approve the slice when its own acceptance holds)")
+		} else {
+			b.WriteString(" and the overall objective substance is demonstrated")
+		}
+		b.WriteString(".\n")
+		b.WriteString(renderActiveGoalSliceSection(*slice))
+	}
 	if section := renderGoalAcceptanceCriteriaSection(goal); section != "" {
 		b.WriteString(section)
 	}
@@ -1184,6 +1240,9 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 			fmt.Fprintf(&b, "- %s\n", item)
 		}
 		b.WriteString("\n")
+	}
+	if summary := goalSlicePartialSummary(goal); summary != "" {
+		fmt.Fprintf(&b, "Slice plan progress: %s\n\n", summary)
 	}
 	b.WriteString("Latest audit:\n")
 	fmt.Fprintf(&b, "- Status: %s\n", valueOrDefault(audit.Status, "unknown"))
@@ -1207,6 +1266,9 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 	}
 	b.WriteString("\nIteration evidence:\n")
 	fmt.Fprintf(&b, "- Iteration: %d\n", iteration.Index)
+	if iteration.SliceID != "" {
+		fmt.Fprintf(&b, "- Slice: %s (%s)\n", iteration.SliceID, firstNonBlankString(iteration.SliceName, iteration.SliceID))
+	}
 	if iteration.Verification != "" {
 		fmt.Fprintf(&b, "- Verification: %s\n", iteration.Verification)
 	}

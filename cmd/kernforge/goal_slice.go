@@ -238,8 +238,10 @@ func (p GoalSlicePlan) ReadySlices() []GoalSlice {
 	}
 	ready := make([]GoalSlice, 0, len(p.Slices))
 	for _, s := range p.Slices {
+		// running is resumable: a prior iteration may have left the slice
+		// in-progress after NEEDS_REVISION, pause, or interrupt.
 		switch s.Status {
-		case goalSliceStatusComplete, goalSliceStatusSkipped, goalSliceStatusRunning, goalSliceStatusBlocked:
+		case goalSliceStatusComplete, goalSliceStatusSkipped, goalSliceStatusBlocked:
 			continue
 		}
 		ok := true
@@ -254,6 +256,19 @@ func (p GoalSlicePlan) ReadySlices() []GoalSlice {
 				s.Status = goalSliceStatusReady
 			}
 			ready = append(ready, s)
+		}
+	}
+	// Prefer an already-running slice so multi-slice work resumes the same node.
+	for i, s := range ready {
+		if s.Status == goalSliceStatusRunning {
+			if i == 0 {
+				return ready
+			}
+			out := make([]GoalSlice, 0, len(ready))
+			out = append(out, s)
+			out = append(out, ready[:i]...)
+			out = append(out, ready[i+1:]...)
+			return out
 		}
 	}
 	return ready

@@ -4,6 +4,14 @@
 
 ## 2026-07-23
 
+### Goal OS PR3: Runner v2 slice OPAVR + partial
+
+- 계획: [[docs/plan/2026-07-23-autonomous-goal-system.md]]
+- 매 iteration: ready slice 선택 → implement/review/verify/audit/semantic 스코프.
+- slice semantic APPROVED 시 해당 slice 완료; 남은 slice 있으면 goal 유지·다음 ready로 계속.
+- 전 slice 완료 후에만 goal complete. max-iter/block 시 partial delivery 요약 기록.
+- 후속: research_mode + cost/events (PR4).
+
 ### Goal OS PR2: Slice DAG 모델 + planner parse
 
 - 계획: [[docs/plan/2026-07-23-autonomous-goal-system.md]]
